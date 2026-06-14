@@ -1,165 +1,130 @@
 # AO3 Archiver
 
-A native macOS app that backs up your AO3 bookmarks as `.epub` files with a fast, dark,
-liquid-glass gallery and full local filtering. See [PLAN.md](PLAN.md) for the full design.
+**Keep your own copy of your AO3 bookmarks — every story saved as a real file on your Mac, in a
+beautiful gallery you can search and filter however you like, even offline.**
 
-## Status: V1 shipped
+Fanworks disappear: authors delete accounts, works get orphaned, sites go down. AO3 Archiver
+quietly downloads the works you've bookmarked as standard `.epub` ebook files (the kind Apple
+Books reads) and keeps them in a folder you choose — so your favourites are yours to keep.
 
-The build is complete. M0 de-risked the core mechanics; M1 built the backup engine; **M2**
-added the dark Liquid Glass gallery; **M3** delivered full filter parity (every facet the
-bookmarks listing exposes, plus tri-state include/exclude, numeric + date ranges,
-derived/bookmark filters, and saved presets — memoized and proven snappy at scale); **M4**
-packaged it into a real, double-clickable `.app` with **in-app resumable sync** — so you
-**sync and browse entirely from the GUI**, no terminal. (Future hardening — cookie-expiry UX,
-deleted-work reconciliation, scheduled sync — is post-V1; see PLAN §10.) Run it as a CLI
-(sync) and/or the SwiftUI app (sync + browse):
+It's a native Mac app with a dark, glassy look, and it's **private**: everything stays on your
+computer. Your login is stored in the Mac's Keychain and is only ever sent to AO3.
 
-- **`AO3Kit`** — the reusable core the SwiftUI app sits on:
-  - `AO3Client` — the only networked component. Polite single-flight **rate limiter**,
-    **429 / Retry-After backoff**, 5xx + timeout retries, explicit session-cookie
-    injection, honest User-Agent. Follows AO3's download redirect automatically.
-  - `BlurbParser` — parses AO3 listing HTML (works search / tag pages / **bookmarks** /
-    **series pages**, same markup) into `WorkBlurb`s. Classifies each card by `kind` —
-    **work**, **external** (off-site, no EPUB), or **series** — and captures the
-    bookmark-specific bits (bookmark id, bookmark date, rec/private, the bookmarker's tags
-    & notes) plus pagination. Selectors pinned to real fetched markup.
-  - `Store` — the SQLite metadata store (GRDB + **FTS5**): schema/migrations, **idempotent**
-    upserts that preserve local archive state, a resumable download-queue query, and
-    full-text search. Works, external works, series, and bookmarks are normalized with a
-    tag index for fast faceting.
-  - `FileStore` — owns the archive folder and the `works/<id> - <title>.epub` layout.
-  - `SyncEngine` — orchestrates a **bounded, resumable** run: page through bookmarks →
-    ingest every card → expand bookmarked series into member works → download EPUBs through
-    the limiter, committing each immediately.
-  - `WorkDownloader` — resolves the server-rendered EPUB link and downloads it, validating
-    the ZIP/EPUB magic bytes.
-  - `GalleryModel` — the gallery's read/filter/sort layer (kept below the SwiftUI line so
-    it's unit-tested): `WorkListItem`, a fan-out-safe `fetchAllListItems()` join, and a pure
-    `GalleryFilter`/`GallerySort`/`Facets` engine behind an `@Observable` view model.
-- **`ao3archiver`** — CLI that runs a real bounded sync into a SQLite DB + archive folder.
-- **`AO3ArchiverApp`** — the SwiftUI gallery, with **in-app sync**: a Sync sheet takes your
-  username + `_otwarchive_session` cookie (stored in the **Keychain**) and runs the engine
-  with live progress — page-of-total bar, a rate-limit banner (so a backoff doesn't look like
-  a stall), and an activity feed; the bookmark list builds up **live** as it indexes. Index
-  is separated from download: by default it just records the lightweight metadata (fast,
-  gentle on AO3), and you **download EPUBs per-work on demand** from a work's detail panel (or
-  enable bulk download). A folder menu (Reveal in Finder / Choose Folder) manages the archive
-  location (default `~/Documents/ao3archive`). Dark Liquid Glass throughout, with a glass
-  filter sidebar with live facet counts, live search, sort, and a detail inspector (open in
-  Books, reveal in Finder, view on AO3; series show their member works in order). The centerpiece
-  is a rich **metadata card** — title, author, AO3 colour-coded symbols (rating / category /
-  warnings / completion), tag pills grouped by type, stats, summary, and your own bookmark
-  tags/notes — *not* a book cover (AO3 EPUBs have none, and metadata is what you browse on).
-  Every tag facet — bookmark type, rating, category, warnings, language, fandom,
-  relationships, characters, additional tags, and your own bookmark tags — is **tri-state**:
-  click to include, again to exclude, again to clear (include and exclude in one list), with
-  live faceted counts and a **typeahead** on the big dimensions. Beyond tags: **numeric and
-  date ranges** (word count / kudos / comments / bookmarks / hits, date updated / date
-  bookmarked), **derived/bookmark filters** (crossover, rec'd, with/without notes,
-  private/public), and **saved presets ("Smart Bookmarks")** you can re-apply in a click.
-  Completion and download stay single-select. The pipeline is in-memory and memoized, so
-  filtering/search/sort stays instant even at thousands of bookmarks.
+---
 
-### Run it
+## What you can do with it
 
-No credentials (public demo listing — Good Omens tag):
+- **Back up your bookmarks** as ebook files you own, readable in Apple Books and anywhere else.
+- **Browse them in a gallery** — each story shows its title, author, rating, tags, summary, word
+  count, and your own bookmark notes.
+- **Find anything instantly.** Search by any word, or filter by fandom, relationship, character,
+  rating, tags, length, kudos, date — and combine as many filters as you want. It stays fast even
+  with tens of thousands of bookmarks.
+- **Save your favourite filter combinations** ("Smart Bookmarks") and reapply them in one click.
+- **Read offline.** Once saved, your works don't need AO3 — or even an internet connection.
+
+> Works you bookmarked that live on *other* sites (external works) can't be saved as ebooks —
+> AO3 doesn't host their files — but they're still listed so you have the record.
+
+---
+
+## Getting started
+
+### 1. Open the app
+
+You'll need a Mac running **macOS 26 (Tahoe)**. If someone has given you the finished
+**"AO3 Archiver" app**, just drag it to your Applications folder and double-click it. (If you're
+building it yourself, see *For developers* at the bottom.)
+
+### 2. Choose where your library lives
+
+Click the **folder icon** in the toolbar and pick a folder for your archive (the default is a new
+**ao3archive** folder inside your Documents). This is where your saved ebooks and the catalog
+live. You can reveal it in Finder from the same menu any time.
+
+### 3. Connect to AO3 and sync
+
+Click **Sync**. You'll be asked for:
+
+- **Your AO3 username** — so it knows whose bookmarks to fetch.
+- **A login cookie** *(optional)* — only needed to reach **private or restricted** bookmarks.
+  Leave it blank to back up your public bookmarks.
+
+Then press **Sync** and watch your bookmark list build up live.
+
+By default, syncing just builds your **catalog** (the list of everything, fast and gentle on AO3).
+To actually save a story's ebook file, open it and click **Download EPUB** — or turn on
+"Download EPUB files too" to grab them in bulk.
+
+> **A note on patience:** AO3 asks apps to go slowly so they don't overload the site, and this app
+> respects that. A big library takes a while, and AO3 may ask it to pause partway — that's normal.
+> The app shows you when it's waiting, and if it gets interrupted it picks up where it left off
+> next time.
+
+#### Where do I find the login cookie?
+
+If you want your private/restricted bookmarks too, you'll paste one value from your browser:
+
+1. Log in to AO3 in your web browser.
+2. Open your browser's developer tools (in most browsers, right-click the page → **Inspect**).
+3. Find the **Application** (or **Storage**) section → **Cookies** → `archiveofourown.org`.
+4. Copy the **value** of the cookie named **`_otwarchive_session`** and paste it into the app.
+
+The app saves it securely in your Mac's Keychain and only ever sends it to AO3.
+
+### 4. Browse and filter
+
+Use the sidebar on the left to filter, the search box up top to find words, and the sort menu to
+order things (newest bookmark, most kudos, title, and so on). Click any story to see its full
+details, open the saved ebook in Books, or jump to it on AO3.
+
+Tip: click a filter once to **include** it, again to **exclude** it, once more to clear it.
+
+---
+
+## Your privacy & being a good citizen
+
+- **Everything is local.** No accounts, no telemetry, no cloud. Your works and catalog live only
+  on your Mac.
+- **Your login never leaves your machine** except to talk to AO3 itself.
+- **It's polite to AO3 by design** — slow, one request at a time, and it backs off the moment AO3
+  asks. This is a personal backup tool for **your own bookmarks**, in the spirit of AO3's own
+  "fans backing up works" guidance — not a bulk scraper.
+
+---
+
+## For developers
+
+The app is a Swift package. Build and run it from the project folder:
 
 ```sh
-swift run ao3archiver
-```
+swift build                    # build everything
+swift run selftest             # fast headless checks (no Xcode needed)
+swift test                     # full test suite (needs Xcode)
 
-Your own bookmarks, authenticated:
-
-```sh
-export AO3_USERNAME="your_ao3_username"
-export AO3_SESSION_COOKIE="...value of the _otwarchive_session cookie..."
-swift run ao3archiver        # backs up the first 2 pages / 3 EPUBs by default
-```
-
-Sync is **bounded by default** (2 pages, 3 downloads) so a casual run never crawls a large
-account. To back up a whole account, the index pass has to reach every page at least once
-to enqueue its works — raise `AO3_MAX_PAGES` high enough to cover the account, then bound
-the slow part (downloads) and run repeatedly:
-
-```sh
-# Pass 1+: index every page once (cheap), download a polite batch each run.
-AO3_MAX_PAGES=999 AO3_MAX_DOWNLOADS=50 swift run ao3archiver   # repeat until none remain
-```
-
-Downloads are **resumable**: each run skips works already on disk (unless AO3 shows a newer
-`updated_at`, which re-queues them) and **retries** anything that previously failed — so if
-you first run anonymously, works that needed a login are picked up once you add your cookie.
-Note the *index* pass re-reads pages 1…`AO3_MAX_PAGES` each run; it's downloads, not page
-fetches, that accumulate across runs — so set `AO3_MAX_PAGES` wide rather than expecting
-deep pages to be reached a few at a time.
-
-### The app (sync + browse)
-
-Build a real, double-clickable app (needs the macOS 26 SDK / Xcode 26):
-
-```sh
-./Packaging/make-icon.sh    # once: render the app icon → AppIcon.icns
-./Packaging/make-app.sh     # assemble "build/AO3 Archiver.app"
+./Packaging/make-icon.sh       # once: render the app icon
+./Packaging/make-app.sh        # assemble "build/AO3 Archiver.app"
 open "build/AO3 Archiver.app"
 ```
 
-Or run it unbundled for dev: `swift run AO3ArchiverApp` (works, but as a bare executable it
-needs runtime nudges for keyboard focus/resize; the bundle is the real thing).
+There's also a command-line backup tool (`swift run ao3archiver`) for headless/scripted syncs,
+configured by environment variables (`AO3_USERNAME`, `AO3_SESSION_COOKIE`, `AO3_ARCHIVE_DIR`,
+`AO3_MIN_INTERVAL`, `AO3_MAX_PAGES`, `AO3_MAX_DOWNLOADS`, …). Syncs are **bounded by default** so a
+casual run never crawls a whole account by accident.
 
-In the app: click the **folder menu** to choose your archive folder (default
-`~/Documents/ao3archive`), then **Sync** — paste your AO3 username and (optionally) your
-`_otwarchive_session` cookie, and watch the bookmark list build live. By default sync is
-**index-only** (just the metadata list, fast and gentle); flip on "Download EPUBs" for bulk,
-or open any work and hit **Download EPUB** to grab one on demand. Then browse: a glass filter
-sidebar with live counts, search, sort, and the metadata-card gallery.
+- **How it's built:** [ARCHITECTURE.md](ARCHITECTURE.md)
+- **What's next:** [PLAN.md](PLAN.md)
+- **Contributor conventions:** [CLAUDE.md](CLAUDE.md)
 
-Getting the cookie: log in to AO3 in your browser → DevTools → Application/Storage →
-Cookies → `https://archiveofourown.org` → copy the **value** of `_otwarchive_session`. The
-app stores it in the macOS **Keychain**; it's only ever sent to AO3.
+**Requirements:** macOS 26 (Tahoe) + Xcode 26 to build the app (it uses Apple's Liquid Glass).
+Dependencies: [SwiftSoup](https://github.com/scinfu/SwiftSoup) (HTML parsing) and
+[GRDB](https://github.com/groue/GRDB.swift) (SQLite/FTS5).
 
-### Configuration (environment variables)
-
-| Variable             | Default                          | Purpose |
-|----------------------|----------------------------------|---------|
-| `AO3_USERNAME`       | —                                | Your AO3 username (enables bookmarks). |
-| `AO3_SESSION_COOKIE` | —                                | `_otwarchive_session` value for private/restricted content. |
-| `AO3_ARCHIVE_DIR`    | `~/Documents/ao3archive`         | Holds `archive.sqlite` + the `works/` EPUBs. |
-| `AO3_MIN_INTERVAL`   | `4`                              | Minimum seconds between requests (politeness). |
-| `AO3_USER_AGENT`     | `ao3-archiver/0.1 (… syrtis@sysd.info)` | Sent on every request. |
-| `AO3_LIST_PATH`      | bookmarks, else demo             | Override the listing path (e.g. a filtered bookmarks URL). |
-| `AO3_MAX_PAGES`      | `2`                              | Max bookmark pages fetched per run. |
-| `AO3_MAX_DOWNLOADS`  | `3`                              | Max EPUBs downloaded per run. |
-| `AO3_EXPAND_SERIES`  | `1`                              | Expand bookmarked series into member works (`0` to skip). |
-
-### Tests
-
-The parser is pinned to **real captured AO3 HTML** in `Tests/AO3KitTests/Fixtures/`
-(works listing, bookmarks page, series card, series page). The store/sync logic
-(idempotency, stale-detection, FTS, series expansion) **and the gallery model** (fan-out-safe
-join, tri-state include/exclude facets, ranges, derived filters, saved-preset round-trip,
-sort, memoization at 2000-item scale) are exercised against those same fixtures with a temp
-database — no network, no rendering. `swift test` (38 tests, 4 suites) and the framework-free
-`swift run selftest` (157 checks) run the same assertions.
-
-- Full Xcode: `swift test` (swift-testing suite — 31 tests, 4 suites).
-- Command Line Tools only (no Xcode): `swift run selftest` — equivalent assertions (120
-  checks), no test framework needed.
-
-> The SwiftUI gallery is **compile-verified** (`swift build`) but its rendering isn't
-> automatically tested — all of its logic lives in the unit-tested `GalleryModel`, so the
-> views are a thin, dumb skin over verified behavior.
-
-## Requirements
-
-- macOS 26 (Tahoe) + Xcode 26 to build the SwiftUI app (Liquid Glass); the CLI/library use
-  the Swift 6.3 toolchain. Package deployment target is macOS 26.
-- Dependencies: [SwiftSoup](https://github.com/scinfu/SwiftSoup) for HTML parsing,
-  [GRDB](https://github.com/groue/GRDB.swift) for the SQLite store (FTS5).
+---
 
 ## License
 
 [PolyForm Noncommercial License 1.0.0](LICENSE) — free to use, modify, and share for any
-**noncommercial** purpose (personal use, hobby projects, research, nonprofits). Commercial
-use is not granted. This is a software-native license chosen over CC BY-NC-SA (which
-Creative Commons advises against for code); the noncommercial restriction reflects AO3's own
-nonprofit, transformative-works ethos. Dependencies remain under their own MIT licenses.
+**noncommercial** purpose (personal use, hobby projects, research, nonprofits). Commercial use is
+not granted. The noncommercial restriction reflects AO3's own nonprofit, transformative-works
+ethos. Dependencies remain under their own MIT licenses.

@@ -1,20 +1,19 @@
 # CLAUDE.md
 
-Guidance for working in this repo. See `PLAN.md` for the full design/roadmap and
-`README.md` for user-facing usage.
+Contributor guide for working in this repo. **Architecture lives in
+[ARCHITECTURE.md](ARCHITECTURE.md)** (the single source of design truth — read it first);
+[README.md](README.md) is user-facing; [PLAN.md](PLAN.md) is the roadmap. This file is the
+day-to-day operational guide: how to build/test/run, where things are, and the conventions and
+gotchas that bite.
 
 ## What this is
 
-A native macOS app (**V1 shipped**) that backs up the user's AO3 bookmarks as `.epub` files
-with a dark, liquid-glass, snappy gallery and full local filtering. **M0** (core spike),
-**M1** (core sync + store), **M2** (gallery MVP), and **M3** (full filter parity) are done: a
-Swift package that pages through bookmarks, ingests every card (work / external / series)
-into a GRDB/SQLite store with FTS5, expands bookmarked series, runs a resumable rate-limited
-EPUB download queue, and presents it all in a dark Liquid Glass SwiftUI gallery with
-in-memory filtering/search/sort — every facet the bookmarks listing exposes (tri-state
-include/exclude tags, numeric + date-updated/-bookmarked ranges, derived/bookmark booleans,
-saved presets), memoized and proven snappy at scale. (Date-*published* range / date-posted
-sort are out of scope: the listing blurb carries only the updated date — no per-work fetch.)
+A native macOS app (**V1.1 shipped**) that backs up your AO3 bookmarks as `.epub` files with a
+dark, liquid-glass gallery and full local filtering — synced and browsed entirely from the GUI.
+The core (parser, store, sync engine, gallery model) is a tested Swift package; the SwiftUI app
+is a thin skin over it. V1.1 added the performance pass (scaled to ~20k bookmarks: stored
+haystack, debounced search, parallel facet passes, coalesced sync reloads) and a responsive
+layout. See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design.
 
 ## Build / test / run
 
@@ -22,201 +21,84 @@ sort are out of scope: the listing blurb carries only the updated date — no pe
 swift build                 # build library + CLI + app
 swift run selftest          # headless parser + Store + gallery-model checks (162 checks)
 swift test                  # swift-testing suite (needs Xcode; 39 tests, 4 suites)
-swift run ao3archiver        # bounded sync: paginate → ingest → expand series → download
-swift run AO3ArchiverApp     # SwiftUI gallery over the synced DB (reads AO3_ARCHIVE_DIR)
-./Packaging/make-icon.sh     # render the liquid-glass app icon → Packaging/AppIcon.icns
-./Packaging/make-app.sh      # assemble a real, double-clickable "AO3 Archiver.app" (M4.1)
+swift run ao3archiver       # bounded CLI sync: paginate → ingest → expand series → download
+swift run AO3ArchiverApp    # SwiftUI gallery over the synced DB (reads AO3_ARCHIVE_DIR)
+./Packaging/make-icon.sh    # render the liquid-glass app icon → Packaging/AppIcon.icns
+./Packaging/make-app.sh     # assemble a real, double-clickable "AO3 Archiver.app"
 ```
 
-The `.app` bundle (M4.1) is **non-sandboxed** (no entitlements/signing beyond ad-hoc): a
-personal tool reads a user-chosen folder directly. Launched as a bundle it gets keyboard
-focus / resize / Dock for free; the bare-`swift run` runtime nudges become belt-and-suspenders.
+`swift run selftest` is the **framework-free** equivalent of `swift test` (same assertions, same
+fixtures) and also works under Command-Line-Tools-only toolchains, where `swift test` fails with
+"no such module 'Testing'". **Keep the two in lockstep** when changing the parser, store, or model.
 
-**Archive folder resolution** (where `archive.sqlite` + `works/*.epub` live), highest priority
-first: `AO3_ARCHIVE_DIR` env → the folder the user picked (UserDefaults `archiveFolderPath`,
-set via the toolbar folder menu) → default `~/Documents/ao3archive`. The CLI uses the same
-default. It's a plain on-disk SQLite file + folder, so it survives app updates and is portable
-— never store real data in `/tmp`. The toolbar folder menu has **Reveal in Finder** since the
-old `~/Library/Application Support` default was invisible in Finder.
-
-**In-app sync facts (M4.2):** `SyncController` runs the tested `SyncEngine` off-main with live
-progress; `SyncSheet` collects creds → `CredentialStore` (Keychain). **Index is separated from
-download** — default sync is index-only (commits lightweight bookmark records per page, no
-EPUBs); EPUBs download per-work on demand (detail panel) or via a bulk toggle. The gallery
-**reloads live as pages index and on any end** (incl. cancel/fail) so a rate-limited partial
-index is shown, not lost. A long index *will* hit AO3's throttle — `AO3Client.onRateLimit`
-surfaces the backoff (banner + activity feed) so it doesn't look stalled; `BlurbParser.lastPageNumber`
-gives "page N of T". Politeness interval is user-adjustable. **Index is resumable** — the
-next-page URL is persisted in the `meta` table (`SyncEngine.resumeKey`), so a run throttled at
-page 15 of ~130 resumes there, not at page 1; the sync sheet shows "resumes near page N" with a
-**Start over**. A **Quick sync** grabs just the latest 3 pages (catch-up; index-only, no resume).
-
-> **Headless caveat:** the SwiftUI gallery **compiles** here but can't be *run/rendered*
-> without a window server, so the view layer is compile-verified only — the user runs it and
-> reports back. All gallery logic lives below the SwiftUI line in `AO3Kit`
-> (`GalleryModel.swift`) and is unit-tested — keep it that way: anything with an `if` belongs
-> in the model, not a View.
-
-> **Bare-executable runtime fixes:** run via `swift run` the app has no `.app` bundle, so it
-> needs runtime nudges that a bundled app gets for free — `NSApp.setActivationPolicy(.regular)`
-> + activate (else keystrokes go to the launching terminal and rendering is throttled), and
-> inserting `.resizable` on the `NSWindow` (else `.windowResizability` has nothing to act on).
-> A real `.app` bundle (planned M4) removes all of these.
-
-Auth + config is via environment variables (see README): `AO3_USERNAME`,
-`AO3_SESSION_COOKIE`, `AO3_ARCHIVE_DIR`, `AO3_MIN_INTERVAL`, `AO3_USER_AGENT`,
-`AO3_LIST_PATH`, and the M1 sync bounds `AO3_MAX_PAGES`, `AO3_MAX_DOWNLOADS`,
-`AO3_EXPAND_SERIES`. Bounds default **low** (2 pages / 3 downloads) — never crawl all ~91
-pages by accident; politeness is a hard requirement.
-
-### Testing note
-
-Full **Xcode is installed**, so `swift test` runs the swift-testing suite in
-`Tests/AO3KitTests/` (39 tests, 4 suites — parser, downloader, Store, gallery model).
-`swift run selftest`
-is the equivalent **framework-free** runner (same assertions against the same fixtures) and
-also works under Command-Line-Tools-only toolchains, where `swift test` fails with "no such
-module 'Testing'". Keep the two in sync when changing the parser or store — both pin to the
-fixtures in `Tests/AO3KitTests/Fixtures/`.
+Config is via environment variables (see README's developer section): `AO3_USERNAME`,
+`AO3_SESSION_COOKIE`, `AO3_ARCHIVE_DIR`, `AO3_MIN_INTERVAL`, `AO3_USER_AGENT`, `AO3_LIST_PATH`,
+and sync bounds `AO3_MAX_PAGES`, `AO3_MAX_DOWNLOADS`, `AO3_EXPAND_SERIES`. **Bounds default low**
+(2 pages / 3 downloads) — never crawl all pages by accident; politeness is a hard requirement.
 
 ## Layout
 
 ```
-Sources/AO3Kit/        reusable core the SwiftUI app sits on
-  AO3Client.swift      ONLY networked component: rate limiter, 429/5xx backoff, cookie, UA
+Sources/AO3Kit/        reusable, tested core the app sits on
+  AO3Client.swift      THE ONLY networked component (rate limiter, 429/5xx backoff, cookie, UA)
   RateLimiter.swift    single-flight token-slot limiter
-  BlurbParser.swift    listing HTML → [WorkBlurb]; classifies work/external/series;
-                       parses bookmark id/date/rec/private, series Works:, pagination Next
-  WorkDownloader.swift resolve + fetch server-rendered EPUB; validates ZIP magic
-  Store.swift          GRDB schema/migrations + FTS5; idempotent upserts (preserve archive
-                       state); download-queue/stale query; sync_run bookkeeping
-  FileStore.swift      archive folder + works/<id> - title.epub layout, write/exist
+  BlurbParser.swift    listing HTML → [WorkBlurb]; classifies work/external/series; pagination
+  WorkDownloader.swift resolve + fetch the server-rendered EPUB; validates ZIP magic
+  Store.swift          GRDB schema/migrations + FTS5; idempotent upserts; queues; presets; meta
+  FileStore.swift      archive folder + works/<id> - title.epub layout
   SyncEngine.swift     orchestration: bounded paginate → ingest → expand series → download
-  GalleryModel.swift   M2 read/filter/sort layer (below the SwiftUI line, fully tested):
-                       WorkListItem, Store.fetchAllListItems() (fan-out-safe join),
-                       GalleryFilter/GallerySort/Facets, @Observable GalleryViewModel
+  GalleryModel.swift   read/filter/sort/facet engine + @Observable view model (below the SwiftUI line)
   Models.swift         WorkBlurb, BookmarkKind
   ArchivePaths.swift   on-disk epub filename/sanitization
-Sources/ao3archiver/   CLI driver: runs a bounded SyncEngine pass (top-level code; not @main)
-Sources/AO3ArchiverApp/  SwiftUI gallery + in-app sync (thin Views over the tested model):
-                       App entry, GalleryView, FilterSidebar, WorkCardView (metadata card),
-                       WorkDetailView (incl. per-work download), Theme (Liquid Glass helpers),
-                       SyncController/SyncSheet (in-app sync + progress), CredentialStore (cookie
-                       in Keychain).
-Packaging/             make-app.sh (assemble the .app bundle), Info.plist, IconGen.swift +
-                       make-icon.sh (CoreGraphics liquid-glass app icon → AppIcon.icns)
+Sources/ao3archiver/   CLI driver (bounded SyncEngine pass; top-level code, not @main)
+Sources/AO3ArchiverApp/  SwiftUI gallery + in-app sync (thin Views over the tested model)
 Sources/selftest/      headless assertions (parser + Store + gallery model) without XCTest
-Tests/AO3KitTests/     swift-testing suite + Fixtures/ (real captured AO3 HTML):
-                       works_listing, bookmarks_page, series_card, series_page
+Tests/AO3KitTests/     swift-testing suite + Fixtures/ (real captured AO3 HTML)
+Packaging/             make-app.sh, Info.plist, IconGen.swift + make-icon.sh
 ```
 
-## AO3 facts that constrain the code (verified against the live site)
+## Conventions (the rules the codebase leans on)
 
-- **No public API** — everything is HTML scraping. Auth is the `_otwarchive_session`
-  cookie, injected explicitly by `AO3Client` (never persisted by the tool).
-- **AO3 renders EPUBs server-side** — we download, never construct them.
-- **Listing markup is shared** across works-search / tag / bookmarks pages: cards are
-  `li.work.blurb.group` / `li.bookmark.blurb.group`. One parser serves all sources.
-- Each card embeds `<!-- updated_at=<unixts> -->`; the EPUB URL carries the same value,
-  so it's the **download cache key** (skip re-download when unchanged).
-- **EPUB link gotcha:** the href is `/downloads/<id>/<slug>.epub?updated_at=<ts>` and
-  301-redirects to `download.archiveofourown.org`. Match it on the path **before `?`**
-  (it does NOT end in `.epub`), and let URLSession follow the redirect.
-- **Adult works** show an interstitial; bypass with `?view_adult=true`.
-- **Bookmarks are heterogeneous:** work / external-work (`/external_works/…`, off-site,
-  no EPUB) / series (a nested collection). All are recorded via `BookmarkKind`; only
-  `.work` is downloadable. Series get expanded (fetch `/series/<id>`) into member works.
-- **Rate limiting is real and strict** — AO3 returns 429 *and* 503 with Retry-After under
-  light bursts. Default to ~1 request / 4s, single-flight, with backoff. Politeness is a
-  hard requirement, not a nicety.
+- **Built from scratch.** `ao3_api` / `ao3downloader` document AO3 *behaviour* only — no vendored
+  code.
+- **All network access goes through `AO3Client`.** Nothing else constructs URLSession requests;
+  that's where politeness/backoff/cookie/UA live.
+- **All branching logic lives below the SwiftUI line, in `AO3Kit`.** Anything with an `if` belongs
+  in the model, not a View — that's what keeps it testable in a headless environment.
+- **Parser fails soft per-field;** selectors are pinned to fixtures. When AO3 markup drifts, update
+  the fixture + expectations together. One bad card must never abort a whole page.
+- **Honest User-Agent** with contact `syrtis@sysd.info`; no forged browser UA.
 
-## Conventions
+## Invariants you must not break (full rationale in ARCHITECTURE.md)
 
-- **Built from scratch.** `ao3_api` / `ao3downloader` are references for AO3 *behavior*
-  only — no vendored code. (The user dislikes both.)
-- **All network access goes through `AO3Client`.** Nothing else should construct
-  URLSession requests; that's where politeness/backoff lives.
-- **Parser selectors are pinned to real HTML fixtures.** When AO3 markup drifts, update
-  the fixture + the expectations together. Fail soft per-field; one bad card must never
-  abort a whole page.
-- Honest, descriptive User-Agent with contact `syrtis@sysd.info`. No forged browser UA.
+- **Idempotent upserts preserve archive state:** `upsertWork` never touches `epub_path` /
+  `epub_updated_at` / `download_state`. "Needs download" is a query, not a flag. `updated_at` is
+  the unix ts (the download cache key), not ISO.
+- **`bookmark` has two unique constraints** (`bookmark_id` PK + `UNIQUE(item_kind, item_id)`):
+  `upsertBookmark` drops any stale row for the same item before insert, so a re-bookmark (new id,
+  same work) can't abort a sync.
+- **Filter dimensions: an emptied dimension drops its key** (never an empty `Set`) — `setInclude` /
+  `setExclude` / `cycle` / `setBound` enforce it, so `isActive` / `==` / the memo key / preset
+  round-trips stay honest. Adding a dimension is one `FacetDimension` case + one `values(for:)` line.
+- **Faceted counts are computed against the set filtered by all OTHER dimensions** (a dimension
+  never hides its own values).
+- **Perf invariants (V1.1):** `searchHaystack` and `titleSortKey`/`authorSortKey` are stored
+  (computed once in `init`) — don't make them computed again. The 9 facet passes run in parallel
+  via `concurrentPerform` writing per-dimension slots; keep them deterministic (a test asserts
+  parallel == serial). The memo (`MemoKey(filter, sort, gen)`) must stay correct — don't re-add
+  per-dimension stored properties.
 
-## M1 store/sync facts
+## Gotchas
 
-- **Idempotent upserts preserve archive state.** `Store.upsertWork` updates metadata via
-  `ON CONFLICT(id) DO UPDATE` but never touches `epub_path` / `epub_updated_at` /
-  `download_state` — re-reading a bookmark page must not clobber a downloaded file.
-- **"Needs download" is a query, not a flag** (`epub_path IS NULL OR updated_at >
-  epub_updated_at`), so an interrupted sync resumes correctly. `updated_at` is the **unix
-  ts** (the cache key), not ISO.
-- **`work_fts` is a plain FTS5 table** (not `content=''`): upserts DELETE-then-INSERT by
-  `rowid = work.id`, so no external-content triggers are needed.
-- **Series expansion + dedup:** a series' member works share the one `work` row (UNIQUE id)
-  and get a `series_work` link; if separately bookmarked they also keep their own `bookmark`
-  row. The polymorphic `bookmark(item_kind,item_id)` makes the overlap a non-issue.
-- **Sync is bounded by default** (`maxPages`, `maxDownloads`); external works are stored
-  `download_state='unavailable'` and excluded from the queue.
-- **Folder bookmark is still deferred.** A security-scoped bookmark needs the app sandbox;
-  the M2 app is a SwiftPM executable (no Info.plist/entitlements/sandbox) and reads the DB
-  from a plain path (`AO3_ARCHIVE_DIR`). Real `.app` packaging + sandbox come later.
-
-## M2 facts (gallery)
-
-- **Platform is macOS 26 package-wide** (`.macOS("26.0")` in Package.swift) — one
-  deployment boundary so real Liquid Glass (`.glassEffect`, `.buttonStyle(.glass)`) and
-  Observation are available with no scattered `@available`. Glass is the only render path.
-- **Logic below the SwiftUI line.** `fetchAllListItems()` builds the gallery's display
-  rows from the `bookmark` table joined to `work`/`series` + tags, grouping tags in memory
-  so a work with N tags yields ONE item with N tags (no join fan-out — tested). Items come
-  from the `bookmark` table, so series *members* that aren't separately bookmarked don't
-  appear as their own cards.
-- **No covers.** AO3 EPUBs contain no cover art; the gallery is metadata cards, not a cover
-  grid. Don't reintroduce cover extraction.
-- **Facet counts** are a pure function over the set filtered by all OTHER dimensions
-  (true faceted search) — so a dimension never hides its own values. Tested.
-- **Filters are include + exclude (tri-state).** Each `GalleryFilter` dimension has an
-  include set and an exclude set; the sidebar cycles each value neutral → include → exclude
-  → neutral (one list, not AO3's duplicated include/exclude lists). Exclude wins.
-- **One generic keyed filter mechanism (M3).** Every multi-value dimension lives in a single
-  `FacetDimension` enum + `WorkListItem.values(for:)` extractor, with the filter storing
-  `include`/`exclude` as `[FacetDimension: Set<String>]`. **Invariant: an emptied dimension
-  drops its key** (never an empty set) — `setInclude`/`setExclude`/`cycle` enforce it, so
-  `isActive` / `==` / the memo key / preset round-trips stay honest. Adding a dimension is one
-  `case` + one line. The view model is generic too: `facets(for:)`, `state(_:_:)`,
-  `cycle(_:_:)`. Don't re-add per-dimension stored properties.
-- **AO3 corner symbols are colour-coded** from `AO3Kit` classification (`ratingLevel`,
-  `warningLevel`, `categories`). Category is one comma-joined symbol ("F/M, M/M") → split
-  into per-category badges. Tags are text-only pills (no icons), grouped by type on
-  separate lines (fandom → relationships → characters → freeform).
-- **Verification ceiling = `swift build`.** Don't `swift run AO3ArchiverApp` as a check —
-  it needs a window server and will hang headlessly. Test the model, compile the views.
-
-## M3 facts (full filter parity — done)
-
-- **Ranges are one mechanism too.** `RangeField` (word count / kudos / comments / bookmarks /
-  hits / date updated / date bookmarked) + `NumericBound` (min/max) over a single `Double?`
-  extractor. **No schema migration** for date-bookmarked: `bookmarkedAt` text ("04 Apr 2014")
-  is parsed to `bookmarkedDate: Date?` once at load (shared POSIX/UTC formatter, fail-soft) —
-  all filtering is in-memory, so a comparable column would be written and never read. A
-  nil-valued item (a series has no word count) drops out of an active range. Same drop-the-key
-  invariant via `setBound`.
-- **Derived/bookmark booleans** use `TriFilter` (any/yes/no): crossover (fandom count > 1),
-  rec'd, has-notes, private/public. Language is a normal facet dimension.
-- **Saved presets ("Smart Bookmarks").** `GalleryFilter`/`GallerySort` are `Codable`; a
-  `filter_preset` table (migration **v3-presets**) stores the JSON-encoded `FilterPreset`
-  (name + filter + sort). `Store.savePreset/loadPresets/deletePreset`; view model
-  `savePreset(named:to:)`/`applyPreset`/`deletePreset`. A `[FacetDimension: Set<String>]`
-  JSON-encodes as an **array** (Swift only treats String/Int keys as object keys) — round-trips
-  fine; don't be surprised inspecting the payload.
-
-## Roadmap pointer
-
-**V1 is shipped — M0–M4 are done** (core spike, sync+store, gallery MVP, full filter parity,
-and the packaged `.app` with in-app resumable sync). The tool meets its goal: back up your AO3
-bookmarks as EPUBs and browse/filter them locally, offline, snappily.
-
-Everything beyond V1 is optional next-iteration work, captured in `PLAN.md` §10 as **M5
-(hardening)**: cookie-expiry UX, deleted-work reconciliation, scheduled background sync,
-export/import, a 10k+ FTS5/SQL search fallback, and the one deferred M3 sort (local file size /
-download status — needs epub byte size stored at download). None are blockers; V1 stands on its
-own.
+- **Verification ceiling is `swift build` for the views.** The headless env compiles SwiftUI but
+  can't render it — the view layer is compile-verified only; the user runs it and reports back.
+  **Don't `swift run AO3ArchiverApp` as a check** — it needs a window server and hangs headlessly.
+  Keep anything with an `if` in the model (tested), not the View.
+- **The sidebar is a `ScrollView`, not a `List`** — a List is NSTableView-backed and reloads
+  mid-event when a filter row mutates the model → reentrancy crash.
+- **Archive folder resolution** (where `archive.sqlite` + `works/*.epub` live), highest priority
+  first: `AO3_ARCHIVE_DIR` → the picked folder (UserDefaults `archiveFolderPath`) → default
+  `~/Documents/ao3archive`. Plain on-disk path (non-sandboxed) — never store real data in `/tmp`.
+- **Bare-`swift run` runtime nudges:** without a `.app` bundle the app needs
+  `NSApp.setActivationPolicy(.regular)` + activate (else keystrokes go to the terminal) and a
+  forced `.resizable` `NSWindow`. The bundle (`make-app.sh`) makes these unnecessary.
