@@ -20,6 +20,7 @@ swift run selftest          # headless parser + Store + gallery-model checks (12
 swift test                  # swift-testing suite (needs Xcode; 31 tests, 4 suites)
 swift run ao3archiver        # bounded sync: paginate → ingest → expand series → download
 swift run AO3ArchiverApp     # SwiftUI gallery over the synced DB (reads AO3_ARCHIVE_DIR)
+./Packaging/make-icon.sh     # render the liquid-glass app icon → Packaging/AppIcon.icns
 ./Packaging/make-app.sh      # assemble a real, double-clickable "AO3 Archiver.app" (M4.1)
 ```
 
@@ -33,6 +34,16 @@ set via the toolbar folder menu) → default `~/Documents/ao3archive`. The CLI u
 default. It's a plain on-disk SQLite file + folder, so it survives app updates and is portable
 — never store real data in `/tmp`. The toolbar folder menu has **Reveal in Finder** since the
 old `~/Library/Application Support` default was invisible in Finder.
+
+**In-app sync facts (M4.2):** `SyncController` runs the tested `SyncEngine` off-main with live
+progress; `SyncSheet` collects creds → `CredentialStore` (Keychain). **Index is separated from
+download** — default sync is index-only (commits lightweight bookmark records per page, no
+EPUBs); EPUBs download per-work on demand (detail panel) or via a bulk toggle. The gallery
+**reloads live as pages index and on any end** (incl. cancel/fail) so a rate-limited partial
+index is shown, not lost. A long index *will* hit AO3's throttle — `AO3Client.onRateLimit`
+surfaces the backoff (banner + activity feed) so it doesn't look stalled; `BlurbParser.lastPageNumber`
+gives "page N of T". Politeness interval is user-adjustable. **Index is not yet resumable**
+(re-running restarts at page 1 — idempotent but re-fetches; a resume-from-page is a TODO).
 
 > **Headless caveat:** the SwiftUI gallery **compiles** here but can't be *run/rendered*
 > without a window server, so the view layer is compile-verified only — the user runs it and
@@ -80,9 +91,13 @@ Sources/AO3Kit/        reusable core the SwiftUI app will sit on
   Models.swift         WorkBlurb, BookmarkKind
   ArchivePaths.swift   on-disk epub filename/sanitization
 Sources/ao3archiver/   CLI driver: runs a bounded SyncEngine pass (top-level code; not @main)
-Sources/AO3ArchiverApp/  M2 SwiftUI gallery (thin Views over GalleryViewModel): App entry,
-                       GalleryView, FilterSidebar, WorkCardView (metadata card), WorkDetailView,
-                       Theme (Liquid Glass helpers). SwiftPM executable, not a .app bundle yet.
+Sources/AO3ArchiverApp/  SwiftUI gallery + in-app sync (thin Views over the tested model):
+                       App entry, GalleryView, FilterSidebar, WorkCardView (metadata card),
+                       WorkDetailView (incl. per-work download), Theme (Liquid Glass helpers),
+                       SyncController/SyncSheet (in-app sync + progress), CredentialStore (cookie
+                       in Keychain).
+Packaging/             make-app.sh (assemble the .app bundle), Info.plist, IconGen.swift +
+                       make-icon.sh (CoreGraphics liquid-glass app icon → AppIcon.icns)
 Sources/selftest/      headless assertions (parser + Store + gallery model) without XCTest
 Tests/AO3KitTests/     swift-testing suite + Fixtures/ (real captured AO3 HTML):
                        works_listing, bookmarks_page, series_card, series_page

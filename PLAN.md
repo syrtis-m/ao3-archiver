@@ -507,17 +507,22 @@ facets.
   distribution concern). Launched as a bundle it's a normal foreground app, so the
   bare-`swift run` runtime nudges become belt-and-suspenders. App icon still TODO.
 - **M4.2 — In-app sync: ✅ done.** `SyncController` (@MainActor @Observable) runs the tested
-  `SyncEngine` off the main actor with live progress + cancel; `SyncSheet` collects
-  username/cookie and shows progress; writes through the app's `Store` so the gallery reload
-  sees new rows. **M4.4 (cookie in Keychain) folded in:** `CredentialStore` keeps the
-  username + `_otwarchive_session` cookie in the macOS Keychain. (Rate-limit status surfacing
-  is partial — the engine logs it; piping it into the sheet is a small follow-up.)
-- **M4.3 — Folder picker: ✅ done.** `NSOpenPanel` to choose the archive folder, persisted as
-  a plain path in UserDefaults (non-sandboxed, so no security-scoped bookmark needed);
-  `AO3_ARCHIVE_DIR` overrides for dev. Also fixed the double-clicked "SQLite error 14" (create
-  the folder before opening the db).
-- **M4.5 — Glass polish (next in M4).** `glassEffectContainer` grouping, animated filter
-  transitions, refined selection/hover, empty/error/rate-limit states; app icon. (No
+  `SyncEngine` off the main actor; `SyncSheet` collects username/cookie and shows **live
+  progress** — page-of-total bar (`BlurbParser.lastPageNumber`), a **rate-limit banner**
+  (`AO3Client.onRateLimit`, so a backoff doesn't look like a stall), and a torrent-style
+  activity feed. **M4.4 (cookie in Keychain) folded in** (`CredentialStore`). **Index is
+  separated from download**: default sync is index-only (lightweight bookmark records per
+  page, committed live so the gallery grows as it indexes and partial/cancelled runs are kept);
+  EPUBs download **per-work on demand** (detail panel) or via a bulk toggle. Politeness interval
+  is user-adjustable. *Not yet resumable* — re-running the index restarts at page 1 (TODO:
+  resume-from-page, important for ~130-page accounts AO3 throttles).
+- **M4.3 — Folder picker: ✅ done.** `NSOpenPanel` → plain path in UserDefaults (non-sandboxed,
+  no security-scoped bookmark needed); `AO3_ARCHIVE_DIR` overrides. Default is the **visible**
+  `~/Documents/ao3archive` (shared by app + CLI), with a **Reveal in Finder** folder menu. Also
+  fixed the double-clicked "SQLite error 14" (create the folder before opening the db).
+- **M4.5 — Glass polish (partly done).** ✅ Liquid-glass **app icon** (CoreGraphics, headless;
+  `Packaging/IconGen.swift` + `make-icon.sh`). Remaining: `glassEffectContainer` grouping,
+  animated filter transitions, refined selection/hover, polished empty/error states. (No
   thumbnail cache — AO3 EPUBs have no covers.)
 
 ### M5 — Hardening

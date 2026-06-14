@@ -4,10 +4,12 @@ A native macOS app (in progress) that backs up your AO3 bookmarks as `.epub` fil
 a fast, dark, liquid-glass gallery and full local filtering. See [PLAN.md](PLAN.md) for
 the full design and roadmap.
 
-## Status: M2 — gallery MVP (done)
+## Status: M2 gallery + M3.0 perf + M4 packaging (in progress)
 
-M0 de-risked the core mechanics; M1 built the backup engine; **M2** adds the dark, Liquid
-Glass SwiftUI gallery over it. Runnable today as a CLI (sync) + a SwiftUI app (browse):
+M0 de-risked the core mechanics; M1 built the backup engine; **M2** added the dark Liquid
+Glass gallery; **M3.0** memoized the filter pipeline for scale; **M4 (packaging)** turned it
+into a real, double-clickable `.app` you can **sync and browse entirely from the GUI** — no
+terminal. You can run it as a CLI (sync) and/or the SwiftUI app (sync + browse):
 
 - **`AO3Kit`** — the reusable core the SwiftUI app will sit on:
   - `AO3Client` — the only networked component. Polite single-flight **rate limiter**,
@@ -32,9 +34,16 @@ Glass SwiftUI gallery over it. Runnable today as a CLI (sync) + a SwiftUI app (b
     it's unit-tested): `WorkListItem`, a fan-out-safe `fetchAllListItems()` join, and a pure
     `GalleryFilter`/`GallerySort`/`Facets` engine behind an `@Observable` view model.
 - **`ao3archiver`** — CLI that runs a real bounded sync into a SQLite DB + archive folder.
-- **`AO3ArchiverApp`** — the **M2 SwiftUI gallery**: dark Liquid Glass, a glass filter
-  sidebar with live facet counts, live search, sort, and a detail inspector (open in Books,
-  reveal in Finder, view on AO3; series show their member works in order). The centerpiece
+- **`AO3ArchiverApp`** — the SwiftUI gallery, with **in-app sync**: a Sync sheet takes your
+  username + `_otwarchive_session` cookie (stored in the **Keychain**) and runs the engine
+  with live progress — page-of-total bar, a rate-limit banner (so a backoff doesn't look like
+  a stall), and an activity feed; the bookmark list builds up **live** as it indexes. Index
+  is separated from download: by default it just records the lightweight metadata (fast,
+  gentle on AO3), and you **download EPUBs per-work on demand** from a work's detail panel (or
+  enable bulk download). A folder menu (Reveal in Finder / Choose Folder) manages the archive
+  location (default `~/Documents/ao3archive`). Dark Liquid Glass throughout, with a glass
+  filter sidebar with live facet counts, live search, sort, and a detail inspector (open in
+  Books, reveal in Finder, view on AO3; series show their member works in order). The centerpiece
   is a rich **metadata card** — title, author, AO3 colour-coded symbols (rating / category /
   warnings / completion), tag pills grouped by type, stats, summary, and your own bookmark
   tags/notes — *not* a book cover (AO3 EPUBs have none, and metadata is what you browse on).
@@ -75,22 +84,29 @@ Note the *index* pass re-reads pages 1…`AO3_MAX_PAGES` each run; it's download
 fetches, that accumulate across runs — so set `AO3_MAX_PAGES` wide rather than expecting
 deep pages to be reached a few at a time.
 
-### Browse it (the app)
+### The app (sync + browse)
 
-Once you've synced, open the gallery over the same archive folder:
+Build a real, double-clickable app (needs the macOS 26 SDK / Xcode 26):
 
 ```sh
-AO3_ARCHIVE_DIR=/path/to/archive swift run AO3ArchiverApp
+./Packaging/make-icon.sh    # once: render the app icon → AppIcon.icns
+./Packaging/make-app.sh     # assemble "build/AO3 Archiver.app"
+open "build/AO3 Archiver.app"
 ```
 
-A dark Liquid Glass window with a filter sidebar (bookmark type, rating, completion,
-download state, fandom — each with live counts), a search field, sort control, and a
-metadata-card gallery; click a card for the detail inspector. The app is **read-only** in
-M2 (syncing stays in the CLI). Building the app needs the macOS 26 SDK (Xcode 26).
+Or run it unbundled for dev: `swift run AO3ArchiverApp` (works, but as a bare executable it
+needs runtime nudges for keyboard focus/resize; the bundle is the real thing).
+
+In the app: click the **folder menu** to choose your archive folder (default
+`~/Documents/ao3archive`), then **Sync** — paste your AO3 username and (optionally) your
+`_otwarchive_session` cookie, and watch the bookmark list build live. By default sync is
+**index-only** (just the metadata list, fast and gentle); flip on "Download EPUBs" for bulk,
+or open any work and hit **Download EPUB** to grab one on demand. Then browse: a glass filter
+sidebar with live counts, search, sort, and the metadata-card gallery.
 
 Getting the cookie: log in to AO3 in your browser → DevTools → Application/Storage →
-Cookies → `https://archiveofourown.org` → copy the **value** of `_otwarchive_session`.
-It's only ever sent to AO3 and never written to disk by this tool.
+Cookies → `https://archiveofourown.org` → copy the **value** of `_otwarchive_session`. The
+app stores it in the macOS **Keychain**; it's only ever sent to AO3.
 
 ### Configuration (environment variables)
 

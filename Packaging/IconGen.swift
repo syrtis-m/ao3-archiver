@@ -1,6 +1,7 @@
-// Renders the app icon with CoreGraphics (headless — no display needed): a dark
-// liquid-glass squircle with a gradient, a glossy top highlight, and a frosted bookmark
-// glyph. Run via `swift Packaging/IconGen.swift Packaging/icon_1024.png`.
+// Renders the app icon with CoreGraphics (headless — no display needed). Liquid-glass, not
+// skeuomorphic: a luminous glass squircle with a soft specular reflection, and a *translucent*
+// glass bookmark that the gradient refracts through, defined by a bright rim-light + specular
+// highlight rather than a solid fill. Run: `swift Packaging/IconGen.swift out.png`.
 import Foundation
 import CoreGraphics
 import ImageIO
@@ -12,54 +13,57 @@ let space = CGColorSpace(name: CGColorSpace.sRGB)!
 let ctx = CGContext(data: nil, width: Int(S), height: Int(S), bitsPerComponent: 8,
                     bytesPerRow: 0, space: space,
                     bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
-
 func rgba(_ r: CGFloat, _ g: CGFloat, _ b: CGFloat, _ a: CGFloat = 1) -> CGColor {
     CGColor(colorSpace: space, components: [r, g, b, a])!
 }
+func grad(_ stops: [(CGFloat, CGColor)]) -> CGGradient {
+    CGGradient(colorsSpace: space, colors: stops.map { $0.1 } as CFArray,
+               locations: stops.map { $0.0 })!
+}
 
-// macOS icon grid: rounded square inset from the canvas edges, with a soft drop shadow.
 let margin: CGFloat = 100
 let rect = CGRect(x: margin, y: margin, width: S - 2 * margin, height: S - 2 * margin)
-let radius = rect.width * 0.225
+let radius = rect.width * 0.235
 let squircle = CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil)
 
-// Drop shadow under the tile.
+// Subtle contact shadow (glass floating, not an object dropped on a surface).
 ctx.saveGState()
-ctx.setShadow(offset: CGSize(width: 0, height: -18), blur: 50, color: rgba(0, 0, 0, 0.45))
+ctx.setShadow(offset: CGSize(width: 0, height: -14), blur: 34, color: rgba(0, 0, 0, 0.33))
 ctx.addPath(squircle); ctx.setFillColor(rgba(0, 0, 0, 1)); ctx.fillPath()
 ctx.restoreGState()
 
-// Base gradient: indigo (top) → teal (bottom).
 ctx.saveGState()
 ctx.addPath(squircle); ctx.clip()
-let base = CGGradient(colorsSpace: space, colors: [
-    rgba(0.36, 0.29, 0.64),   // indigo
-    rgba(0.16, 0.34, 0.58),   // blue
-    rgba(0.13, 0.45, 0.52),   // teal
-] as CFArray, locations: [0, 0.55, 1])!
-ctx.drawLinearGradient(base, start: CGPoint(x: rect.minX, y: rect.maxY),
-                       end: CGPoint(x: rect.maxX, y: rect.minY), options: [])
 
-// Glossy top highlight — the glass sheen.
-let gloss = CGGradient(colorsSpace: space, colors: [
-    rgba(1, 1, 1, 0.30), rgba(1, 1, 1, 0.0),
-] as CFArray, locations: [0, 1])!
-ctx.drawLinearGradient(gloss, start: CGPoint(x: rect.midX, y: rect.maxY),
-                       end: CGPoint(x: rect.midX, y: rect.midY + rect.height * 0.05), options: [])
+// Luminous base gradient: violet (top-left) → blue → cyan-teal (bottom-right).
+ctx.drawLinearGradient(grad([
+    (0,   rgba(0.46, 0.40, 0.82)),
+    (0.5, rgba(0.27, 0.45, 0.80)),
+    (1,   rgba(0.22, 0.62, 0.70)),
+]), start: CGPoint(x: rect.minX, y: rect.maxY), end: CGPoint(x: rect.maxX, y: rect.minY), options: [])
+
+// Soft specular reflection — a glass sheen pooling in the upper-left.
+let reflection = grad([(0, rgba(1, 1, 1, 0.34)), (1, rgba(1, 1, 1, 0))])
+ctx.drawRadialGradient(reflection,
+    startCenter: CGPoint(x: rect.minX + rect.width * 0.32, y: rect.maxY - rect.height * 0.18), startRadius: 0,
+    endCenter: CGPoint(x: rect.minX + rect.width * 0.30, y: rect.maxY - rect.height * 0.20),
+    endRadius: rect.width * 0.62, options: [])
+// A faint darkening toward the bottom edge for glass depth.
+ctx.drawLinearGradient(grad([(0, rgba(0, 0, 0, 0)), (1, rgba(0.04, 0.06, 0.16, 0.28))]),
+    start: CGPoint(x: rect.midX, y: rect.midY), end: CGPoint(x: rect.midX, y: rect.minY), options: [])
 ctx.restoreGState()
 
-// Glass edge: a bright inner stroke + a faint outer ring.
+// Bright thin glass rim around the tile.
 ctx.saveGState()
-ctx.addPath(squircle); ctx.setStrokeColor(rgba(1, 1, 1, 0.22)); ctx.setLineWidth(4)
-ctx.strokePath()
+ctx.addPath(squircle); ctx.setStrokeColor(rgba(1, 1, 1, 0.30)); ctx.setLineWidth(3); ctx.strokePath()
 ctx.restoreGState()
 
-// Frosted bookmark glyph: tall rounded body with a V-notch at the bottom.
+// Bookmark path: tall rounded body with a V-notch.
 func bookmarkPath() -> CGPath {
     let bw: CGFloat = 300, cx = S / 2
-    let topY: CGFloat = S / 2 + 230, botY: CGFloat = S / 2 - 250
+    let topY: CGFloat = S / 2 + 232, botY: CGFloat = S / 2 - 248
     let left = cx - bw / 2, right = cx + bw / 2
-    let r: CGFloat = 52, notch: CGFloat = 105
+    let r: CGFloat = 54, notch: CGFloat = 104
     let p = CGMutablePath()
     p.move(to: CGPoint(x: left, y: botY))
     p.addLine(to: CGPoint(x: left, y: topY - r))
@@ -67,29 +71,33 @@ func bookmarkPath() -> CGPath {
     p.addLine(to: CGPoint(x: right - r, y: topY))
     p.addQuadCurve(to: CGPoint(x: right, y: topY - r), control: CGPoint(x: right, y: topY))
     p.addLine(to: CGPoint(x: right, y: botY))
-    p.addLine(to: CGPoint(x: cx, y: botY + notch))   // notch peak
+    p.addLine(to: CGPoint(x: cx, y: botY + notch))
     p.closeSubpath()
     return p
 }
 let mark = bookmarkPath()
+let markTop = S / 2 + 232, markBot = S / 2 - 248
 
-// Soft glow beneath the glyph.
-ctx.saveGState()
-ctx.setShadow(offset: .zero, blur: 36, color: rgba(0.5, 0.85, 1.0, 0.55))
-ctx.addPath(mark); ctx.setFillColor(rgba(1, 1, 1, 1)); ctx.fillPath()
-ctx.restoreGState()
-
-// The glyph itself — frosted white with a subtle vertical gradient.
+// Translucent glass body — low alpha so the tile gradient refracts through it; brighter at
+// the top where light enters. No opaque fill, no coloured glow (that's the skeuomorphic look).
 ctx.saveGState()
 ctx.addPath(mark); ctx.clip()
-let glass = CGGradient(colorsSpace: space, colors: [
-    rgba(1, 1, 1, 0.97), rgba(0.85, 0.93, 1.0, 0.9),
-] as CFArray, locations: [0, 1])!
-ctx.drawLinearGradient(glass, start: CGPoint(x: S / 2, y: S / 2 + 230),
-                       end: CGPoint(x: S / 2, y: S / 2 - 250), options: [])
+ctx.drawLinearGradient(grad([
+    (0,    rgba(1, 1, 1, 0.42)),
+    (0.45, rgba(1, 1, 1, 0.16)),
+    (1,    rgba(1, 1, 1, 0.10)),
+]), start: CGPoint(x: S / 2, y: markTop), end: CGPoint(x: S / 2, y: markBot), options: [])
+// A crisp specular streak across the top — light catching the glass edge.
+ctx.drawLinearGradient(grad([(0, rgba(1, 1, 1, 0.55)), (1, rgba(1, 1, 1, 0))]),
+    start: CGPoint(x: S / 2, y: markTop), end: CGPoint(x: S / 2, y: markTop - 150), options: [])
 ctx.restoreGState()
 
-// Write PNG.
+// Bright rim-light defines the glass edge (this carries the shape, not the fill).
+ctx.saveGState()
+ctx.addPath(mark)
+ctx.setStrokeColor(rgba(1, 1, 1, 0.85)); ctx.setLineWidth(7); ctx.setLineJoin(.round); ctx.strokePath()
+ctx.restoreGState()
+
 guard let image = ctx.makeImage(),
       let dest = CGImageDestinationCreateWithURL(
         URL(fileURLWithPath: outPath) as CFURL, UTType.png.identifier as CFString, 1, nil)
