@@ -21,7 +21,7 @@ struct GalleryView: View {
     var body: some View {
         NavigationSplitView {
             FilterSidebar(vm: vm)
-                .frame(minWidth: 230)
+                .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 360)
         } detail: {
             gallery
                 .navigationTitle("Bookmarks")

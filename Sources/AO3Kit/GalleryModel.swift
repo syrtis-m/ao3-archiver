@@ -275,6 +275,8 @@ public struct GalleryFilter: Sendable, Equatable {
     public var excludeFandoms: Set<String> = []
     public var ratings: Set<String> = []
     public var excludeRatings: Set<String> = []
+    public var categories: Set<String> = []
+    public var excludeCategories: Set<String> = []
     public var completion: CompletionFilter = .any
     public var download: DownloadFilter = .any
     public var searchText: String = ""
@@ -285,6 +287,7 @@ public struct GalleryFilter: Sendable, Equatable {
         !bookmarkTypes.isEmpty || !excludeBookmarkTypes.isEmpty
             || !fandoms.isEmpty || !excludeFandoms.isEmpty
             || !ratings.isEmpty || !excludeRatings.isEmpty
+            || !categories.isEmpty || !excludeCategories.isEmpty
             || completion != .any || download != .any
             || !searchText.trimmingCharacters(in: .whitespaces).isEmpty
     }
@@ -298,6 +301,9 @@ public struct GalleryFilter: Sendable, Equatable {
         if let r = item.rating, excludeRatings.contains(r) { return false }
         // Download / archive state (single-select).
         if !download.matches(item.downloadState) { return false }
+        // Category (matches against the item's split categories, ANY overlap).
+        if !categories.isEmpty, categories.isDisjoint(with: item.categories) { return false }
+        if !excludeCategories.isEmpty, !excludeCategories.isDisjoint(with: item.categories) { return false }
         // Fandom (item passes include if it has ANY included fandom; fails if it has ANY excluded).
         if !fandoms.isEmpty, fandoms.isDisjoint(with: item.fandoms) { return false }
         if !excludeFandoms.isEmpty, !excludeFandoms.isDisjoint(with: item.fandoms) { return false }
@@ -324,6 +330,9 @@ public struct GalleryFilter: Sendable, Equatable {
     }
     public func clearingRatings() -> GalleryFilter {
         var c = self; c.ratings = []; c.excludeRatings = []; return c
+    }
+    public func clearingCategories() -> GalleryFilter {
+        var c = self; c.categories = []; c.excludeCategories = []; return c
     }
     public func clearingFandoms() -> GalleryFilter {
         var c = self; c.fandoms = []; c.excludeFandoms = []; return c
@@ -376,6 +385,9 @@ public enum Facets {
     public static func ratings(_ items: [WorkListItem]) -> [(name: String, count: Int)] {
         counts({ $0.rating.map { [$0] } ?? [] }, in: items)
     }
+    public static func categories(_ items: [WorkListItem]) -> [(name: String, count: Int)] {
+        counts({ $0.categories }, in: items)
+    }
     public static func bookmarkTypes(_ items: [WorkListItem]) -> [(name: String, count: Int)] {
         counts({ [$0.kind.rawValue] }, in: items)
     }
@@ -415,6 +427,9 @@ public final class GalleryViewModel {
     public var ratingFacets: [(name: String, count: Int)] {
         Facets.ratings(filter.clearingRatings().apply(to: allItems))
     }
+    public var categoryFacets: [(name: String, count: Int)] {
+        Facets.categories(filter.clearingCategories().apply(to: allItems))
+    }
     public var typeFacets: [(name: String, count: Int)] {
         Facets.bookmarkTypes(filter.clearingBookmarkTypes().apply(to: allItems))
     }
@@ -434,10 +449,12 @@ public final class GalleryViewModel {
     // "include" and "exclude" filter sets.
     public func typeState(_ k: BookmarkKind) -> FacetState { state(filter.bookmarkTypes, filter.excludeBookmarkTypes, k) }
     public func ratingState(_ r: String) -> FacetState { state(filter.ratings, filter.excludeRatings, r) }
+    public func categoryState(_ c: String) -> FacetState { state(filter.categories, filter.excludeCategories, c) }
     public func fandomState(_ f: String) -> FacetState { state(filter.fandoms, filter.excludeFandoms, f) }
 
     public func cycleType(_ k: BookmarkKind) { cycle(\.bookmarkTypes, \.excludeBookmarkTypes, k) }
     public func cycleRating(_ r: String) { cycle(\.ratings, \.excludeRatings, r) }
+    public func cycleCategory(_ c: String) { cycle(\.categories, \.excludeCategories, c) }
     public func cycleFandom(_ f: String) { cycle(\.fandoms, \.excludeFandoms, f) }
 
     private func toggle<T: Hashable>(_ set: inout Set<T>, _ v: T) {

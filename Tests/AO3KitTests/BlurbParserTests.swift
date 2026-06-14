@@ -417,6 +417,15 @@ import Foundation
         #expect(vm.visibleCount == vm.totalCount)
     }
 
+    @Test func categoryFilterIncludeExclude() throws {
+        let (_, items) = try loadedItems()
+        let cat = try #require(Facets.categories(items).first?.name)
+        var f = GalleryFilter(); f.categories = [cat]
+        #expect(f.apply(to: items).allSatisfy { $0.categories.contains(cat) })
+        f = GalleryFilter(); f.excludeCategories = [cat]
+        #expect(f.apply(to: items).allSatisfy { !$0.categories.contains(cat) })
+    }
+
     @Test func downloadFilterSingleSelect() throws {
         let (_, items) = try loadedItems()
         var f = GalleryFilter(); f.download = .offsite

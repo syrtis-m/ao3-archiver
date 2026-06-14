@@ -20,10 +20,11 @@ struct AO3ArchiverApp: App {
         WindowGroup {
             RootView(vm: vm, archiveRoot: archiveRoot)
                 .preferredColorScheme(.dark)
-                .frame(minWidth: 900, minHeight: 600)
+                .frame(minWidth: 760, minHeight: 520)
         }
         .windowStyle(.titleBar)
         .windowToolbarStyle(.unified)
+        .windowResizability(.contentMinSize)   // resize freely above the content's minimum
     }
 }
 

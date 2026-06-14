@@ -119,18 +119,9 @@ func categoryStyle(_ category: String) -> AnyShapeStyle {
     }
 }
 
-/// Legible text colour for a category badge (gradients use primary text).
-func categoryTextColor(_ category: String) -> Color {
-    switch category {
-    case "Gen": return .green
-    case "F/F": return .red
-    case "M/M": return .blue
-    case "Other": return .gray
-    default:    return .primary       // F/M, Multi: gradient fill, neutral text
-    }
-}
-
-/// A category capsule supporting solid or gradient tint (for F/M and Multi).
+/// A category capsule supporting solid or gradient tint (for F/M and Multi). The text uses
+/// the same tint as the fill/border — like the other badges — so gradients read as coloured
+/// text, not white.
 struct CategoryBadge: View {
     let category: String
 
@@ -142,8 +133,8 @@ struct CategoryBadge: View {
             .fixedSize()
             .padding(.horizontal, 7)
             .padding(.vertical, 3)
-            .foregroundStyle(categoryTextColor(category))
-            .background(style.opacity(0.22), in: Capsule())
+            .foregroundStyle(style)
+            .background(style.opacity(0.18), in: Capsule())
             .overlay(Capsule().strokeBorder(style, lineWidth: 1))
     }
 }

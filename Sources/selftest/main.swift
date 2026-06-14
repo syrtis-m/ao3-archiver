@@ -325,6 +325,17 @@ do {
         vm2.cycleFandom(aFandom)
         check("cycle 3 → neutral (full set)", vm2.fandomState(aFandom) == .neutral && vm2.visibleCount == 20)
 
+        print("Gallery — category filter")
+        if let aCat = Facets.categories(items).first?.name {
+            var cf = GalleryFilter(); cf.categories = [aCat]
+            check("include category keeps only items with it",
+                  cf.apply(to: items).allSatisfy { $0.categories.contains(aCat) })
+            check("category facets exist", !Facets.categories(items).isEmpty)
+            cf = GalleryFilter(); cf.excludeCategories = [aCat]
+            check("exclude category drops items with it",
+                  cf.apply(to: items).allSatisfy { !$0.categories.contains(aCat) })
+        }
+
         print("Gallery — download filter (single-select)")
         var d = GalleryFilter(); d.download = .offsite
         check("offsite → the external item", d.apply(to: items).map(\.kind) == [.external])

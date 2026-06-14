@@ -27,11 +27,17 @@ struct FilterSidebar: View {
                 facetGroup("Rating", rows: vm.ratingFacets,
                            state: { vm.ratingState($0) }, cycle: { vm.cycleRating($0) })
 
+                facetGroup("Category", rows: vm.categoryFacets,
+                           state: { vm.categoryState($0) }, cycle: { vm.cycleCategory($0) })
+
+                // Single-select segmented controls. Kept to a few short labels so they fit
+                // the sidebar without overflowing (off-site is reachable via Bookmark type →
+                // External).
                 segmentedGroup("Completion", selection: $vm.filter.completion,
                                cases: CompletionFilter.allCases, label: completionLabel)
 
                 segmentedGroup("Download", selection: $vm.filter.download,
-                               cases: DownloadFilter.allCases, label: { $0.label })
+                               cases: [.any, .saved, .notDownloaded], label: { $0.label })
 
                 facetGroup("Fandom", rows: vm.fandomFacets,
                            state: { vm.fandomState($0) }, cycle: { vm.cycleFandom($0) }, limit: 25)
@@ -91,6 +97,7 @@ struct FilterSidebar: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
+            .frame(maxWidth: .infinity)   // fill the column; don't force it wider than the viewport
         }
     }
 
@@ -111,7 +118,7 @@ struct FilterSidebar: View {
 
     private func completionLabel(_ c: CompletionFilter) -> String {
         switch c {
-        case .any: return "Any"; case .complete: return "Complete"; case .wip: return "In progress"
+        case .any: return "Any"; case .complete: return "Complete"; case .wip: return "WIP"
         }
     }
 }
