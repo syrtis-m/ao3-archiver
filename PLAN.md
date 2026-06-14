@@ -321,7 +321,10 @@ filter and make them all instant and freely combinable.
 - Crossovers (include/exclude/only)
 - Completion status (complete / WIP)
 - Word count range (min/max)
-- Date updated range; date published range
+- Date updated range; ~~date published range~~ *(out of scope: the bookmarks listing blurb
+  exposes only one `p.datetime` — the **updated** date — so there's no published date to range
+  on without an extra per-work fetch. Date-updated + date-bookmarked ranges ship; date-published
+  would need a hydration pass we deliberately avoid for politeness.)*
 - Language
 - Hits / Kudos / Comments / Bookmarks count ranges
 - Free-text search across title, author, summary, tags
@@ -335,9 +338,10 @@ filter and make them all instant and freely combinable.
 - Private / public bookmarks
 - Date bookmarked range
 
-**Sort:** by date bookmarked, date updated, date posted, title, author, word count,
-kudos, hits, comments, bookmarks count, and (improvement) **download status** and
-**local file size**.
+**Sort:** by date bookmarked, date updated, title, author, word count, kudos, hits,
+comments, bookmarks count — all shipped. *Date posted* is out of scope (no published date in
+the listing, as above). Still TODO (improvement): **download status** and **local file size**
+(needs epub byte size stored at download — the one M3.5 leftover).
 
 **Improvements beyond AO3:**
 - All facets combine with live counts (faceted search), tag include **and** exclude
@@ -456,9 +460,12 @@ RAM and only fall back to SQL when the result set is huge.
   unnecessary — packaging is M4.
 ### M3 — Full filter parity (done)
 
-Goal: **every** filter in §7, include/exclude, ranges, saved presets, snappy at real scale.
-Built on the M3.0 memoized working set (computed once per (filter, sort, allItems) change,
-proven by a 2000-item scale test in both runners).
+Goal: every filter in §7 that the **bookmarks listing actually exposes**, include/exclude,
+ranges, saved presets, snappy at real scale. Built on the M3.0 memoized working set (computed
+once per (filter, sort, allItems) change, proven by a 2000-item scale test in both runners).
+(Out of scope, by data availability: date-*published* range and date-posted sort — the
+listing blurb has only the updated date; getting published dates would need a per-work
+hydration pass we avoid for politeness.)
 
 - **M3.0 — Perf foundation (done).** `GalleryViewModel` memoizes `visibleItems` + all facet
   counts via an `@ObservationIgnored` cache keyed by `MemoKey(filter, sort, gen)`; a

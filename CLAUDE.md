@@ -11,8 +11,10 @@ with a dark, liquid-glass, snappy gallery and full local filtering. **M0** (core
 Swift package that pages through bookmarks, ingests every card (work / external / series)
 into a GRDB/SQLite store with FTS5, expands bookmarked series, runs a resumable rate-limited
 EPUB download queue, and presents it all in a dark Liquid Glass SwiftUI gallery with
-in-memory filtering/search/sort — every AO3 facet (tri-state include/exclude tags, numeric +
-date ranges, derived/bookmark booleans, saved presets), memoized and proven snappy at scale.
+in-memory filtering/search/sort — every facet the bookmarks listing exposes (tri-state
+include/exclude tags, numeric + date-updated/-bookmarked ranges, derived/bookmark booleans,
+saved presets), memoized and proven snappy at scale. (Date-*published* range / date-posted
+sort are out of scope: the listing blurb carries only the updated date — no per-work fetch.)
 
 ## Build / test / run
 

@@ -7,9 +7,10 @@ the full design and roadmap.
 ## Status: M3 full filter parity + M4 packaging (in progress)
 
 M0 de-risked the core mechanics; M1 built the backup engine; **M2** added the dark Liquid
-Glass gallery; **M3** delivered full filter parity (every AO3 facet, plus tri-state
-include/exclude, ranges, derived/bookmark filters, and saved presets — memoized and proven
-snappy at scale); **M4 (packaging)** turned it into a real, double-clickable `.app` you can
+Glass gallery; **M3** delivered full filter parity (every facet the bookmarks listing
+exposes, plus tri-state include/exclude, ranges, derived/bookmark filters, and saved presets
+— memoized and proven snappy at scale); **M4 (packaging)** turned it into a real,
+double-clickable `.app` you can
 **sync and browse entirely from the GUI** — no terminal. You can run it as a CLI (sync)
 and/or the SwiftUI app (sync + browse):
 

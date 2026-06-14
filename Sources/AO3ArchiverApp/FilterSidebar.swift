@@ -235,6 +235,9 @@ struct FilterSidebar: View {
     }
 
     /// A checkbox that enables one end of a date range, revealing a compact DatePicker.
+    /// (Caveat: `bookmarkedDate` is parsed UTC but the picker emits local midnight, so a bound
+    /// can be off by the UTC offset at the exact day boundary — cosmetic; comparisons are all
+    /// in unix seconds and internally consistent.)
     @ViewBuilder
     private func dateEndPicker(_ field: RangeField,
                               _ end: WritableKeyPath<NumericBound, Double?>, label: String) -> some View {
