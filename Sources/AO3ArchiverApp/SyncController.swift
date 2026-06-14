@@ -29,6 +29,33 @@ final class SyncController {
     /// indexed is shown.
     private var reload: () -> Void = {}
 
+    /// Coalesces the live "grow the gallery" reloads (M6/P3-B). Each `reload()` is a full
+    /// `fetchAllListItems` + recompute; at scale that rebuild is expensive, and a burst of
+    /// pages/downloads would fire one per event. We cap it to one reload per ~1.2s — the list
+    /// still grows visibly, just in batches — and `endRun` does a final immediate flush so the
+    /// complete result is never left behind.
+    private var pendingReload: Task<Void, Never>?
+    private var lastReload: Date = .distantPast
+    private static let reloadInterval: TimeInterval = 1.2
+
+    private func scheduleReload() {
+        guard pendingReload == nil else { return }   // one already queued for this window
+        let delay = max(0, Self.reloadInterval - Date().timeIntervalSince(lastReload))
+        pendingReload = Task { @MainActor [weak self] in
+            if delay > 0 { try? await Task.sleep(for: .seconds(delay)) }
+            guard let self, !Task.isCancelled else { return }
+            self.pendingReload = nil
+            self.lastReload = Date()
+            self.reload()
+        }
+    }
+
+    private func flushReload() {
+        pendingReload?.cancel(); pendingReload = nil
+        lastReload = Date()
+        reload()
+    }
+
     var isRunning: Bool { phase == .running }
 
     /// `downloadEPUBs == false` is an **index-only** run: page through bookmarks and record
@@ -96,7 +123,7 @@ final class SyncController {
     private func endRun(_ phase: Phase) {
         self.phase = phase
         rateLimit = nil
-        reload()   // show whatever got indexed, even on cancel/fail
+        flushReload()   // final, immediate — show whatever got indexed, even on cancel/fail
     }
 
     private func noteRateLimit(_ seconds: TimeInterval, attempt: Int, max: Int) {
@@ -111,7 +138,7 @@ final class SyncController {
             currentPage = n; totalPages = total
             statusLine = "Indexing page \(n)\(total.map { " of \($0)" } ?? "")"
             push("Page \(n)\(total.map { " of \($0)" } ?? ""): \(cards) bookmarks")
-            reload()                        // grow the gallery live as the list is built
+            scheduleReload()                // grow the gallery live (coalesced) as pages index
         case let .expandingSeries(id, members):
             statusLine = "Expanding series"
             push("Series \(id): \(members) works")
@@ -119,7 +146,7 @@ final class SyncController {
             downloaded += 1
             statusLine = "Saved \(downloaded)"
             push("Saved (\(bytes / 1024) KB): \(title)")
-            reload()                        // reflect the saved state in the gallery
+            scheduleReload()                // reflect saved state in the gallery (coalesced)
         case let .downloadFailed(workID, reason):
             failed += 1
             push("Couldn't download \(workID): \(reason)")
