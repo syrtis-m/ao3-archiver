@@ -344,6 +344,28 @@ do {
         var both = GalleryFilter(); both.setInclude(.rating, ["Explicit"]); both.setExclude(.fandom, [aFandom])
         check("include AND exclude compose",
               both.apply(to: items).allSatisfy { $0.rating == "Explicit" && !$0.fandoms.contains(aFandom) })
+        // Multi-value dim: selecting two values is AND — a work must carry every one.
+        if let crossover = items.first(where: { $0.fandoms.count >= 2 }) {
+            let two = Set(crossover.fandoms.prefix(2))
+            var af = GalleryFilter(); af.setInclude(.fandom, two)
+            let andRes = af.apply(to: items)
+            check("multi-value include is AND (work carries all selected fandoms)",
+                  andRes.allSatisfy { Set($0.fandoms).isSuperset(of: two) })
+            check("the source crossover survives its own two fandoms",
+                  andRes.contains { $0.itemID == crossover.itemID })
+            var one = GalleryFilter(); one.setInclude(.fandom, [two.first!])
+            check("AND of two fandoms is no wider than including one",
+                  andRes.count <= one.apply(to: items).count)
+        }
+        // Single-valued dim: selecting two values stays OR (a work has one rating).
+        let twoRatings = Set(Facets.values(for: .rating, in: items).prefix(2).map(\.name))
+        if twoRatings.count == 2 {
+            var rf = GalleryFilter(); rf.setInclude(.rating, twoRatings)
+            let orRes = rf.apply(to: items)
+            check("single-valued include is OR (rating in the selected set)",
+                  orRes.allSatisfy { twoRatings.contains($0.rating ?? "") })
+            check("OR over two ratings keeps something", !orRes.isEmpty)
+        }
 
         print("Gallery — tri-state cycle")
         let vm2 = GalleryViewModel(); vm2.load(from: store)

@@ -372,8 +372,9 @@ import Foundation
     }
 
     /// Faceted-search invariant: selecting one value in a dimension must keep that
-    /// dimension's other values visible (so multi-select OR is reachable from the sidebar),
-    /// while still narrowing the visible item list. Guards against facet self-collapse.
+    /// dimension's other values visible (so a multi-select — AND within a multi-value dim,
+    /// OR within a single-valued one — is reachable from the sidebar), while still
+    /// narrowing the visible item list. Guards against facet self-collapse.
     @Test func facetsDoNotSelfCollapse() throws {
         let (_, items) = try loadedItems()
         let store = try Store(inMemory: true)
@@ -444,6 +445,31 @@ import Foundation
         vm.cycle(.fandom, fandom); #expect(vm.state(.fandom, fandom) == .neutral)
         #expect(vm.visibleCount == vm.totalCount)
         #expect(vm.filter == GalleryFilter())   // neutral leaves no empty set behind (invariant)
+    }
+
+    /// Multi-select within a dimension: AND for multi-value dims (fandom/tags/category — a
+    /// work must carry every selected value), OR for single-valued dims (rating/language/
+    /// type — a work has only one, so AND would match nothing).
+    @Test func multiSelectAndWithinDimension() throws {
+        let (_, items) = try loadedItems()
+
+        // Multi-value: pick a crossover's two fandoms → only works with BOTH survive.
+        let crossover = try #require(items.first { $0.fandoms.count >= 2 })
+        let two = Set(crossover.fandoms.prefix(2))
+        var af = GalleryFilter(); af.setInclude(.fandom, two)
+        let andRes = af.apply(to: items)
+        #expect(andRes.allSatisfy { Set($0.fandoms).isSuperset(of: two) })   // AND
+        #expect(andRes.contains { $0.itemID == crossover.itemID })           // source survives
+        var one = GalleryFilter(); one.setInclude(.fandom, [two.first!])
+        #expect(andRes.count <= one.apply(to: items).count)                  // no wider than one
+
+        // Single-valued: two ratings stay OR (a work matches if its rating is either).
+        let twoRatings = Set(Facets.values(for: .rating, in: items).prefix(2).map(\.name))
+        try #require(twoRatings.count == 2)
+        var rf = GalleryFilter(); rf.setInclude(.rating, twoRatings)
+        let orRes = rf.apply(to: items)
+        #expect(orRes.allSatisfy { twoRatings.contains($0.rating ?? "") })   // OR
+        #expect(!orRes.isEmpty)
     }
 
     @Test func derivedSetIsMemoized() throws {

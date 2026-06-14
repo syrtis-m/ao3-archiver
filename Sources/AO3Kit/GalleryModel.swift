@@ -157,6 +157,17 @@ public enum FacetDimension: String, Sendable, CaseIterable, Hashable, Codable {
         default: return false
         }
     }
+
+    /// Dimensions where an item can carry several values at once (tags, categories). For these,
+    /// multi-selecting includes is **AND** (the work must carry every selected value). The
+    /// single-valued dims (bookmark type, rating, language) can only ever hold one value, so
+    /// multi-selecting them stays **OR** — requiring two ratings at once would match nothing.
+    public var isMultiValue: Bool {
+        switch self {
+        case .bookmarkType, .rating, .language: return false
+        default: return true
+        }
+    }
 }
 
 /// A numeric/date filterable field. Counts are plain ints; dates are compared as unix
@@ -441,7 +452,8 @@ public enum DownloadFilter: String, Sendable, CaseIterable, Codable {
 }
 
 /// A combinable set of gallery filters. Every multi-value dimension lives in one keyed pair
-/// of maps: `include[dim]` (OR within a dim, AND across dims) and `exclude[dim]` (an item
+/// of maps: `include[dim]` (AND across dims; within a multi-value dim AND, within a
+/// single-valued dim OR — see `FacetDimension.isMultiValue`) and `exclude[dim]` (an item
 /// matching any excluded value is dropped). **Invariant: a dim key never maps to an empty
 /// set** — emptying a set removes the key (kept by `cycle`/the mutators), so `==` and
 /// `isActive` stay honest. Exclude wins over include. `Codable` for saved presets.
@@ -486,14 +498,22 @@ public struct GalleryFilter: Sendable, Equatable, Codable {
     }
 
     public func matches(_ item: WorkListItem) -> Bool {
-        // Keyed include/exclude over every dimension. Include: item must carry ANY included
-        // value. Exclude: item must carry NONE. (`where !$0.isEmpty` keeps a stray empty set
+        // Keyed include/exclude over every dimension. Include: item must carry ALL included
+        // values (multi-value dims) or ANY (single-valued dims, see isMultiValue). Exclude:
+        // item must carry NONE. (`where !$0.isEmpty` keeps a stray empty set
         // harmless even though the invariant should prevent one.) We probe each item value
         // against the (small) include/exclude set rather than building a Set per item per
         // dimension — the per-call `Set(item.values(for:))` allocation was a hot-loop cost
         // at 20k×9 (M6/P2). `values(for:)` returns the item's stored arrays directly.
         for (dim, inc) in include where !inc.isEmpty {
-            if !item.values(for: dim).contains(where: inc.contains) { return false }
+            let vals = item.values(for: dim)
+            if dim.isMultiValue {
+                // Multi-value dim: AND — the work must carry every selected value.
+                if !inc.allSatisfy(vals.contains) { return false }
+            } else {
+                // Single-valued dim: OR — the work's one value must be among the selected.
+                if !vals.contains(where: inc.contains) { return false }
+            }
         }
         for (dim, exc) in exclude where !exc.isEmpty {
             if item.values(for: dim).contains(where: exc.contains) { return false }
