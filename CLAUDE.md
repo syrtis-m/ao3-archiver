@@ -16,16 +16,23 @@ presents it all in a dark Liquid Glass SwiftUI gallery with in-memory filtering/
 
 ```sh
 swift build                 # build library + CLI + app
-swift run selftest          # headless parser + Store + gallery-model checks (98 checks)
-swift test                  # swift-testing suite (needs Xcode; 24 tests, 4 suites)
+swift run selftest          # headless parser + Store + gallery-model checks (120 checks)
+swift test                  # swift-testing suite (needs Xcode; 31 tests, 4 suites)
 swift run ao3archiver        # bounded sync: paginate → ingest → expand series → download
-swift run AO3ArchiverApp     # M2 SwiftUI gallery over the synced DB (reads AO3_ARCHIVE_DIR)
+swift run AO3ArchiverApp     # SwiftUI gallery over the synced DB (reads AO3_ARCHIVE_DIR)
 ```
 
 > **Headless caveat:** the SwiftUI gallery **compiles** here but can't be *run/rendered*
-> without a window server, so the view layer is compile-verified only. All gallery logic
-> lives below the SwiftUI line in `AO3Kit` (`GalleryModel.swift`) and is unit-tested — keep
-> it that way: anything with an `if` belongs in the model, not a View.
+> without a window server, so the view layer is compile-verified only — the user runs it and
+> reports back. All gallery logic lives below the SwiftUI line in `AO3Kit`
+> (`GalleryModel.swift`) and is unit-tested — keep it that way: anything with an `if` belongs
+> in the model, not a View.
+
+> **Bare-executable runtime fixes:** run via `swift run` the app has no `.app` bundle, so it
+> needs runtime nudges that a bundled app gets for free — `NSApp.setActivationPolicy(.regular)`
+> + activate (else keystrokes go to the launching terminal and rendering is throttled), and
+> inserting `.resizable` on the `NSWindow` (else `.windowResizability` has nothing to act on).
+> A real `.app` bundle (planned M4) removes all of these.
 
 Auth + config is via environment variables (see README): `AO3_USERNAME`,
 `AO3_SESSION_COOKIE`, `AO3_ARCHIVE_DIR`, `AO3_MIN_INTERVAL`, `AO3_USER_AGENT`,

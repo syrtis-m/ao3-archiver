@@ -444,12 +444,87 @@ RAM and only fall back to SQL when the result set is huge.
   with a comfortable/compact density toggle. *Verification caveat:* the headless build
   environment can compile (`swift build`) but not run/render the SwiftUI layer, so the
   views are compile-verified only; all logic below the SwiftUI line is test-covered.
-- **M3 — Full filter parity:** every facet from §7, include/exclude, ranges, sorts, live
-  counts, saved presets.
-- **M4 — Liquid glass polish:** materials, dark mode, animations, thumbnail cache,
-  empty/error/rate-limit states.
-- **M5 — Hardening:** cookie expiry UX, backoff tuning, deleted-work highlighting,
-  scheduled sync, export/import of the archive folder.
+  *Refinements added through user testing:* AO3 colour-coded corner symbols (rating /
+  category-with-gradients / warnings / completion); **tri-state include/exclude** facets
+  (type / rating / category / fandom) — click to include, again to exclude — instead of
+  AO3's duplicated filter lists; single-select **segmented** completion & download; live
+  search; series detail lists member works in order; tags grouped by type (relationships
+  split out) and capped ~15. The sidebar is a `ScrollView`, not a `List` (a List is
+  NSTableView-backed and reloads mid-event when the filter changes → reentrancy). As a bare
+  `swift run` executable the app needs runtime nudges (`.regular` activation policy for
+  keyboard focus; force `.resizable` on the window) that a real `.app` bundle would make
+  unnecessary — packaging is M4.
+### M3 — Full filter parity (next)
+
+Goal: **every** filter in §7, include/exclude, ranges, saved presets — and prove it stays
+**snappy at real scale** (the user has ~1800 bookmarks; testing so far has been on a 40-item
+DB). Sequenced so the perf foundation and the generic machinery come before the long tail of
+facets.
+
+- **M3.0 — Perf foundation (do first).** Memoize the derived working set: compute
+  `visibleItems` + all facet counts **once per (filter, sort, allItems) change**, not per
+  render/access (today ~4 `O(n)` facet passes per render; M3 makes it ~10). With `@Observable`
+  this means an explicit cache + invalidation (or `@ObservationIgnored` cache keyed by a
+  version stamp). **Add a scale test**: synthesize ~2000 items in `selftest` and assert the
+  join/filter/facet logic holds and stays fast. "Incredibly snappy" is the user's #1
+  requirement and is currently unverified at scale — gate M3 on this.
+- **M3.1 — Generic keyed tag-dimension facets.** ~6 facets (warnings, relationships,
+  characters, freeforms, fandom, your-bookmark-tags) are structurally identical (`[String]`
+  on the item, `Set<String>` include/exclude, same cycle/state/clearing/count). Build **one**
+  generic keyed mechanism instead of hand-writing each; migrate the existing fandom/rating/
+  category onto it where it fits. (Leave the single-select segmented controls — completion,
+  download — as-is; they're genuinely different.)
+- **M3.2 — High-cardinality facet UI.** Characters/relationships/freeforms have *thousands*
+  of values — a flat capped list is useless. Add a **typeahead** (filter-the-facet text
+  field) per large dimension. This is M3's biggest UX item.
+- **M3.3 — Range filters (needs a Store migration).** Word count, kudos, hits, comments,
+  bookmarks (numeric — `updatedAt` is already unix and range-ready); **date updated** and
+  **date bookmarked** ranges. `bookmarkedAt` is human text ("30 May 2026") → parse it into a
+  comparable column at ingest (migration + reparse, with its own test). UI: min/max fields or
+  dual sliders.
+- **M3.4 — Derived & bookmark filters.** Crossovers (fandom count > 1: include/exclude/only),
+  rec'd-only, with/without bookmarker notes, private/public, language.
+- **M3.5 — More sorts.** Local file size (store epub byte size at download), download status.
+- **M3.6 — Saved presets ("Smart Bookmarks").** Make `GalleryFilter` `Codable`; a `preset`
+  table (migration) storing serialized filter+sort; sidebar save/load/delete, applied
+  instantly.
+- *Sequence within M3 by frequency:* warnings / relationships / characters / word-count &
+  date ranges first (common); crossover-only / rec'd / private last (rare). Ship testable
+  increments. All filter/sort/range logic stays below the SwiftUI line and unit-tested.
+
+### M4 — Packaging + Liquid Glass polish
+
+> **Sequencing note (decision for the user):** the `.app` bundle (M4.1) has been hit four
+> times already (keyboard focus, window resize, activation, no folder picker), each patched
+> with a runtime hack. It's low-cost, retires those hacks, and **unblocks the folder picker
+> (M4.3) and in-app sync (M4.2) — which are arguably core to a backup tool, not polish.** It
+> also gives a real, double-clickable testbed for M3. Strong case to pull M4.1–M4.3 **before
+> M3**; left in M4 by default, but call it out.
+
+- **M4.1 — Real `.app` bundle.** Info.plist, bundle id, app icon, sandbox entitlements →
+  double-clickable, Dock icon, app menu, native keyboard focus/resize (removes the bare-exe
+  runtime nudges). Minimal Xcode project or a SwiftPM + bundling step.
+- **M4.2 — In-app sync.** Wire the tested `SyncEngine` into the GUI: a Sync button with live
+  progress (pages, downloads), off the main actor, cancelable; surface the rate-limit "AO3
+  asked us to slow down" status. Today syncing is CLI-only.
+- **M4.3 — Folder picker.** Security-scoped bookmark to choose the archive folder in-app
+  (needs the sandbox from M4.1), replacing `AO3_ARCHIVE_DIR`; persist the bookmark.
+- **M4.4 — Cookie entry UI.** Paste `_otwarchive_session` in Settings; store in the
+  **Keychain** (never env/DB/logs).
+- **M4.5 — Glass polish.** `glassEffectContainer` grouping, animated filter transitions,
+  refined selection/hover, empty/error/rate-limit states. (No thumbnail cache — AO3 EPUBs
+  have no covers.)
+
+### M5 — Hardening
+
+- **M5.1 — Cookie expiry UX.** Detect login redirect / missing username → pause sync, prompt
+  re-paste, resume.
+- **M5.2 — Reconcile & deleted-work highlighting.** Works removed from bookmarks → mark; 404
+  → `deleted_on_ao3`, highlight "your backup is the only copy."
+- **M5.3 — Scheduled background sync** (opt-in), politeness-respecting.
+- **M5.4 — Export/import** the archive folder; backup integrity checks.
+- **M5.5 — Backoff tuning + large-library perf pass** (10k+: virtualization, FTS5 search path
+  when result sets are huge, finish the memoization started in M3.0).
 
 ---
 

@@ -33,11 +33,14 @@ Glass SwiftUI gallery over it. Runnable today as a CLI (sync) + a SwiftUI app (b
     `GalleryFilter`/`GallerySort`/`Facets` engine behind an `@Observable` view model.
 - **`ao3archiver`** — CLI that runs a real bounded sync into a SQLite DB + archive folder.
 - **`AO3ArchiverApp`** — the **M2 SwiftUI gallery**: dark Liquid Glass, a glass filter
-  sidebar with live facet counts (bookmark type / rating / completion / download state /
-  fandom), full-text search, sort, and a detail inspector (open in Books, reveal in Finder,
-  view on AO3). The centerpiece is a rich **metadata card** — title, author, fandoms, tag
-  pills, stats, summary, and your own bookmark tags/notes — *not* a book cover (AO3 EPUBs
-  have none, and metadata is what you actually browse on).
+  sidebar with live facet counts, live search, sort, and a detail inspector (open in Books,
+  reveal in Finder, view on AO3; series show their member works in order). The centerpiece
+  is a rich **metadata card** — title, author, AO3 colour-coded symbols (rating / category /
+  warnings / completion), tag pills grouped by type, stats, summary, and your own bookmark
+  tags/notes — *not* a book cover (AO3 EPUBs have none, and metadata is what you browse on).
+  Facets (bookmark type / rating / category / fandom) are **tri-state**: click to include,
+  again to exclude, again to clear — include and exclude in one list. Completion and download
+  are single-select. The pipeline is in-memory, so filtering/search/sort is instant.
 
 ### Run it
 
@@ -111,8 +114,8 @@ The parser is pinned to **real captured AO3 HTML** in `Tests/AO3KitTests/Fixture
 join, composing filters, sort, facets) are exercised against those same fixtures with a temp
 database — no network, no rendering.
 
-- Full Xcode: `swift test` (swift-testing suite — 24 tests, 4 suites).
-- Command Line Tools only (no Xcode): `swift run selftest` — equivalent assertions (98
+- Full Xcode: `swift test` (swift-testing suite — 31 tests, 4 suites).
+- Command Line Tools only (no Xcode): `swift run selftest` — equivalent assertions (120
   checks), no test framework needed.
 
 > The SwiftUI gallery is **compile-verified** (`swift build`) but its rendering isn't
