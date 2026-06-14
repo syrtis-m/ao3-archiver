@@ -107,9 +107,13 @@ struct GalleryView: View {
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         ToolbarItem(placement: .primaryAction) {
+            // Menu-style + fixedSize so the control stays a compact pop-up (the default
+            // picker chrome stretches and reads as overlapping in a crowded toolbar).
             Picker("Sort", selection: $vm.sort) {
                 ForEach(GallerySort.allCases, id: \.self) { Text($0.label).tag($0) }
             }
+            .pickerStyle(.menu)
+            .fixedSize()
         }
         ToolbarItem(placement: .primaryAction) {
             Button { compact.toggle() } label: {
