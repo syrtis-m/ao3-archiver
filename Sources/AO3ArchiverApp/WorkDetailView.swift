@@ -76,7 +76,9 @@ struct WorkDetailView: View {
 
     @ViewBuilder
     private var actions: some View {
-        HStack(spacing: 10) {
+        // FlowLayout (not HStack) so the buttons wrap to a second line in a narrow inspector
+        // instead of overflowing its right edge.
+        FlowLayout(spacing: 10) {
             if item.downloadState == "downloaded", let rel = item.epubPath {
                 let url = archiveRoot.appendingPathComponent(rel)
                 Button { NSWorkspace.shared.open(url) } label: { Label("Open in Books", systemImage: "book") }
