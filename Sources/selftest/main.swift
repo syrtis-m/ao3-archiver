@@ -412,6 +412,16 @@ do {
     check("rating facet doesn't collapse at scale (all 5 listed)",
           Set(vmBig.ratingFacets.map(\.name)).count == 5)
 
+    print("Store — meta + index resume")
+    let metaStore = try Store(inMemory: true)
+    check("meta nil initially", try metaStore.getMeta("k") == nil)
+    try metaStore.setMeta("k", "v1"); check("meta set/get", try metaStore.getMeta("k") == "v1")
+    try metaStore.setMeta("k", "v2"); check("meta upsert overwrites", try metaStore.getMeta("k") == "v2")
+    try metaStore.clearMeta("k"); check("meta clear", try metaStore.getMeta("k") == nil)
+    check("pageNumber parses page=16",
+          SyncEngine.pageNumber(inPath: "/users/x/bookmarks?view_adult=true&page=16") == 16)
+    check("pageNumber nil without page", SyncEngine.pageNumber(inPath: "/users/x/bookmarks") == nil)
+
     print("WorkDownloader")
     let menu = """
     <li class="download"><ul>

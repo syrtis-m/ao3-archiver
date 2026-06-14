@@ -456,6 +456,16 @@ import Foundation
         #expect(f.apply(to: items).isEmpty)
     }
 
+    @Test func metaStoreAndPageNumber() throws {
+        let store = try Store(inMemory: true)
+        #expect(try store.getMeta("k") == nil)
+        try store.setMeta("k", "a"); #expect(try store.getMeta("k") == "a")
+        try store.setMeta("k", "b"); #expect(try store.getMeta("k") == "b")   // upsert
+        try store.clearMeta("k"); #expect(try store.getMeta("k") == nil)
+        #expect(SyncEngine.pageNumber(inPath: "/u/x/bookmarks?view_adult=true&page=16") == 16)
+        #expect(SyncEngine.pageNumber(inPath: "/u/x/bookmarks") == nil)
+    }
+
     @Test func seriesMembersFetchedInOrder() throws {
         let card = try #require(try BlurbParser.parseListing(html: fixture("series_card")).first)
         let members = try BlurbParser.parseListing(html: fixture("series_page"))

@@ -147,7 +147,28 @@ public final class Store: @unchecked Sendable {
                 )
                 """)
         }
+        m.registerMigration("v2-meta") { db in
+            // Small key/value store for app state — currently the index resume point.
+            try db.execute(sql: "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        }
         return m
+    }
+
+    // MARK: - Meta (key/value app state)
+
+    public func getMeta(_ key: String) throws -> String? {
+        try dbQueue.read { try String.fetchOne($0, sql: "SELECT value FROM meta WHERE key = ?", arguments: [key]) }
+    }
+    public func setMeta(_ key: String, _ value: String) throws {
+        try dbQueue.write {
+            try $0.execute(sql: """
+                INSERT INTO meta (key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """, arguments: [key, value])
+        }
+    }
+    public func clearMeta(_ key: String) throws {
+        try dbQueue.write { try $0.execute(sql: "DELETE FROM meta WHERE key = ?", arguments: [key]) }
     }
 
     // MARK: - Upserts (index sync)

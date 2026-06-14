@@ -29,11 +29,24 @@ public final class SyncEngine: @unchecked Sendable {
         public var maxDownloads: Int?
         /// Fetch each bookmarked series' page and back up its member works.
         public var expandSeries: Bool
-        public init(maxPages: Int = 5, maxDownloads: Int? = nil, expandSeries: Bool = true) {
+        /// Continue the index from where the last run left off (resume-from-page) instead of
+        /// restarting at page 1 — for large accounts AO3 throttles mid-index.
+        public var resumeIndex: Bool
+        public init(maxPages: Int = 5, maxDownloads: Int? = nil, expandSeries: Bool = true,
+                    resumeIndex: Bool = false) {
             self.maxPages = maxPages
             self.maxDownloads = maxDownloads
             self.expandSeries = expandSeries
+            self.resumeIndex = resumeIndex
         }
+    }
+
+    public static let resumeKey = "index_resume_path"
+
+    /// Absolute page number embedded in a listing URL (`…&page=N`), for progress + resume.
+    public static func pageNumber(inPath path: String) -> Int? {
+        guard let r = path.range(of: #"page=(\d+)"#, options: .regularExpression) else { return nil }
+        return Int(path[r].dropFirst("page=".count))
     }
 
     public struct Result: Sendable, Equatable {
@@ -90,22 +103,34 @@ public final class SyncEngine: @unchecked Sendable {
     public func indexSync(listPath: String, options: Options,
                           onEvent: @Sendable (Event) -> Void = { _ in }) async throws -> Result {
         var result = Result()
+        // Resume from the saved page if asked and present; else start at page 1.
         var nextPath: String? = listPath
-        var page = 0
+        if options.resumeIndex, let saved = try store.getMeta(Self.resumeKey), !saved.isEmpty {
+            nextPath = saved
+        }
         var total: Int?
-        while let path = nextPath, page < options.maxPages {
+        var pagesThisRun = 0
+        while let path = nextPath, pagesThisRun < options.maxPages {
             let html = try await client.getHTML(path: path)
-            if page == 0 { total = try BlurbParser.lastPageNumber(html: html) }   // "page N of T"
+            if total == nil { total = try BlurbParser.lastPageNumber(html: html) }   // "page N of T"
             let cards = try BlurbParser.parseListing(html: html)
             for card in cards { try ingest(card) }
-            page += 1
-            result.pagesScanned = page
+            pagesThisRun += 1
+            let absPage = Self.pageNumber(inPath: path) ?? pagesThisRun
+            result.pagesScanned = absPage
             result.cardsSeen += cards.count
             result.works += cards.filter { $0.kind == .work }.count
             result.external += cards.filter { $0.kind == .external }.count
             result.series += cards.filter { $0.kind == .series }.count
-            onEvent(.page(page, total: total, cards: cards.count))
-            nextPath = try BlurbParser.nextPagePath(html: html)
+            onEvent(.page(absPage, total: total, cards: cards.count))
+            let np = try BlurbParser.nextPagePath(html: html)
+            // Persist where to continue next time; clear it once the index is complete, so a
+            // later run re-indexes from page 1 (picking up new bookmarks). Only a resumable
+            // full index touches this — a quick sync (latest pages) leaves it untouched.
+            if options.resumeIndex {
+                if let np { try store.setMeta(Self.resumeKey, np) } else { try store.clearMeta(Self.resumeKey) }
+            }
+            nextPath = np
         }
         return result
     }

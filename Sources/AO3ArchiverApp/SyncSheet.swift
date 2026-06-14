@@ -53,13 +53,24 @@ struct SyncSheet: View {
 
             progress
 
+            if !controller.isRunning, let page = resumePage {
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.clockwise.circle")
+                    Text("Full sync will resume near page \(page).")
+                    Button("Start over") { startOver() }.buttonStyle(.link)
+                }
+                .font(.caption).foregroundStyle(.secondary)
+            }
+
             HStack {
                 Button("Close") { dismiss() }
                 Spacer()
                 if controller.isRunning {
                     Button("Cancel", role: .cancel) { controller.cancel() }
                 } else {
-                    Button("Sync now", action: startSync).keyboardShortcut(.defaultAction)
+                    Button("Quick sync") { startSync(quick: true) }
+                        .help("Grab the latest 3 pages of bookmarks (fast catch-up).")
+                    Button("Full sync") { startSync(quick: false) }.keyboardShortcut(.defaultAction)
                 }
             }
         }
@@ -68,7 +79,20 @@ struct SyncSheet: View {
         .onAppear {
             username = CredentialStore.username ?? ""
             cookie = CredentialStore.cookie ?? ""
+            refreshResume()
         }
+    }
+
+    @State private var resumePage: Int?
+
+    private func refreshResume() {
+        resumePage = (try? store.getMeta(SyncEngine.resumeKey)).flatMap { $0 }
+            .flatMap { SyncEngine.pageNumber(inPath: $0) }
+    }
+
+    private func startOver() {
+        try? store.clearMeta(SyncEngine.resumeKey)
+        refreshResume()
     }
 
     @ViewBuilder
@@ -130,7 +154,9 @@ struct SyncSheet: View {
         }
     }
 
-    private func startSync() {
+    /// Quick = latest 3 pages, index-only, no resume (fast catch-up for new bookmarks).
+    /// Full = the whole account, resumable, with the download toggle.
+    private func startSync(quick: Bool) {
         CredentialStore.set(username, account: CredentialStore.usernameAccount)
         CredentialStore.set(cookie, account: CredentialStore.cookieAccount)
         controller.start(store: store,
@@ -138,7 +164,9 @@ struct SyncSheet: View {
                          cookie: cookie.isEmpty ? nil : cookie,
                          archiveRoot: archiveRoot,
                          interval: interval,
-                         downloadEPUBs: downloadEPUBs,
+                         downloadEPUBs: quick ? false : downloadEPUBs,
+                         maxPages: quick ? 3 : 999,
+                         resumeIndex: quick ? false : true,
                          reload: reload)
     }
 }

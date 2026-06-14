@@ -37,7 +37,7 @@ final class SyncController {
     /// the seconds between requests (politeness; raise it if AO3 throttles you).
     func start(store: Store, username: String?, cookie: String?, archiveRoot: URL,
                interval: TimeInterval, downloadEPUBs: Bool, maxPages: Int = 999,
-               reload: @escaping () -> Void) {
+               resumeIndex: Bool = true, reload: @escaping () -> Void) {
         guard phase != .running else { return }
         self.reload = reload
         phase = .running; statusLine = downloadEPUBs ? "Starting…" : "Building bookmark list…"
@@ -63,7 +63,8 @@ final class SyncController {
                 let engine = SyncEngine(client: client, store: store, files: files)
                 let options = SyncEngine.Options(maxPages: maxPages,
                                                  maxDownloads: downloadEPUBs ? 50 : 0,
-                                                 expandSeries: downloadEPUBs)
+                                                 expandSeries: downloadEPUBs,
+                                                 resumeIndex: resumeIndex)
                 let result = try await engine.run(listPath: listPath, options: options) { event in
                     Task { @MainActor in self?.apply(event) }
                 }
