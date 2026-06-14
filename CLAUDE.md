@@ -20,7 +20,13 @@ swift run selftest          # headless parser + Store + gallery-model checks (12
 swift test                  # swift-testing suite (needs Xcode; 31 tests, 4 suites)
 swift run ao3archiver        # bounded sync: paginate → ingest → expand series → download
 swift run AO3ArchiverApp     # SwiftUI gallery over the synced DB (reads AO3_ARCHIVE_DIR)
+./Packaging/make-app.sh      # assemble a real, double-clickable "AO3 Archiver.app" (M4.1)
 ```
+
+The `.app` bundle (M4.1) is **non-sandboxed** (no entitlements/signing beyond ad-hoc): a
+personal tool reads a user-chosen folder directly. Launched as a bundle it gets keyboard
+focus / resize / Dock for free; the bare-`swift run` runtime nudges become belt-and-suspenders.
+When no `AO3_ARCHIVE_DIR` is set the app defaults to `~/Library/Application Support/AO3Archiver/`.
 
 > **Headless caveat:** the SwiftUI gallery **compiles** here but can't be *run/rendered*
 > without a window server, so the view layer is compile-verified only — the user runs it and

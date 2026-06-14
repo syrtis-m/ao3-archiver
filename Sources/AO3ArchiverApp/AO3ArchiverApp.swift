@@ -44,9 +44,15 @@ struct AO3ArchiverApp: App {
     @State private var vm = GalleryViewModel()
 
     private let archiveRoot: URL = {
-        let dir = ProcessInfo.processInfo.environment["AO3_ARCHIVE_DIR"]
-            ?? FileManager.default.currentDirectoryPath + "/archive"
-        return URL(fileURLWithPath: dir)
+        // Dev/CLI override wins (so `swift run` shares the CLI's folder). Otherwise default
+        // to Application Support — a stable location that works when double-clicked, where
+        // the current directory is "/". The folder picker (M4.3) will let the user change it.
+        if let dir = ProcessInfo.processInfo.environment["AO3_ARCHIVE_DIR"], !dir.isEmpty {
+            return URL(fileURLWithPath: dir)
+        }
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory())
+        return base.appendingPathComponent("AO3Archiver/archive")
     }()
 
     var body: some Scene {

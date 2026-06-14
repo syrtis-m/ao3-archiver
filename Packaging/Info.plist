@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>AO3 Archiver</string>
+    <key>CFBundleDisplayName</key>
+    <string>AO3 Archiver</string>
+    <key>CFBundleIdentifier</key>
+    <string>info.sysd.ao3archiver</string>
+    <key>CFBundleExecutable</key>
+    <string>AO3ArchiverApp</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleVersion</key>
+    <string>0.1</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>26.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.utilities</string>
+    <!-- Not LSUIElement / LSBackgroundOnly: this is a normal foreground app, so the bundle
+         gets keyboard focus, a Dock icon, an app menu, and resize for free (no runtime
+         activation-policy / styleMask nudges needed when launched as a bundle). -->
+</dict>
+</plist>
