@@ -12,6 +12,8 @@ struct GalleryView: View {
     @State private var selectionID: WorkListItem.ID?
     @State private var compact = false
     @State private var showInspector = false
+    @State private var showSync = false
+    @State private var syncController = SyncController()
     // The search field binds to local state and pushes into the model on change. Binding
     // `.searchable` straight into `$vm.filter.searchText` (a nested property of an
     // @Observable) can drop live updates inside a NavigationSplitView on macOS.
@@ -40,6 +42,10 @@ struct GalleryView: View {
                     } else {
                         ContentUnavailableView("No selection", systemImage: "sidebar.right")
                     }
+                }
+                .sheet(isPresented: $showSync) {
+                    SyncSheet(controller: syncController, store: store, archiveRoot: archiveRoot,
+                              onFinished: { vm.load(from: store) })
                 }
         }
     }
@@ -97,6 +103,11 @@ struct GalleryView: View {
         }
         ToolbarItem(placement: .primaryAction) {
             Button(action: onChooseFolder) { Label("Archive Folder", systemImage: "folder") }
+        }
+        ToolbarItem(placement: .primaryAction) {
+            Button { showSync = true } label: {
+                Label("Sync", systemImage: syncController.isRunning ? "arrow.triangle.2.circlepath" : "arrow.clockwise")
+            }
         }
     }
 }
