@@ -26,7 +26,11 @@ let username   = env("AO3_USERNAME")
 let cookie     = env("AO3_SESSION_COOKIE")
 let userAgent  = env("AO3_USER_AGENT")
     ?? "ao3-archiver/0.1 (personal bookmark backup; contact syrtis@sysd.info)"
-let archiveDir = env("AO3_ARCHIVE_DIR") ?? FileManager.default.currentDirectoryPath + "/archive"
+// Default to ~/Documents/ao3archive (same as the app), so CLI sync and the GUI share a folder.
+let defaultArchiveDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)
+    .first?.appendingPathComponent("ao3archive").path
+    ?? FileManager.default.currentDirectoryPath + "/archive"
+let archiveDir = env("AO3_ARCHIVE_DIR") ?? defaultArchiveDir
 let interval   = env("AO3_MIN_INTERVAL").flatMap(Double.init) ?? 4
 let maxPages   = env("AO3_MAX_PAGES").flatMap(Int.init) ?? 2
 let maxDownloads = env("AO3_MAX_DOWNLOADS").flatMap(Int.init) ?? 3

@@ -98,7 +98,7 @@ It's only ever sent to AO3 and never written to disk by this tool.
 |----------------------|----------------------------------|---------|
 | `AO3_USERNAME`       | —                                | Your AO3 username (enables bookmarks). |
 | `AO3_SESSION_COOKIE` | —                                | `_otwarchive_session` value for private/restricted content. |
-| `AO3_ARCHIVE_DIR`    | `./archive`                      | Holds `archive.sqlite` + the `works/` EPUBs. |
+| `AO3_ARCHIVE_DIR`    | `~/Documents/ao3archive`         | Holds `archive.sqlite` + the `works/` EPUBs. |
 | `AO3_MIN_INTERVAL`   | `4`                              | Minimum seconds between requests (politeness). |
 | `AO3_USER_AGENT`     | `ao3-archiver/0.1 (… syrtis@sysd.info)` | Sent on every request. |
 | `AO3_LIST_PATH`      | bookmarks, else demo             | Override the listing path (e.g. a filtered bookmarks URL). |

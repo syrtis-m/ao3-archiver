@@ -26,7 +26,13 @@ swift run AO3ArchiverApp     # SwiftUI gallery over the synced DB (reads AO3_ARC
 The `.app` bundle (M4.1) is **non-sandboxed** (no entitlements/signing beyond ad-hoc): a
 personal tool reads a user-chosen folder directly. Launched as a bundle it gets keyboard
 focus / resize / Dock for free; the bare-`swift run` runtime nudges become belt-and-suspenders.
-When no `AO3_ARCHIVE_DIR` is set the app defaults to `~/Library/Application Support/AO3Archiver/`.
+
+**Archive folder resolution** (where `archive.sqlite` + `works/*.epub` live), highest priority
+first: `AO3_ARCHIVE_DIR` env → the folder the user picked (UserDefaults `archiveFolderPath`,
+set via the toolbar folder menu) → default `~/Documents/ao3archive`. The CLI uses the same
+default. It's a plain on-disk SQLite file + folder, so it survives app updates and is portable
+— never store real data in `/tmp`. The toolbar folder menu has **Reveal in Finder** since the
+old `~/Library/Application Support` default was invisible in Finder.
 
 > **Headless caveat:** the SwiftUI gallery **compiles** here but can't be *run/rendered*
 > without a window server, so the view layer is compile-verified only — the user runs it and

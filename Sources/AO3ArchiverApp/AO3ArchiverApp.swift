@@ -71,9 +71,11 @@ struct RootView: View {
             return URL(fileURLWithPath: env)
         }
         if !storedPath.isEmpty { return URL(fileURLWithPath: storedPath) }
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? URL(fileURLWithPath: NSHomeDirectory())
-        return base.appendingPathComponent("AO3Archiver/archive")
+        // Default to a visible ~/Documents/ao3archive — a backup tool's files belong
+        // somewhere the user can actually find, not hidden in ~/Library/Application Support.
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Documents")
+        return docs.appendingPathComponent("ao3archive")
     }
 
     var body: some View {
