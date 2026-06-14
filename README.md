@@ -10,7 +10,8 @@ Books reads) and keeps them in a folder you choose — so your favourites are yo
 It's a native Mac app with a dark, glassy look, and it's **private**: everything stays on your
 computer. Your login is stored in the Mac's Keychain and is only ever sent to AO3.
 
-<img width="1012" height="684" alt="image" src="https://github.com/user-attachments/assets/e3003b93-a463-4c1c-b394-e4fa35f74fbc" />
+<img width="1012" height="760" alt="image" src="https://github.com/user-attachments/assets/6e3ef501-3261-43fa-bb86-ff27a64c8c67" />
+
 
 ---
 
