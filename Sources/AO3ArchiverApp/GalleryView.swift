@@ -11,6 +11,7 @@ struct GalleryView: View {
     var onChooseFolder: () -> Void = {}
 
     @State private var selectionID: WorkListItem.ID?
+    @State private var scrolledID: WorkListItem.ID?   // top-most card; preserved across reflows
     @State private var compact = false
     @State private var showInspector = false
     @State private var showSync = false
@@ -138,7 +139,11 @@ struct GalleryView: View {
                     }
                 }
                 .padding(16)
+                .scrollTargetLayout()
             }
+            // Pin the scroll to the top-most card so opening/closing a side panel (which reflows
+            // the cards at a new width) keeps your place instead of jumping.
+            .scrollPosition(id: $scrolledID, anchor: .top)
         }
     }
 
