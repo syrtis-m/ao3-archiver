@@ -151,7 +151,37 @@ public final class Store: @unchecked Sendable {
             // Small key/value store for app state — currently the index resume point.
             try db.execute(sql: "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
         }
+        m.registerMigration("v3-presets") { db in
+            // Saved filter presets ("Smart Bookmarks"): name + a JSON-encoded GalleryFilter+sort.
+            try db.execute(sql: "CREATE TABLE filter_preset (name TEXT PRIMARY KEY, payload TEXT NOT NULL)")
+        }
         return m
+    }
+
+    // MARK: - Filter presets (saved "Smart Bookmarks")
+
+    /// Insert or replace a preset by name. The payload is the JSON-encoded `FilterPreset`.
+    public func savePreset(_ preset: FilterPreset) throws {
+        let json = String(decoding: try JSONEncoder().encode(preset), as: UTF8.self)
+        try dbQueue.write {
+            try $0.execute(sql: """
+                INSERT INTO filter_preset (name, payload) VALUES (?, ?)
+                ON CONFLICT(name) DO UPDATE SET payload = excluded.payload
+                """, arguments: [preset.name, json])
+        }
+    }
+
+    /// All saved presets, name-ordered. A preset that fails to decode (schema drift) is
+    /// skipped rather than aborting the load.
+    public func loadPresets() throws -> [FilterPreset] {
+        try dbQueue.read { db in
+            try String.fetchAll(db, sql: "SELECT payload FROM filter_preset ORDER BY name")
+                .compactMap { try? JSONDecoder().decode(FilterPreset.self, from: Data($0.utf8)) }
+        }
+    }
+
+    public func deletePreset(name: String) throws {
+        try dbQueue.write { try $0.execute(sql: "DELETE FROM filter_preset WHERE name = ?", arguments: [name]) }
     }
 
     // MARK: - Meta (key/value app state)

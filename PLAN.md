@@ -454,43 +454,42 @@ RAM and only fall back to SQL when the result set is huge.
   `swift run` executable the app needs runtime nudges (`.regular` activation policy for
   keyboard focus; force `.resizable` on the window) that a real `.app` bundle would make
   unnecessary — packaging is M4.
-### M3 — Full filter parity (next)
+### M3 — Full filter parity (done)
 
-Goal: **every** filter in §7, include/exclude, ranges, saved presets — and prove it stays
-**snappy at real scale** (the user has ~1800 bookmarks; testing so far has been on a 40-item
-DB). Sequenced so the perf foundation and the generic machinery come before the long tail of
-facets.
+Goal: **every** filter in §7, include/exclude, ranges, saved presets, snappy at real scale.
+Built on the M3.0 memoized working set (computed once per (filter, sort, allItems) change,
+proven by a 2000-item scale test in both runners).
 
-- **M3.0 — Perf foundation (do first).** Memoize the derived working set: compute
-  `visibleItems` + all facet counts **once per (filter, sort, allItems) change**, not per
-  render/access (today ~4 `O(n)` facet passes per render; M3 makes it ~10). With `@Observable`
-  this means an explicit cache + invalidation (or `@ObservationIgnored` cache keyed by a
-  version stamp). **Add a scale test**: synthesize ~2000 items in `selftest` and assert the
-  join/filter/facet logic holds and stays fast. "Incredibly snappy" is the user's #1
-  requirement and is currently unverified at scale — gate M3 on this.
-- **M3.1 — Generic keyed tag-dimension facets.** ~6 facets (warnings, relationships,
-  characters, freeforms, fandom, your-bookmark-tags) are structurally identical (`[String]`
-  on the item, `Set<String>` include/exclude, same cycle/state/clearing/count). Build **one**
-  generic keyed mechanism instead of hand-writing each; migrate the existing fandom/rating/
-  category onto it where it fits. (Leave the single-select segmented controls — completion,
-  download — as-is; they're genuinely different.)
-- **M3.2 — High-cardinality facet UI.** Characters/relationships/freeforms have *thousands*
-  of values — a flat capped list is useless. Add a **typeahead** (filter-the-facet text
-  field) per large dimension. This is M3's biggest UX item.
-- **M3.3 — Range filters (needs a Store migration).** Word count, kudos, hits, comments,
-  bookmarks (numeric — `updatedAt` is already unix and range-ready); **date updated** and
-  **date bookmarked** ranges. `bookmarkedAt` is human text ("30 May 2026") → parse it into a
-  comparable column at ingest (migration + reparse, with its own test). UI: min/max fields or
-  dual sliders.
-- **M3.4 — Derived & bookmark filters.** Crossovers (fandom count > 1: include/exclude/only),
-  rec'd-only, with/without bookmarker notes, private/public, language.
-- **M3.5 — More sorts.** Local file size (store epub byte size at download), download status.
-- **M3.6 — Saved presets ("Smart Bookmarks").** Make `GalleryFilter` `Codable`; a `preset`
-  table (migration) storing serialized filter+sort; sidebar save/load/delete, applied
-  instantly.
-- *Sequence within M3 by frequency:* warnings / relationships / characters / word-count &
-  date ranges first (common); crossover-only / rec'd / private last (rare). Ship testable
-  increments. All filter/sort/range logic stays below the SwiftUI line and unit-tested.
+- **M3.0 — Perf foundation (done).** `GalleryViewModel` memoizes `visibleItems` + all facet
+  counts via an `@ObservationIgnored` cache keyed by `MemoKey(filter, sort, gen)`; a
+  `recomputeCount` lets tests prove the memo holds across repeated access and recomputes
+  exactly once per change. Scale test: 2000 synthetic items.
+- **M3.1 — Generic keyed tag-dimension facets (done).** One `FacetDimension` enum + one
+  `WorkListItem.values(for:)` extractor drives the filter (`include`/`exclude` as
+  `[FacetDimension: Set<String>]`), the facet counts, the view model
+  (`facets(for:)`/`state(_:_:)`/`cycle(_:_:)`), and the sidebar. All ten dimensions —
+  bookmark type, rating, category, warnings, language, fandom, relationships, characters,
+  additional (freeform) tags, your tags — are tri-state include/exclude with live counts.
+  Invariant: an emptied dimension drops its key (never an empty set). Single-select
+  completion/download stay segmented controls.
+- **M3.2 — High-cardinality facet UI (done).** Typeahead text field on the high-cardinality
+  dimensions (fandom/relationship/character/freeform/your-tags); filters the full facet list
+  *before* the render cap so rare values stay findable.
+- **M3.3 — Range filters (done, no migration).** One `RangeField` + `NumericBound` (min/max)
+  covers word count / kudos / comments / bookmarks / hits and **date updated / date
+  bookmarked**. `bookmarkedAt` is parsed to a `Date` once at load (shared POSIX formatter,
+  fail-soft) — no schema migration, because all filtering runs in memory (a `*_ts` column
+  would be written and never read; add it only if range filtering is ever pushed into SQL).
+  A nil-valued item (series → no word count) drops out of an active range.
+- **M3.4 — Derived & bookmark filters (done).** `TriFilter` (any/yes/no) over crossover
+  (fandom count > 1), rec'd, with/without notes, private/public; language is a facet dim.
+- **M3.5 — More sorts (partial).** Added comments + bookmarks-count sorts. Local file size /
+  download-status sort still TODO (needs epub byte size stored at download).
+- **M3.6 — Saved presets ("Smart Bookmarks") (done).** `GalleryFilter`/`GallerySort` are
+  `Codable`; a `filter_preset` table (migration v3) stores the JSON-encoded `FilterPreset`
+  (name + filter + sort); sidebar save/apply/delete, applied instantly. Note: a
+  `[FacetDimension: Set<String>]` encodes as a JSON array (Swift only uses String/Int keys as
+  object keys), which round-trips fine.
 
 ### M4 — Packaging + Liquid Glass polish
 

@@ -4,12 +4,14 @@ A native macOS app (in progress) that backs up your AO3 bookmarks as `.epub` fil
 a fast, dark, liquid-glass gallery and full local filtering. See [PLAN.md](PLAN.md) for
 the full design and roadmap.
 
-## Status: M2 gallery + M3.0 perf + M4 packaging (in progress)
+## Status: M3 full filter parity + M4 packaging (in progress)
 
 M0 de-risked the core mechanics; M1 built the backup engine; **M2** added the dark Liquid
-Glass gallery; **M3.0** memoized the filter pipeline for scale; **M4 (packaging)** turned it
-into a real, double-clickable `.app` you can **sync and browse entirely from the GUI** — no
-terminal. You can run it as a CLI (sync) and/or the SwiftUI app (sync + browse):
+Glass gallery; **M3** delivered full filter parity (every AO3 facet, plus tri-state
+include/exclude, ranges, derived/bookmark filters, and saved presets — memoized and proven
+snappy at scale); **M4 (packaging)** turned it into a real, double-clickable `.app` you can
+**sync and browse entirely from the GUI** — no terminal. You can run it as a CLI (sync)
+and/or the SwiftUI app (sync + browse):
 
 - **`AO3Kit`** — the reusable core the SwiftUI app will sit on:
   - `AO3Client` — the only networked component. Polite single-flight **rate limiter**,
@@ -47,9 +49,15 @@ terminal. You can run it as a CLI (sync) and/or the SwiftUI app (sync + browse):
   is a rich **metadata card** — title, author, AO3 colour-coded symbols (rating / category /
   warnings / completion), tag pills grouped by type, stats, summary, and your own bookmark
   tags/notes — *not* a book cover (AO3 EPUBs have none, and metadata is what you browse on).
-  Facets (bookmark type / rating / category / fandom) are **tri-state**: click to include,
-  again to exclude, again to clear — include and exclude in one list. Completion and download
-  are single-select. The pipeline is in-memory, so filtering/search/sort is instant.
+  Every tag facet — bookmark type, rating, category, warnings, language, fandom,
+  relationships, characters, additional tags, and your own bookmark tags — is **tri-state**:
+  click to include, again to exclude, again to clear (include and exclude in one list), with
+  live faceted counts and a **typeahead** on the big dimensions. Beyond tags: **numeric and
+  date ranges** (word count / kudos / comments / bookmarks / hits, date updated / date
+  bookmarked), **derived/bookmark filters** (crossover, rec'd, with/without notes,
+  private/public), and **saved presets ("Smart Bookmarks")** you can re-apply in a click.
+  Completion and download stay single-select. The pipeline is in-memory and memoized, so
+  filtering/search/sort stays instant even at thousands of bookmarks.
 
 ### Run it
 
@@ -127,8 +135,10 @@ app stores it in the macOS **Keychain**; it's only ever sent to AO3.
 The parser is pinned to **real captured AO3 HTML** in `Tests/AO3KitTests/Fixtures/`
 (works listing, bookmarks page, series card, series page). The store/sync logic
 (idempotency, stale-detection, FTS, series expansion) **and the gallery model** (fan-out-safe
-join, composing filters, sort, facets) are exercised against those same fixtures with a temp
-database — no network, no rendering.
+join, tri-state include/exclude facets, ranges, derived filters, saved-preset round-trip,
+sort, memoization at 2000-item scale) are exercised against those same fixtures with a temp
+database — no network, no rendering. `swift test` (38 tests, 4 suites) and the framework-free
+`swift run selftest` (157 checks) run the same assertions.
 
 - Full Xcode: `swift test` (swift-testing suite — 31 tests, 4 suites).
 - Command Line Tools only (no Xcode): `swift run selftest` — equivalent assertions (120

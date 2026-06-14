@@ -398,6 +398,15 @@ extension WorkListItem {
 /// Completion facet. `.any` doesn't filter; series (isComplete == nil) pass `.any` only.
 public enum CompletionFilter: String, Sendable, CaseIterable, Codable { case any, complete, wip }
 
+/// A yes/no/either filter over a boolean property (crossover, rec'd, has-notes, private).
+/// `.yes` keeps items where the property is true, `.no` where false, `.any` doesn't filter.
+public enum TriFilter: String, Sendable, CaseIterable, Codable {
+    case any, yes, no
+    public func allows(_ value: Bool) -> Bool {
+        switch self { case .any: return true; case .yes: return value; case .no: return !value }
+    }
+}
+
 /// Download/archive state, single-select (like completion) — tri-state include/exclude over
 /// these is more confusing than useful.
 public enum DownloadFilter: String, Sendable, CaseIterable, Codable {
@@ -433,6 +442,11 @@ public struct GalleryFilter: Sendable, Equatable, Codable {
     public var ranges: [RangeField: NumericBound] = [:]   // invariant: no inactive bound stored
     public var completion: CompletionFilter = .any
     public var download: DownloadFilter = .any
+    // Derived / bookmark-specific booleans (yes = crossover / rec'd / has-notes / private).
+    public var crossover: TriFilter = .any
+    public var recd: TriFilter = .any
+    public var hasNotes: TriFilter = .any
+    public var isPrivate: TriFilter = .any
     public var searchText: String = ""
 
     public init() {}
@@ -458,6 +472,7 @@ public struct GalleryFilter: Sendable, Equatable, Codable {
         include.values.contains { !$0.isEmpty } || exclude.values.contains { !$0.isEmpty }
             || ranges.values.contains { $0.isActive }
             || completion != .any || download != .any
+            || crossover != .any || recd != .any || hasNotes != .any || isPrivate != .any
             || !searchText.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
@@ -477,6 +492,11 @@ public struct GalleryFilter: Sendable, Equatable, Codable {
         }
         // Download / archive state (single-select).
         if !download.matches(item.downloadState) { return false }
+        // Derived / bookmark booleans.
+        if !crossover.allows(item.isCrossover) { return false }
+        if !recd.allows(item.isRec) { return false }
+        if !hasNotes.allows(!(item.bookmarkerNotes ?? "").trimmingCharacters(in: .whitespaces).isEmpty) { return false }
+        if !isPrivate.allows(item.isPrivate) { return false }
         // Completion.
         switch completion {
         case .any:      break
@@ -500,9 +520,21 @@ public struct GalleryFilter: Sendable, Equatable, Codable {
     }
 }
 
+/// A saved filter + sort ("Smart Bookmark"), persisted by `Store`. Codable so the whole
+/// `GalleryFilter` round-trips to JSON in one shot.
+public struct FilterPreset: Sendable, Equatable, Codable, Identifiable {
+    public var name: String
+    public var filter: GalleryFilter
+    public var sort: GallerySort
+    public var id: String { name }
+    public init(name: String, filter: GalleryFilter, sort: GallerySort) {
+        self.name = name; self.filter = filter; self.sort = sort
+    }
+}
+
 /// Sort options. "Date bookmarked" uses the monotonic bookmark id (reliable; the stored
 /// bookmark date is human text), newest first.
-public enum GallerySort: String, Sendable, CaseIterable {
+public enum GallerySort: String, Sendable, CaseIterable, Codable {
     case dateBookmarked, dateUpdated, title, author, wordCount, kudos, comments, bookmarks, hits
 
     public var label: String {
@@ -566,10 +598,31 @@ public final class GalleryViewModel {
 
     public init() {}
 
-    /// Load (or reload) the working set from the store on disk.
+    /// Saved filter presets ("Smart Bookmarks"), loaded from the store.
+    public private(set) var presets: [FilterPreset] = []
+
+    /// Load (or reload) the working set + presets from the store on disk.
     public func load(from store: Store) {
         do { allItems = try store.fetchAllListItems(); loadError = nil }
         catch { loadError = String(describing: error) }
+        loadPresets(from: store)
+    }
+
+    public func loadPresets(from store: Store) { presets = (try? store.loadPresets()) ?? [] }
+
+    /// Save the current filter + sort under `name` (overwrites an existing one).
+    public func savePreset(named name: String, to store: Store) {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        try? store.savePreset(FilterPreset(name: trimmed, filter: filter, sort: sort))
+        loadPresets(from: store)
+    }
+
+    public func applyPreset(_ preset: FilterPreset) { filter = preset.filter; sort = preset.sort }
+
+    public func deletePreset(_ preset: FilterPreset, from store: Store) {
+        try? store.deletePreset(name: preset.name)
+        loadPresets(from: store)
     }
 
     // MARK: - Memoized derived working set

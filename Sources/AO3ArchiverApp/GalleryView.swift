@@ -28,7 +28,7 @@ struct GalleryView: View {
 
     var body: some View {
         NavigationSplitView {
-            FilterSidebar(vm: vm)
+            FilterSidebar(vm: vm, store: store)
                 .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 360)
         } detail: {
             gallery

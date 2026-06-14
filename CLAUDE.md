@@ -7,17 +7,19 @@ Guidance for working in this repo. See `PLAN.md` for the full design/roadmap and
 
 A native macOS app (in progress) that backs up the user's AO3 bookmarks as `.epub` files
 with a dark, liquid-glass, snappy gallery and full local filtering. **M0** (core spike),
-**M1** (core sync + store), and **M2** (gallery MVP) are done: a Swift package that pages
-through bookmarks, ingests every card (work / external / series) into a GRDB/SQLite store
-with FTS5, expands bookmarked series, runs a resumable rate-limited EPUB download queue, and
-presents it all in a dark Liquid Glass SwiftUI gallery with in-memory filtering/search/sort.
+**M1** (core sync + store), **M2** (gallery MVP), and **M3** (full filter parity) are done: a
+Swift package that pages through bookmarks, ingests every card (work / external / series)
+into a GRDB/SQLite store with FTS5, expands bookmarked series, runs a resumable rate-limited
+EPUB download queue, and presents it all in a dark Liquid Glass SwiftUI gallery with
+in-memory filtering/search/sort — every AO3 facet (tri-state include/exclude tags, numeric +
+date ranges, derived/bookmark booleans, saved presets), memoized and proven snappy at scale.
 
 ## Build / test / run
 
 ```sh
 swift build                 # build library + CLI + app
-swift run selftest          # headless parser + Store + gallery-model checks (120 checks)
-swift test                  # swift-testing suite (needs Xcode; 31 tests, 4 suites)
+swift run selftest          # headless parser + Store + gallery-model checks (157 checks)
+swift test                  # swift-testing suite (needs Xcode; 38 tests, 4 suites)
 swift run ao3archiver        # bounded sync: paginate → ingest → expand series → download
 swift run AO3ArchiverApp     # SwiftUI gallery over the synced DB (reads AO3_ARCHIVE_DIR)
 ./Packaging/make-icon.sh     # render the liquid-glass app icon → Packaging/AppIcon.icns
@@ -66,7 +68,8 @@ pages by accident; politeness is a hard requirement.
 ### Testing note
 
 Full **Xcode is installed**, so `swift test` runs the swift-testing suite in
-`Tests/AO3KitTests/` (18 tests, 3 suites — parser, downloader, Store). `swift run selftest`
+`Tests/AO3KitTests/` (38 tests, 4 suites — parser, downloader, Store, gallery model).
+`swift run selftest`
 is the equivalent **framework-free** runner (same assertions against the same fixtures) and
 also works under Command-Line-Tools-only toolchains, where `swift test` fails with "no such
 module 'Testing'". Keep the two in sync when changing the parser or store — both pin to the
@@ -170,6 +173,13 @@ Tests/AO3KitTests/     swift-testing suite + Fixtures/ (real captured AO3 HTML):
 - **Filters are include + exclude (tri-state).** Each `GalleryFilter` dimension has an
   include set and an exclude set; the sidebar cycles each value neutral → include → exclude
   → neutral (one list, not AO3's duplicated include/exclude lists). Exclude wins.
+- **One generic keyed filter mechanism (M3).** Every multi-value dimension lives in a single
+  `FacetDimension` enum + `WorkListItem.values(for:)` extractor, with the filter storing
+  `include`/`exclude` as `[FacetDimension: Set<String>]`. **Invariant: an emptied dimension
+  drops its key** (never an empty set) — `setInclude`/`setExclude`/`cycle` enforce it, so
+  `isActive` / `==` / the memo key / preset round-trips stay honest. Adding a dimension is one
+  `case` + one line. The view model is generic too: `facets(for:)`, `state(_:_:)`,
+  `cycle(_:_:)`. Don't re-add per-dimension stored properties.
 - **AO3 corner symbols are colour-coded** from `AO3Kit` classification (`ratingLevel`,
   `warningLevel`, `categories`). Category is one comma-joined symbol ("F/M, M/M") → split
   into per-category badges. Tags are text-only pills (no icons), grouped by type on
@@ -177,8 +187,28 @@ Tests/AO3KitTests/     swift-testing suite + Fixtures/ (real captured AO3 HTML):
 - **Verification ceiling = `swift build`.** Don't `swift run AO3ArchiverApp` as a check —
   it needs a window server and will hang headlessly. Test the model, compile the views.
 
+## M3 facts (full filter parity — done)
+
+- **Ranges are one mechanism too.** `RangeField` (word count / kudos / comments / bookmarks /
+  hits / date updated / date bookmarked) + `NumericBound` (min/max) over a single `Double?`
+  extractor. **No schema migration** for date-bookmarked: `bookmarkedAt` text ("04 Apr 2014")
+  is parsed to `bookmarkedDate: Date?` once at load (shared POSIX/UTC formatter, fail-soft) —
+  all filtering is in-memory, so a comparable column would be written and never read. A
+  nil-valued item (a series has no word count) drops out of an active range. Same drop-the-key
+  invariant via `setBound`.
+- **Derived/bookmark booleans** use `TriFilter` (any/yes/no): crossover (fandom count > 1),
+  rec'd, has-notes, private/public. Language is a normal facet dimension.
+- **Saved presets ("Smart Bookmarks").** `GalleryFilter`/`GallerySort` are `Codable`; a
+  `filter_preset` table (migration **v3-presets**) stores the JSON-encoded `FilterPreset`
+  (name + filter + sort). `Store.savePreset/loadPresets/deletePreset`; view model
+  `savePreset(named:to:)`/`applyPreset`/`deletePreset`. A `[FacetDimension: Set<String>]`
+  JSON-encodes as an **array** (Swift only treats String/Int keys as object keys) — round-trips
+  fine; don't be surprised inspecting the payload.
+
 ## Roadmap pointer
 
-Next is **M3 — full filter parity**: every facet from §7 (include **and** exclude tags,
-ranges, crossovers, more sorts, live counts, saved presets) over the M2 model. Then Liquid
-Glass polish (M4) and hardening (M5). See `PLAN.md` §10.
+M0–M3 are done (core spike, sync+store, gallery MVP, full filter parity). Next is **M4 —
+packaging + Liquid Glass polish** (the `.app` bundle exists via `make-app.sh`; remaining is
+glass polish and retiring the bare-executable runtime hacks), then **M5 — hardening**. The
+one M3 leftover: a **local-file-size / download-status sort** (needs epub byte size stored at
+download). See `PLAN.md` §10.

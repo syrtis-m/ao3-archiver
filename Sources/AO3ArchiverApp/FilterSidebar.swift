@@ -13,9 +13,11 @@ import AO3Kit
 /// constraint.
 struct FilterSidebar: View {
     @Bindable var vm: GalleryViewModel
+    let store: Store
 
     /// Per-dimension typeahead text (high-cardinality facets only).
     @State private var queries: [FacetDimension: String] = [:]
+    @State private var newPresetName = ""
 
     /// Sidebar ordering — mirrors AO3's filter column, with the bookmark-specific dims last.
     private let dimensionOrder: [FacetDimension] = [
@@ -27,6 +29,7 @@ struct FilterSidebar: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 header
+                presetsSection
 
                 facetSection(.bookmarkType)
                 facetSection(.rating)
@@ -40,6 +43,7 @@ struct FilterSidebar: View {
                 segmentedGroup("Download", selection: $vm.filter.download,
                                cases: [.any, .saved, .notDownloaded], label: { $0.label })
 
+                bookmarkOptionsSection
                 rangesSection
 
                 facetSection(.language)
@@ -66,6 +70,62 @@ struct FilterSidebar: View {
             }
             Text("Click to include · again to exclude")
                 .font(.caption2).foregroundStyle(.tertiary)
+        }
+    }
+
+    /// Saved presets ("Smart Bookmarks"): apply one, delete it, or save the current filter.
+    @ViewBuilder
+    private var presetsSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            groupTitle("Presets")
+            ForEach(vm.presets) { preset in
+                HStack(spacing: 6) {
+                    Button(preset.name) { vm.applyPreset(preset) }
+                        .buttonStyle(.plain).lineLimit(1)
+                    Spacer(minLength: 4)
+                    Button { vm.deletePreset(preset, from: store) } label: {
+                        Image(systemName: "trash").font(.caption2)
+                    }
+                    .buttonStyle(.borderless).foregroundStyle(.secondary)
+                }
+            }
+            HStack(spacing: 6) {
+                TextField("Save current as…", text: $newPresetName)
+                    .textFieldStyle(.roundedBorder).controlSize(.small)
+                    .onSubmit(saveCurrentPreset)
+                Button("Save", action: saveCurrentPreset)
+                    .controlSize(.small)
+                    .disabled(newPresetName.trimmingCharacters(in: .whitespaces).isEmpty || !vm.filter.isActive)
+            }
+        }
+    }
+
+    private func saveCurrentPreset() {
+        vm.savePreset(named: newPresetName, to: store)
+        newPresetName = ""
+    }
+
+    /// Bookmark-derived booleans, each a small Any/Yes/No segmented control.
+    private var bookmarkOptionsSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            groupTitle("Bookmark options")
+            triRow("Crossover", $vm.filter.crossover, yes: "Only", no: "Hide")
+            triRow("Rec'd", $vm.filter.recd, yes: "Only", no: "Hide")
+            triRow("Notes", $vm.filter.hasNotes, yes: "With", no: "Without")
+            triRow("Private", $vm.filter.isPrivate, yes: "Private", no: "Public")
+        }
+    }
+
+    private func triRow(_ title: String, _ selection: Binding<TriFilter>,
+                        yes: String, no: String) -> some View {
+        HStack(spacing: 6) {
+            Text(title).font(.caption).frame(width: 72, alignment: .leading)
+            Picker(title, selection: selection) {
+                Text("Any").tag(TriFilter.any)
+                Text(yes).tag(TriFilter.yes)
+                Text(no).tag(TriFilter.no)
+            }
+            .pickerStyle(.segmented).labelsHidden().frame(maxWidth: .infinity)
         }
     }
 

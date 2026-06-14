@@ -502,6 +502,58 @@ import Foundation
         #expect(items.contains { $0.bookmarkedDate != nil })   // the fixture's dates parsed
     }
 
+    @Test func derivedBookmarkBooleanFilters() throws {
+        let (_, items) = try loadedItems()
+        var f = GalleryFilter(); f.crossover = .yes
+        #expect(f.apply(to: items).allSatisfy { $0.fandoms.count > 1 })
+        f = GalleryFilter(); f.crossover = .no
+        #expect(f.apply(to: items).allSatisfy { $0.fandoms.count <= 1 })
+        f = GalleryFilter(); f.hasNotes = .yes
+        #expect(f.apply(to: items).allSatisfy { !($0.bookmarkerNotes ?? "").isEmpty })
+        f = GalleryFilter(); f.hasNotes = .no
+        #expect(f.apply(to: items).allSatisfy { ($0.bookmarkerNotes ?? "").isEmpty })
+        #expect(!GalleryFilter().isActive)   // all-.any is inert
+    }
+
+    @Test func savedPresetsRoundTrip() throws {
+        let store = try Store(inMemory: true)
+        #expect(try store.loadPresets().isEmpty)
+
+        var pf = GalleryFilter()
+        pf.setInclude(.fandom, ["Good Omens (TV)"]); pf.setExclude(.rating, ["Explicit"])
+        pf.setBound(.wordCount, NumericBound(min: 1000, max: 50000))
+        pf.crossover = .no; pf.hasNotes = .yes; pf.searchText = "circus"
+        try store.savePreset(FilterPreset(name: "My preset", filter: pf, sort: .wordCount))
+
+        let loaded = try store.loadPresets()
+        #expect(loaded.count == 1)
+        #expect(loaded.first?.filter == pf)        // the whole filter round-trips through JSON
+        #expect(loaded.first?.sort == .wordCount)
+
+        // Same name overwrites; delete removes.
+        try store.savePreset(FilterPreset(name: "My preset", filter: GalleryFilter(), sort: .title))
+        #expect(try store.loadPresets().count == 1)
+        try store.deletePreset(name: "My preset")
+        #expect(try store.loadPresets().isEmpty)
+    }
+
+    @Test func viewModelPresetApply() throws {
+        let store = try Store(inMemory: true)
+        try ingest(store, try BlurbParser.parseListing(html: fixture("bookmarks_page")))
+        let vm = GalleryViewModel(); vm.load(from: store)
+
+        vm.cycle(.bookmarkType, "external")
+        vm.sort = .title
+        vm.savePreset(named: "Externals", to: store)
+        #expect(vm.presets.map(\.name) == ["Externals"])
+
+        vm.clearFilters(); vm.sort = .dateBookmarked
+        #expect(vm.visibleCount == vm.totalCount)
+        vm.applyPreset(try #require(vm.presets.first))
+        #expect(vm.sort == .title)
+        #expect(vm.visibleItems.allSatisfy { $0.kind == .external })
+    }
+
     @Test func metaStoreAndPageNumber() throws {
         let store = try Store(inMemory: true)
         #expect(try store.getMeta("k") == nil)

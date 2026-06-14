@@ -391,6 +391,35 @@ do {
         check("not-saved → the 19 pending works", d.apply(to: items).count == 19)
         d.download = .saved
         check("saved → none (nothing downloaded in fixture)", d.apply(to: items).isEmpty)
+
+        print("Gallery — derived / bookmark booleans")
+        var cf = GalleryFilter(); cf.crossover = .yes
+        check("crossover=only keeps multi-fandom items",
+              cf.apply(to: items).allSatisfy { $0.fandoms.count > 1 })
+        cf = GalleryFilter(); cf.crossover = .no
+        check("crossover=hide keeps single-fandom items",
+              cf.apply(to: items).allSatisfy { $0.fandoms.count <= 1 })
+        var nf = GalleryFilter(); nf.hasNotes = .yes
+        check("notes=with keeps only items with bookmarker notes",
+              nf.apply(to: items).allSatisfy { !($0.bookmarkerNotes ?? "").isEmpty })
+        nf = GalleryFilter(); nf.hasNotes = .no
+        check("notes=without keeps only items lacking notes",
+              nf.apply(to: items).allSatisfy { ($0.bookmarkerNotes ?? "").isEmpty })
+        // .any never narrows.
+        check("crossover=any passes everything", GalleryFilter().apply(to: items).count == items.count)
+
+        print("Gallery — saved presets round-trip")
+        var pf = GalleryFilter(); pf.setInclude(.bookmarkType, ["work"]); pf.crossover = .yes
+        pf.setBound(.kudos, NumericBound(min: 5))
+        try store.savePreset(FilterPreset(name: "Crossover faves", filter: pf, sort: .kudos))
+        let loaded = try store.loadPresets()
+        check("preset persisted", loaded.count == 1 && loaded.first?.name == "Crossover faves")
+        check("preset filter round-trips exactly", loaded.first?.filter == pf)
+        check("preset sort round-trips", loaded.first?.sort == .kudos)
+        try store.savePreset(FilterPreset(name: "Crossover faves", filter: GalleryFilter(), sort: .title))
+        check("same-name save overwrites (no dup)", try store.loadPresets().count == 1)
+        try store.deletePreset(name: "Crossover faves")
+        check("delete removes the preset", try store.loadPresets().isEmpty)
     }
 
     // Series bookmark shows as one gallery item (members have no bookmark row → not listed).
