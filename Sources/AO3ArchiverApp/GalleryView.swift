@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import AO3Kit
 
 /// Root layout: glass filter sidebar + the metadata-card gallery, with a search/sort
@@ -103,7 +104,14 @@ struct GalleryView: View {
             Button { showInspector.toggle() } label: { Label("Details", systemImage: "sidebar.right") }
         }
         ToolbarItem(placement: .primaryAction) {
-            Button(action: onChooseFolder) { Label("Archive Folder", systemImage: "folder") }
+            Menu {
+                Button("Reveal in Finder") { NSWorkspace.shared.open(archiveRoot) }
+                Button("Choose Archive Folder…", action: onChooseFolder)
+                Divider()
+                Text(archiveRoot.path)
+            } label: {
+                Label("Archive Folder", systemImage: "folder")
+            }
         }
         ToolbarItem(placement: .primaryAction) {
             Button { showSync = true } label: {
