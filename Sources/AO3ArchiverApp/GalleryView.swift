@@ -5,7 +5,6 @@ import AO3Kit
 /// toolbar and a trailing inspector for the selected bookmark.
 struct GalleryView: View {
     @Bindable var vm: GalleryViewModel
-    let store: Store
     let archiveRoot: URL
 
     @State private var selectionID: WorkListItem.ID?
@@ -36,7 +35,6 @@ struct GalleryView: View {
                     }
                 }
         }
-        .task { vm.load(from: store) }
     }
 
     @ViewBuilder

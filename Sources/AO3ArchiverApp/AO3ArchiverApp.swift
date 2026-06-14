@@ -37,8 +37,8 @@ struct RootView: View {
 
     var body: some View {
         Group {
-            if let store {
-                GalleryView(vm: vm, store: store, archiveRoot: archiveRoot)
+            if store != nil {
+                GalleryView(vm: vm, archiveRoot: archiveRoot)
             } else if let openError {
                 ContentUnavailableView("Couldn't open archive", systemImage: "externaldrive.badge.xmark",
                                        description: Text(openError))
@@ -47,8 +47,13 @@ struct RootView: View {
             }
         }
         .task {
-            do { store = try Store(path: archiveRoot.appendingPathComponent("archive.sqlite").path) }
-            catch { openError = String(describing: error) }
+            do {
+                let s = try Store(path: archiveRoot.appendingPathComponent("archive.sqlite").path)
+                vm.load(from: s)   // populate BEFORE presenting the sidebar list, so the
+                store = s          // NSTableView-backed List renders once with data in place
+            } catch {              // (an empty-then-reload cascade triggers a reentrancy warning)
+                openError = String(describing: error)
+            }
         }
     }
 }

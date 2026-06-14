@@ -60,14 +60,15 @@ struct WorkCardView: View {
         }
     }
 
-    // Tags grouped by type, each on its own line: fandom → relationships → characters → other.
+    // Tags grouped on their own lines: fandom → relationships → everything else (characters
+    // + additional tags together).
     @ViewBuilder
     private var tagBlocks: some View {
         if !item.fandoms.isEmpty { pillBlock(item.fandoms) }
         if !compact {
             if !item.relationships.isEmpty { pillBlock(item.relationships) }
-            if !item.characters.isEmpty { pillBlock(item.characters) }
-            if !item.freeforms.isEmpty { pillBlock(item.freeforms) }
+            let other = item.characters + item.freeforms
+            if !other.isEmpty { pillBlock(other) }
         }
     }
 
