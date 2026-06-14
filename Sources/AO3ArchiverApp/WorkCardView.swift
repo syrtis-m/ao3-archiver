@@ -47,7 +47,7 @@ struct WorkCardView: View {
                 ColorBadge(text: item.ratingLevel.letter, color: item.ratingLevel.color)
             }
             ForEach(item.categories, id: \.self) { cat in
-                ColorBadge(text: cat, color: categoryColor(cat))
+                CategoryBadge(category: cat)
             }
             if let w = item.warningLevel.badge {
                 ColorBadge(text: w.label, systemImage: w.systemImage, color: w.color)
@@ -68,13 +68,20 @@ struct WorkCardView: View {
         if !compact {
             if !item.relationships.isEmpty { pillBlock(item.relationships) }
             let other = item.characters + item.freeforms
-            if !other.isEmpty { pillBlock(other) }
+            if !other.isEmpty { pillBlock(other, cap: 15) }   // cap bulk tags to keep cards short
         }
     }
 
     /// Wrapping block of pills, so all tags in a group are visible at once (not a scroll row).
-    private func pillBlock(_ values: [String]) -> some View {
-        FlowLayout(spacing: 6) { ForEach(values, id: \.self) { TagPill(text: $0) } }
+    /// `cap` limits very long tag lists, appending a "+N more" note.
+    private func pillBlock(_ values: [String], cap: Int = .max) -> some View {
+        FlowLayout(spacing: 6) {
+            ForEach(values.prefix(cap), id: \.self) { TagPill(text: $0) }
+            if values.count > cap {
+                Text("+\(values.count - cap) more")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+        }
     }
 
     private var bookmarkerSection: some View {

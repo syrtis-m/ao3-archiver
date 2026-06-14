@@ -324,6 +324,14 @@ do {
               vm2.visibleItems.allSatisfy { !$0.fandoms.contains(aFandom) })
         vm2.cycleFandom(aFandom)
         check("cycle 3 → neutral (full set)", vm2.fandomState(aFandom) == .neutral && vm2.visibleCount == 20)
+
+        print("Gallery — download filter (single-select)")
+        var d = GalleryFilter(); d.download = .offsite
+        check("offsite → the external item", d.apply(to: items).map(\.kind) == [.external])
+        d.download = .notDownloaded
+        check("not-saved → the 19 pending works", d.apply(to: items).count == 19)
+        d.download = .saved
+        check("saved → none (nothing downloaded in fixture)", d.apply(to: items).isEmpty)
     }
 
     // Series bookmark shows as one gallery item (members have no bookmark row → not listed).
@@ -344,6 +352,10 @@ do {
         check("its kind is series", items.first?.kind == .series)
         check("series item carries worksCount", items.first?.worksCount == 6)
         check("unbookmarked members aren't listed", items.allSatisfy { $0.kind == .series })
+
+        let fetchedMembers = try store.fetchSeriesMembers(seriesID: card.workID)
+        check("series members fetched in part order",
+              fetchedMembers.map(\.itemID) == [26762044, 29369769, 35035795, 68591376, 70449741, 81922441])
     }
 
     print("WorkDownloader")

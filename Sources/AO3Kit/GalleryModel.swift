@@ -157,6 +157,39 @@ extension Store {
     }
 }
 
+extension Store {
+    /// Member works of a series, in series order (by `part`). Used by the detail view to
+    /// list "the works in this series". Members aren't necessarily bookmarked, so these are
+    /// built straight from the `work` rows (no bookmark fields, no tags).
+    public func fetchSeriesMembers(seriesID: Int) throws -> [WorkListItem] {
+        try dbQueue.read { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT w.* FROM series_work sw JOIN work w ON w.id = sw.work_id
+                WHERE sw.series_id = ? ORDER BY sw.part
+                """, arguments: [seriesID])
+            return rows.map { row in
+                let complete: Int? = row["is_complete"]
+                return WorkListItem(
+                    itemID: row["id"], bookmarkID: nil,
+                    kind: BookmarkKind(rawValue: row["kind"]) ?? .work,
+                    sourcePath: row["source_path"], title: row["title"], author: row["author"],
+                    authorURL: row["author_url"],
+                    fandoms: [], relationships: [], characters: [], freeforms: [], warnings: [],
+                    rating: row["rating"], category: row["category"],
+                    isComplete: complete.map { $0 != 0 }, language: row["language"],
+                    wordCount: row["word_count"], worksCount: nil,
+                    chaptersHave: row["chapters_have"], chaptersTotal: row["chapters_total"],
+                    kudos: row["kudos"], comments: row["comments"],
+                    bookmarksCount: row["bookmarks_count"], hits: row["hits"],
+                    summary: row["summary"], updatedAt: row["updated_at"], dateText: row["date_text"],
+                    bookmarkedAt: nil, bookmarkTags: [], bookmarkerNotes: nil,
+                    isRec: false, isPrivate: false,
+                    downloadState: row["download_state"], epubPath: row["epub_path"])
+            }
+        }
+    }
+}
+
 // MARK: - AO3 required-tags classification (the colour-coded corner symbols)
 
 /// First square — content rating. Maps the blurb's rating text to AO3's scheme so the UI
@@ -208,6 +241,30 @@ extension WorkListItem {
 /// Completion facet. `.any` doesn't filter; series (isComplete == nil) pass `.any` only.
 public enum CompletionFilter: String, Sendable, CaseIterable { case any, complete, wip }
 
+/// Download/archive state, single-select (like completion) — tri-state include/exclude over
+/// these is more confusing than useful.
+public enum DownloadFilter: String, Sendable, CaseIterable {
+    case any, saved, notDownloaded, offsite
+
+    public var label: String {
+        switch self {
+        case .any:           return "Any"
+        case .saved:         return "Saved"
+        case .notDownloaded: return "Not saved"
+        case .offsite:       return "Off-site"
+        }
+    }
+
+    public func matches(_ downloadState: String) -> Bool {
+        switch self {
+        case .any:           return true
+        case .saved:         return downloadState == "downloaded"
+        case .notDownloaded: return downloadState == "pending"
+        case .offsite:       return downloadState == "unavailable"
+        }
+    }
+}
+
 /// A combinable set of gallery filters. Each dimension has an **include** set (OR within,
 /// AND across dimensions) and an **exclude** set (an item matching any excluded value is
 /// dropped). Empty sets mean "no constraint". Exclude wins over include.
@@ -218,9 +275,8 @@ public struct GalleryFilter: Sendable, Equatable {
     public var excludeFandoms: Set<String> = []
     public var ratings: Set<String> = []
     public var excludeRatings: Set<String> = []
-    public var downloadStates: Set<String> = []
-    public var excludeDownloadStates: Set<String> = []
     public var completion: CompletionFilter = .any
+    public var download: DownloadFilter = .any
     public var searchText: String = ""
 
     public init() {}
@@ -229,8 +285,7 @@ public struct GalleryFilter: Sendable, Equatable {
         !bookmarkTypes.isEmpty || !excludeBookmarkTypes.isEmpty
             || !fandoms.isEmpty || !excludeFandoms.isEmpty
             || !ratings.isEmpty || !excludeRatings.isEmpty
-            || !downloadStates.isEmpty || !excludeDownloadStates.isEmpty
-            || completion != .any
+            || completion != .any || download != .any
             || !searchText.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
@@ -241,9 +296,8 @@ public struct GalleryFilter: Sendable, Equatable {
         // Rating.
         if !ratings.isEmpty, !(item.rating.map(ratings.contains) ?? false) { return false }
         if let r = item.rating, excludeRatings.contains(r) { return false }
-        // Download state.
-        if !downloadStates.isEmpty, !downloadStates.contains(item.downloadState) { return false }
-        if excludeDownloadStates.contains(item.downloadState) { return false }
+        // Download / archive state (single-select).
+        if !download.matches(item.downloadState) { return false }
         // Fandom (item passes include if it has ANY included fandom; fails if it has ANY excluded).
         if !fandoms.isEmpty, fandoms.isDisjoint(with: item.fandoms) { return false }
         if !excludeFandoms.isEmpty, !excludeFandoms.isDisjoint(with: item.fandoms) { return false }
@@ -273,9 +327,6 @@ public struct GalleryFilter: Sendable, Equatable {
     }
     public func clearingFandoms() -> GalleryFilter {
         var c = self; c.fandoms = []; c.excludeFandoms = []; return c
-    }
-    public func clearingDownloadStates() -> GalleryFilter {
-        var c = self; c.downloadStates = []; c.excludeDownloadStates = []; return c
     }
 }
 
@@ -367,9 +418,6 @@ public final class GalleryViewModel {
     public var typeFacets: [(name: String, count: Int)] {
         Facets.bookmarkTypes(filter.clearingBookmarkTypes().apply(to: allItems))
     }
-    public var downloadFacets: [(name: String, count: Int)] {
-        Facets.downloadStates(filter.clearingDownloadStates().apply(to: allItems))
-    }
 
     public var totalCount: Int { allItems.count }
     public var visibleCount: Int { visibleItems.count }
@@ -380,7 +428,6 @@ public final class GalleryViewModel {
     public func toggleType(_ k: BookmarkKind) { toggle(&filter.bookmarkTypes, k) }
     public func toggleFandom(_ f: String) { toggle(&filter.fandoms, f) }
     public func toggleRating(_ r: String) { toggle(&filter.ratings, r) }
-    public func toggleDownloadState(_ s: String) { toggle(&filter.downloadStates, s) }
 
     // Tri-state: each facet value cycles neutral → include → exclude → neutral. This is the
     // sidebar's interaction, so include/exclude live in one list instead of AO3's duplicated
@@ -388,12 +435,10 @@ public final class GalleryViewModel {
     public func typeState(_ k: BookmarkKind) -> FacetState { state(filter.bookmarkTypes, filter.excludeBookmarkTypes, k) }
     public func ratingState(_ r: String) -> FacetState { state(filter.ratings, filter.excludeRatings, r) }
     public func fandomState(_ f: String) -> FacetState { state(filter.fandoms, filter.excludeFandoms, f) }
-    public func downloadState(_ s: String) -> FacetState { state(filter.downloadStates, filter.excludeDownloadStates, s) }
 
     public func cycleType(_ k: BookmarkKind) { cycle(\.bookmarkTypes, \.excludeBookmarkTypes, k) }
     public func cycleRating(_ r: String) { cycle(\.ratings, \.excludeRatings, r) }
     public func cycleFandom(_ f: String) { cycle(\.fandoms, \.excludeFandoms, f) }
-    public func cycleDownloadState(_ s: String) { cycle(\.downloadStates, \.excludeDownloadStates, s) }
 
     private func toggle<T: Hashable>(_ set: inout Set<T>, _ v: T) {
         if set.contains(v) { set.remove(v) } else { set.insert(v) }

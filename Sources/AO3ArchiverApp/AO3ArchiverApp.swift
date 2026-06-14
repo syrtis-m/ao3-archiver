@@ -37,8 +37,8 @@ struct RootView: View {
 
     var body: some View {
         Group {
-            if store != nil {
-                GalleryView(vm: vm, archiveRoot: archiveRoot)
+            if let store {
+                GalleryView(vm: vm, store: store, archiveRoot: archiveRoot)
             } else if let openError {
                 ContentUnavailableView("Couldn't open archive", systemImage: "externaldrive.badge.xmark",
                                        description: Text(openError))

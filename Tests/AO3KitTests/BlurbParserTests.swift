@@ -416,4 +416,27 @@ import Foundation
         vm.cycleFandom(fandom); #expect(vm.fandomState(fandom) == .neutral)
         #expect(vm.visibleCount == vm.totalCount)
     }
+
+    @Test func downloadFilterSingleSelect() throws {
+        let (_, items) = try loadedItems()
+        var f = GalleryFilter(); f.download = .offsite
+        #expect(f.apply(to: items).map(\.kind) == [.external])
+        f.download = .notDownloaded
+        #expect(f.apply(to: items).count == 19)
+        f.download = .saved
+        #expect(f.apply(to: items).isEmpty)
+    }
+
+    @Test func seriesMembersFetchedInOrder() throws {
+        let card = try #require(try BlurbParser.parseListing(html: fixture("series_card")).first)
+        let members = try BlurbParser.parseListing(html: fixture("series_page"))
+        let store = try Store(inMemory: true)
+        try store.upsertSeries(card)
+        for (i, m) in members.enumerated() {
+            try store.upsertWork(m)
+            try store.linkSeriesWork(seriesID: card.workID, workID: m.workID, part: i + 1)
+        }
+        let fetched = try store.fetchSeriesMembers(seriesID: card.workID)
+        #expect(fetched.map(\.itemID) == [26762044, 29369769, 35035795, 68591376, 70449741, 81922441])
+    }
 }

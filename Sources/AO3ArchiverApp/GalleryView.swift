@@ -5,6 +5,7 @@ import AO3Kit
 /// toolbar and a trailing inspector for the selected bookmark.
 struct GalleryView: View {
     @Bindable var vm: GalleryViewModel
+    let store: Store
     let archiveRoot: URL
 
     @State private var selectionID: WorkListItem.ID?
@@ -28,7 +29,7 @@ struct GalleryView: View {
                 .toolbar { toolbarContent }
                 .inspector(isPresented: $showInspector) {
                     if let item = selectedItem {
-                        WorkDetailView(item: item, archiveRoot: archiveRoot)
+                        WorkDetailView(item: item, store: store, archiveRoot: archiveRoot)
                             .inspectorColumnWidth(min: 280, ideal: 360, max: 460)
                     } else {
                         ContentUnavailableView("No selection", systemImage: "sidebar.right")
@@ -59,6 +60,7 @@ struct GalleryView: View {
                                         .strokeBorder(Color.accentColor, lineWidth: 2)
                                 }
                             }
+                            .contentShape(Rectangle())   // make the whole card clickable
                             .onTapGesture { selectionID = item.id; showInspector = true }
                     }
                 }

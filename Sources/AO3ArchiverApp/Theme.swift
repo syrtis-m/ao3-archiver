@@ -101,16 +101,50 @@ struct ColorBadge: View {
     }
 }
 
-/// AO3 second-square category colours (relationships / pairings / orientations).
-func categoryColor(_ category: String) -> Color {
+// AO3 second-square category colours (relationships / pairings / orientations). F/F red,
+// M/M blue, Gen green, F/M a red→blue gradient, Multi a gradient of the category colours.
+
+/// The fill/border tint for a category — a solid colour or a gradient.
+func categoryStyle(_ category: String) -> AnyShapeStyle {
     switch category {
-    case "Gen":   return .teal
-    case "F/F":   return .pink
-    case "F/M":   return .purple
-    case "M/M":   return .blue
-    case "Multi": return .orange
+    case "Gen":   return AnyShapeStyle(.green)
+    case "F/F":   return AnyShapeStyle(.red)
+    case "M/M":   return AnyShapeStyle(.blue)
+    case "F/M":   return AnyShapeStyle(
+        LinearGradient(colors: [.red, .blue], startPoint: .leading, endPoint: .trailing))
+    case "Multi": return AnyShapeStyle(
+        LinearGradient(colors: [.green, .red, .blue], startPoint: .leading, endPoint: .trailing))
+    case "Other": return AnyShapeStyle(.gray)
+    default:      return AnyShapeStyle(.secondary)
+    }
+}
+
+/// Legible text colour for a category badge (gradients use primary text).
+func categoryTextColor(_ category: String) -> Color {
+    switch category {
+    case "Gen": return .green
+    case "F/F": return .red
+    case "M/M": return .blue
     case "Other": return .gray
-    default:      return .secondary
+    default:    return .primary       // F/M, Multi: gradient fill, neutral text
+    }
+}
+
+/// A category capsule supporting solid or gradient tint (for F/M and Multi).
+struct CategoryBadge: View {
+    let category: String
+
+    var body: some View {
+        let style = categoryStyle(category)
+        Text(category)
+            .font(.caption2.weight(.semibold))
+            .lineLimit(1)
+            .fixedSize()
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .foregroundStyle(categoryTextColor(category))
+            .background(style.opacity(0.22), in: Capsule())
+            .overlay(Capsule().strokeBorder(style, lineWidth: 1))
     }
 }
 

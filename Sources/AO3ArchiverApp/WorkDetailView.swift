@@ -6,8 +6,11 @@ import AppKit
 /// EPUB in Books, reveal it in Finder, and view the work on AO3.
 struct WorkDetailView: View {
     let item: WorkListItem
+    let store: Store
     /// Absolute path to the archive root, for resolving the relative epub path.
     let archiveRoot: URL
+
+    @State private var seriesMembers: [WorkListItem] = []
 
     var body: some View {
         ScrollView {
@@ -20,6 +23,7 @@ struct WorkDetailView: View {
                 if let line = nonEmpty(item.statsLine) {
                     Text(line).font(.callout.monospacedDigit()).foregroundStyle(.secondary)
                 }
+                if item.kind == .series, !seriesMembers.isEmpty { seriesSection }
                 metaGrid
                 if let summary = nonEmpty(item.summary) {
                     labeled("Summary") { Text(summary) }
@@ -35,6 +39,34 @@ struct WorkDetailView: View {
             }
             .padding(20)
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .task(id: item.id) {
+            seriesMembers = item.kind == .series
+                ? ((try? store.fetchSeriesMembers(seriesID: item.itemID)) ?? [])
+                : []
+        }
+    }
+
+    // The works inside a bookmarked series, in series order.
+    private var seriesSection: some View {
+        labeled("Works in this series") {
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(Array(seriesMembers.enumerated()), id: \.element.id) { index, work in
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text("\(index + 1).").font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(work.title).fontWeight(.medium)
+                            if let line = nonEmpty(work.statsLine) {
+                                Text(line).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                            }
+                        }
+                        Spacer(minLength: 4)
+                        if work.downloadState == "downloaded" {
+                            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                        }
+                    }
+                }
+            }
         }
     }
 
