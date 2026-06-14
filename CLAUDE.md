@@ -131,8 +131,15 @@ Tests/AO3KitTests/     swift-testing suite + Fixtures/ (real captured AO3 HTML):
   appear as their own cards.
 - **No covers.** AO3 EPUBs contain no cover art; the gallery is metadata cards, not a cover
   grid. Don't reintroduce cover extraction.
-- **Facet counts** are a pure function over the currently-filtered set (decided + tested),
-  not emergent view behavior.
+- **Facet counts** are a pure function over the set filtered by all OTHER dimensions
+  (true faceted search) — so a dimension never hides its own values. Tested.
+- **Filters are include + exclude (tri-state).** Each `GalleryFilter` dimension has an
+  include set and an exclude set; the sidebar cycles each value neutral → include → exclude
+  → neutral (one list, not AO3's duplicated include/exclude lists). Exclude wins.
+- **AO3 corner symbols are colour-coded** from `AO3Kit` classification (`ratingLevel`,
+  `warningLevel`, `categories`). Category is one comma-joined symbol ("F/M, M/M") → split
+  into per-category badges. Tags are text-only pills (no icons), grouped by type on
+  separate lines (fandom → relationships → characters → freeform).
 - **Verification ceiling = `swift build`.** Don't `swift run AO3ArchiverApp` as a check —
   it needs a window server and will hang headlessly. Test the model, compile the views.
 

@@ -296,6 +296,34 @@ do {
         })
         check("external bookmark → external warning level",
               items.first { $0.kind == .external }?.warningLevel == .external)
+        check("a comma category splits into multiple", items.contains { $0.categories.count >= 2 })
+        check("no item exposes 'No category' as a badge",
+              items.allSatisfy { !$0.categories.contains("No category") })
+
+        print("Gallery — include / exclude")
+        let aFandom = Facets.fandoms(items).first!.name
+        var ex = GalleryFilter(); ex.excludeFandoms = [aFandom]
+        let afterExclude = ex.apply(to: items)
+        check("exclude fandom drops those items",
+              afterExclude.allSatisfy { !$0.fandoms.contains(aFandom) })
+        check("exclude yields a strict subset", afterExclude.count < items.count)
+        // include + exclude compose: include fandom A but exclude tag-set is independent.
+        var both = GalleryFilter(); both.ratings = ["Explicit"]; both.excludeFandoms = [aFandom]
+        check("include AND exclude compose",
+              both.apply(to: items).allSatisfy { $0.rating == "Explicit" && !$0.fandoms.contains(aFandom) })
+
+        print("Gallery — tri-state cycle")
+        let vm2 = GalleryViewModel(); vm2.load(from: store)
+        check("starts neutral", vm2.fandomState(aFandom) == .neutral)
+        vm2.cycleFandom(aFandom)
+        check("cycle 1 → include", vm2.fandomState(aFandom) == .include)
+        check("include narrows the set", vm2.visibleCount < vm2.totalCount)
+        vm2.cycleFandom(aFandom)
+        check("cycle 2 → exclude", vm2.fandomState(aFandom) == .exclude)
+        check("exclude removes those items",
+              vm2.visibleItems.allSatisfy { !$0.fandoms.contains(aFandom) })
+        vm2.cycleFandom(aFandom)
+        check("cycle 3 → neutral (full set)", vm2.fandomState(aFandom) == .neutral && vm2.visibleCount == 20)
     }
 
     // Series bookmark shows as one gallery item (members have no bookmark row → not listed).

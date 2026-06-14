@@ -178,6 +178,16 @@ extension WorkListItem {
         return .notRated
     }
 
+    /// Second square — relationship categories. AO3 packs multiple into one comma-joined
+    /// symbol ("F/M, M/M"); split it so each can be shown (and coloured) separately.
+    /// "No category" / empty yields none (AO3's blank square).
+    public var categories: [String] {
+        guard let category, !category.isEmpty,
+              category.caseInsensitiveCompare("No category") != .orderedSame else { return [] }
+        return category.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
+
     public var warningLevel: WarningLevel {
         if kind == .external { return .external }
         let lower = warnings.map { $0.lowercased() }
@@ -198,29 +208,46 @@ extension WorkListItem {
 /// Completion facet. `.any` doesn't filter; series (isComplete == nil) pass `.any` only.
 public enum CompletionFilter: String, Sendable, CaseIterable { case any, complete, wip }
 
-/// A combinable set of gallery filters. Empty sets mean "no constraint on this dimension";
-/// multiple values within a dimension are OR'd, and dimensions are AND'd together.
+/// A combinable set of gallery filters. Each dimension has an **include** set (OR within,
+/// AND across dimensions) and an **exclude** set (an item matching any excluded value is
+/// dropped). Empty sets mean "no constraint". Exclude wins over include.
 public struct GalleryFilter: Sendable, Equatable {
     public var bookmarkTypes: Set<BookmarkKind> = []
+    public var excludeBookmarkTypes: Set<BookmarkKind> = []
     public var fandoms: Set<String> = []
+    public var excludeFandoms: Set<String> = []
     public var ratings: Set<String> = []
+    public var excludeRatings: Set<String> = []
     public var downloadStates: Set<String> = []
+    public var excludeDownloadStates: Set<String> = []
     public var completion: CompletionFilter = .any
     public var searchText: String = ""
 
     public init() {}
 
     public var isActive: Bool {
-        !bookmarkTypes.isEmpty || !fandoms.isEmpty || !ratings.isEmpty
-            || !downloadStates.isEmpty || completion != .any
+        !bookmarkTypes.isEmpty || !excludeBookmarkTypes.isEmpty
+            || !fandoms.isEmpty || !excludeFandoms.isEmpty
+            || !ratings.isEmpty || !excludeRatings.isEmpty
+            || !downloadStates.isEmpty || !excludeDownloadStates.isEmpty
+            || completion != .any
             || !searchText.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
     public func matches(_ item: WorkListItem) -> Bool {
+        // Bookmark type.
         if !bookmarkTypes.isEmpty, !bookmarkTypes.contains(item.kind) { return false }
+        if excludeBookmarkTypes.contains(item.kind) { return false }
+        // Rating.
         if !ratings.isEmpty, !(item.rating.map(ratings.contains) ?? false) { return false }
+        if let r = item.rating, excludeRatings.contains(r) { return false }
+        // Download state.
         if !downloadStates.isEmpty, !downloadStates.contains(item.downloadState) { return false }
+        if excludeDownloadStates.contains(item.downloadState) { return false }
+        // Fandom (item passes include if it has ANY included fandom; fails if it has ANY excluded).
         if !fandoms.isEmpty, fandoms.isDisjoint(with: item.fandoms) { return false }
+        if !excludeFandoms.isEmpty, !excludeFandoms.isDisjoint(with: item.fandoms) { return false }
+        // Completion.
         switch completion {
         case .any:      break
         case .complete: if item.isComplete != true { return false }
@@ -235,13 +262,21 @@ public struct GalleryFilter: Sendable, Equatable {
         isActive ? items.filter(matches) : items
     }
 
-    // Copies with one dimension cleared, for true faceted counts: a dimension's facet list
-    // is computed against everything EXCEPT its own selection, so picking one value never
-    // hides that dimension's other values (multi-select OR stays reachable).
-    public func clearingBookmarkTypes() -> GalleryFilter { var c = self; c.bookmarkTypes = []; return c }
-    public func clearingRatings() -> GalleryFilter { var c = self; c.ratings = []; return c }
-    public func clearingFandoms() -> GalleryFilter { var c = self; c.fandoms = []; return c }
-    public func clearingDownloadStates() -> GalleryFilter { var c = self; c.downloadStates = []; return c }
+    // Copies with one dimension's include+exclude cleared, for true faceted counts: a
+    // dimension's facet list is computed against everything EXCEPT its own selection, so
+    // picking/excluding one value never hides that dimension's other values.
+    public func clearingBookmarkTypes() -> GalleryFilter {
+        var c = self; c.bookmarkTypes = []; c.excludeBookmarkTypes = []; return c
+    }
+    public func clearingRatings() -> GalleryFilter {
+        var c = self; c.ratings = []; c.excludeRatings = []; return c
+    }
+    public func clearingFandoms() -> GalleryFilter {
+        var c = self; c.fandoms = []; c.excludeFandoms = []; return c
+    }
+    public func clearingDownloadStates() -> GalleryFilter {
+        var c = self; c.downloadStates = []; c.excludeDownloadStates = []; return c
+    }
 }
 
 /// Sort options. "Date bookmarked" uses the monotonic bookmark id (reliable; the stored
@@ -339,14 +374,46 @@ public final class GalleryViewModel {
     public var totalCount: Int { allItems.count }
     public var visibleCount: Int { visibleItems.count }
 
-    // Toggle helpers the sidebar binds to.
+    public func clearFilters() { filter = GalleryFilter() }
+
+    // Include-only toggles (kept for simple uses / tests).
     public func toggleType(_ k: BookmarkKind) { toggle(&filter.bookmarkTypes, k) }
     public func toggleFandom(_ f: String) { toggle(&filter.fandoms, f) }
     public func toggleRating(_ r: String) { toggle(&filter.ratings, r) }
     public func toggleDownloadState(_ s: String) { toggle(&filter.downloadStates, s) }
-    public func clearFilters() { filter = GalleryFilter() }
+
+    // Tri-state: each facet value cycles neutral → include → exclude → neutral. This is the
+    // sidebar's interaction, so include/exclude live in one list instead of AO3's duplicated
+    // "include" and "exclude" filter sets.
+    public func typeState(_ k: BookmarkKind) -> FacetState { state(filter.bookmarkTypes, filter.excludeBookmarkTypes, k) }
+    public func ratingState(_ r: String) -> FacetState { state(filter.ratings, filter.excludeRatings, r) }
+    public func fandomState(_ f: String) -> FacetState { state(filter.fandoms, filter.excludeFandoms, f) }
+    public func downloadState(_ s: String) -> FacetState { state(filter.downloadStates, filter.excludeDownloadStates, s) }
+
+    public func cycleType(_ k: BookmarkKind) { cycle(\.bookmarkTypes, \.excludeBookmarkTypes, k) }
+    public func cycleRating(_ r: String) { cycle(\.ratings, \.excludeRatings, r) }
+    public func cycleFandom(_ f: String) { cycle(\.fandoms, \.excludeFandoms, f) }
+    public func cycleDownloadState(_ s: String) { cycle(\.downloadStates, \.excludeDownloadStates, s) }
 
     private func toggle<T: Hashable>(_ set: inout Set<T>, _ v: T) {
         if set.contains(v) { set.remove(v) } else { set.insert(v) }
     }
+
+    private func state<T: Hashable>(_ inc: Set<T>, _ exc: Set<T>, _ v: T) -> FacetState {
+        inc.contains(v) ? .include : (exc.contains(v) ? .exclude : .neutral)
+    }
+
+    /// Cycle one value through neutral → include → exclude → neutral. Mutates a local copy
+    /// of `filter` (single write-back) to avoid aliasing two inout sub-properties.
+    private func cycle<T: Hashable>(_ inc: WritableKeyPath<GalleryFilter, Set<T>>,
+                                    _ exc: WritableKeyPath<GalleryFilter, Set<T>>, _ v: T) {
+        var f = filter
+        if f[keyPath: inc].contains(v) { f[keyPath: inc].remove(v); f[keyPath: exc].insert(v) }
+        else if f[keyPath: exc].contains(v) { f[keyPath: exc].remove(v) }
+        else { f[keyPath: inc].insert(v) }
+        filter = f
+    }
 }
+
+/// Tri-state of a facet value in the sidebar.
+public enum FacetState: Sendable, Equatable { case neutral, include, exclude }

@@ -387,4 +387,33 @@ import Foundation
         }
         #expect(items.first { $0.kind == .external }?.warningLevel == .external)
     }
+
+    @Test func categorySplitsAndExcludesNoCategory() throws {
+        let (_, items) = try loadedItems()
+        #expect(items.contains { $0.categories.count >= 2 })                     // "F/M, Gen" → 2
+        #expect(items.allSatisfy { !$0.categories.contains("No category") })     // never a badge
+    }
+
+    @Test func includeExcludeAndTriStateCycle() throws {
+        let cards = try BlurbParser.parseListing(html: fixture("bookmarks_page"))
+        let store = try Store(inMemory: true)
+        try ingest(store, cards)
+        let items = try store.fetchAllListItems()
+        let fandom = try #require(Facets.fandoms(items).first?.name)
+
+        // Exclude drops matching items; include + exclude compose.
+        var ex = GalleryFilter(); ex.excludeFandoms = [fandom]
+        #expect(ex.apply(to: items).allSatisfy { !$0.fandoms.contains(fandom) })
+        #expect(ex.apply(to: items).count < items.count)
+
+        // Tri-state: neutral → include → exclude → neutral.
+        let vm = GalleryViewModel(); vm.load(from: store)
+        #expect(vm.fandomState(fandom) == .neutral)
+        vm.cycleFandom(fandom); #expect(vm.fandomState(fandom) == .include)
+        #expect(vm.visibleCount < vm.totalCount)
+        vm.cycleFandom(fandom); #expect(vm.fandomState(fandom) == .exclude)
+        #expect(vm.visibleItems.allSatisfy { !$0.fandoms.contains(fandom) })
+        vm.cycleFandom(fandom); #expect(vm.fandomState(fandom) == .neutral)
+        #expect(vm.visibleCount == vm.totalCount)
+    }
 }

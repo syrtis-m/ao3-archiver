@@ -2,7 +2,10 @@ import SwiftUI
 import AO3Kit
 
 /// The glass filter sidebar: facet sections with live counts, mirroring AO3's bookmark
-/// filters. Toggling a facet re-derives the visible set in memory (no disk on the hot path).
+/// filters. Each facet row is **tri-state** — click to include (green ✓), click again to
+/// exclude (red ⊘), once more to clear — so include and exclude live in one list instead of
+/// AO3's duplicated "include" / "exclude" filter sets. Toggling re-derives the visible set
+/// in memory (no disk on the hot path).
 struct FilterSidebar: View {
     @Bindable var vm: GalleryViewModel
 
@@ -16,27 +19,26 @@ struct FilterSidebar: View {
                         Button("Clear", action: vm.clearFilters).buttonStyle(.borderless).font(.caption)
                     }
                 }
+                Text("Click to include · again to exclude")
+                    .font(.caption2).foregroundStyle(.tertiary)
             }
 
             facetSection("Bookmark type", rows: vm.typeFacets,
-                         isOn: { vm.filter.bookmarkTypes.contains(.init(rawValue: $0) ?? .work) },
-                         toggle: { if let k = BookmarkKind(rawValue: $0) { vm.toggleType(k) } },
+                         state: { vm.typeState(BookmarkKind(rawValue: $0) ?? .work) },
+                         cycle: { if let k = BookmarkKind(rawValue: $0) { vm.cycleType(k) } },
                          display: { BookmarkKind(rawValue: $0)?.badge.label ?? $0 })
 
             facetSection("Rating", rows: vm.ratingFacets,
-                         isOn: { vm.filter.ratings.contains($0) },
-                         toggle: { vm.toggleRating($0) })
+                         state: { vm.ratingState($0) }, cycle: { vm.cycleRating($0) })
 
             completionSection
 
             facetSection("Download", rows: vm.downloadFacets,
-                         isOn: { vm.filter.downloadStates.contains($0) },
-                         toggle: { vm.toggleDownloadState($0) },
+                         state: { vm.downloadState($0) }, cycle: { vm.cycleDownloadState($0) },
                          display: { downloadLabel($0) })
 
             facetSection("Fandom", rows: vm.fandomFacets,
-                         isOn: { vm.filter.fandoms.contains($0) },
-                         toggle: { vm.toggleFandom($0) },
+                         state: { vm.fandomState($0) }, cycle: { vm.cycleFandom($0) },
                          limit: 25)
         }
         .listStyle(.sidebar)
@@ -45,17 +47,16 @@ struct FilterSidebar: View {
 
     @ViewBuilder
     private func facetSection(_ title: String, rows: [(name: String, count: Int)],
-                              isOn: @escaping (String) -> Bool,
-                              toggle: @escaping (String) -> Void,
+                              state: @escaping (String) -> FacetState,
+                              cycle: @escaping (String) -> Void,
                               display: @escaping (String) -> String = { $0 },
                               limit: Int = .max) -> some View {
         if !rows.isEmpty {
             Section(title) {
                 ForEach(rows.prefix(limit), id: \.name) { row in
-                    Button { toggle(row.name) } label: {
+                    Button { cycle(row.name) } label: {
                         HStack {
-                            Image(systemName: isOn(row.name) ? "checkmark.square.fill" : "square")
-                                .foregroundStyle(isOn(row.name) ? Color.accentColor : .secondary)
+                            stateIcon(state(row.name))
                             Text(display(row.name)).lineLimit(1)
                             Spacer()
                             Text("\(row.count)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
@@ -64,6 +65,15 @@ struct FilterSidebar: View {
                     .buttonStyle(.plain)
                 }
             }
+        }
+    }
+
+    @ViewBuilder
+    private func stateIcon(_ state: FacetState) -> some View {
+        switch state {
+        case .neutral: Image(systemName: "square").foregroundStyle(.secondary)
+        case .include: Image(systemName: "checkmark.square.fill").foregroundStyle(.green)
+        case .exclude: Image(systemName: "minus.square.fill").foregroundStyle(.red)
         }
     }
 

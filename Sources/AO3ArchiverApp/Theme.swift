@@ -12,19 +12,17 @@ extension View {
 }
 
 /// A glass capsule tag pill (fandoms, relationships, characters, your bookmark tags).
+/// Text-only — no icon (tags read cleaner without one).
 struct TagPill: View {
     let text: String
-    var systemImage: String? = nil
 
     var body: some View {
-        HStack(spacing: 4) {
-            if let systemImage { Image(systemName: systemImage).font(.caption2) }
-            Text(text).lineLimit(1)
-        }
-        .font(.caption)
-        .padding(.horizontal, 9)
-        .padding(.vertical, 4)
-        .glassEffect(in: Capsule())
+        Text(text)
+            .font(.caption)
+            .lineLimit(1)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 4)
+            .glassEffect(in: Capsule())
     }
 }
 
@@ -80,6 +78,8 @@ extension WarningLevel {
 }
 
 /// A small AO3-style colour-coded capsule (tinted fill + border + matching text).
+/// `fixedSize` + `lineLimit(1)` keep it a horizontal pill — never let the label wrap into
+/// a one-letter-per-line tall column when horizontal space is tight.
 struct ColorBadge: View {
     let text: String
     var systemImage: String? = nil
@@ -91,11 +91,26 @@ struct ColorBadge: View {
             Text(text)
         }
         .font(.caption2.weight(.semibold))
+        .lineLimit(1)
+        .fixedSize()
         .padding(.horizontal, 7)
         .padding(.vertical, 3)
         .foregroundStyle(color)
         .background(color.opacity(0.22), in: Capsule())
         .overlay(Capsule().strokeBorder(color.opacity(0.55), lineWidth: 1))
+    }
+}
+
+/// AO3 second-square category colours (relationships / pairings / orientations).
+func categoryColor(_ category: String) -> Color {
+    switch category {
+    case "Gen":   return .teal
+    case "F/F":   return .pink
+    case "F/M":   return .purple
+    case "M/M":   return .blue
+    case "Multi": return .orange
+    case "Other": return .gray
+    default:      return .secondary
     }
 }
 
