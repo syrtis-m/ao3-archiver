@@ -501,19 +501,24 @@ facets.
 > also gives a real, double-clickable testbed for M3. Strong case to pull M4.1–M4.3 **before
 > M3**; left in M4 by default, but call it out.
 
-- **M4.1 — Real `.app` bundle.** Info.plist, bundle id, app icon, sandbox entitlements →
-  double-clickable, Dock icon, app menu, native keyboard focus/resize (removes the bare-exe
-  runtime nudges). Minimal Xcode project or a SwiftPM + bundling step.
-- **M4.2 — In-app sync.** Wire the tested `SyncEngine` into the GUI: a Sync button with live
-  progress (pages, downloads), off the main actor, cancelable; surface the rate-limit "AO3
-  asked us to slow down" status. Today syncing is CLI-only.
-- **M4.3 — Folder picker.** Security-scoped bookmark to choose the archive folder in-app
-  (needs the sandbox from M4.1), replacing `AO3_ARCHIVE_DIR`; persist the bookmark.
-- **M4.4 — Cookie entry UI.** Paste `_otwarchive_session` in Settings; store in the
-  **Keychain** (never env/DB/logs).
-- **M4.5 — Glass polish.** `glassEffectContainer` grouping, animated filter transitions,
-  refined selection/hover, empty/error/rate-limit states. (No thumbnail cache — AO3 EPUBs
-  have no covers.)
+- **M4.1 — Real `.app` bundle: ✅ done.** `Packaging/make-app.sh` assembles a double-clickable
+  "AO3 Archiver.app" (Info.plist + bundle id + ad-hoc signature). **Non-sandboxed** by
+  design (personal tool reads a user-chosen folder directly; signing/notarization is a
+  distribution concern). Launched as a bundle it's a normal foreground app, so the
+  bare-`swift run` runtime nudges become belt-and-suspenders. App icon still TODO.
+- **M4.2 — In-app sync: ✅ done.** `SyncController` (@MainActor @Observable) runs the tested
+  `SyncEngine` off the main actor with live progress + cancel; `SyncSheet` collects
+  username/cookie and shows progress; writes through the app's `Store` so the gallery reload
+  sees new rows. **M4.4 (cookie in Keychain) folded in:** `CredentialStore` keeps the
+  username + `_otwarchive_session` cookie in the macOS Keychain. (Rate-limit status surfacing
+  is partial — the engine logs it; piping it into the sheet is a small follow-up.)
+- **M4.3 — Folder picker: ✅ done.** `NSOpenPanel` to choose the archive folder, persisted as
+  a plain path in UserDefaults (non-sandboxed, so no security-scoped bookmark needed);
+  `AO3_ARCHIVE_DIR` overrides for dev. Also fixed the double-clicked "SQLite error 14" (create
+  the folder before opening the db).
+- **M4.5 — Glass polish (next in M4).** `glassEffectContainer` grouping, animated filter
+  transitions, refined selection/hover, empty/error/rate-limit states; app icon. (No
+  thumbnail cache — AO3 EPUBs have no covers.)
 
 ### M5 — Hardening
 
