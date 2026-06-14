@@ -24,31 +24,54 @@ struct GalleryView: View {
     // full recompute. ~200ms collapses a burst of keystrokes into one. Clearing applies at once.
     @State private var searchDebounce: Task<Void, Never>?
 
-    // Responsive layout. Below `wideMinWidth` only ONE side panel is pinned at a time (opening
-    // the filters closes the details and vice versa) — which both matches "one at a time on a
-    // medium window" and structurally prevents the three-pane squeeze that clipped content.
-    // We drive the sidebar via an explicit columnVisibility (with our own Filters toggle in
-    // place of the default one) so the mutual exclusion is one-directional and can't loop.
-    @State private var availableWidth: CGFloat = 0
-    @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    // Responsive layout, three breakpoints driven by the window width:
+    //   • wide   (≥ wideMinWidth): both side panels can be pinned as columns at once.
+    //   • medium (narrow..<wide):  ONE column at a time — opening one closes the other (which
+    //                              also prevents the three-pane squeeze that clipped content).
+    //   • narrow (< narrowMaxWidth): panels are full-screen SHEETS over a full-width gallery, so
+    //                              nothing is cramped and the gallery never reflows (no jumping).
+    // `showFilters`/`showInspector` are the user's intent; how each renders depends on the
+    // breakpoint, so the same toggle works everywhere.
+    @State private var showFilters = true
+    @State private var availableWidth: CGFloat = 10_000   // assume wide until geometry resolves
+                                                          // (else isNarrow flashes a sheet on launch)
     private static let wideMinWidth: CGFloat = 1100
+    private static let narrowMaxWidth: CGFloat = 720
     private var isWide: Bool { availableWidth >= Self.wideMinWidth }
-    private var sidebarShown: Bool { columnVisibility != .detailOnly }
+    private var isNarrow: Bool { availableWidth < Self.narrowMaxWidth }
 
-    /// Toggle the filter sidebar; below wide, showing it hides the details panel.
-    private func toggleFilters() {
-        if sidebarShown {
-            columnVisibility = .detailOnly
-        } else {
-            columnVisibility = .all
-            if !isWide { showInspector = false }
-        }
+    /// Which panel (if any) is showing as a takeover sheet — only when narrow.
+    private enum NarrowPanel: Int, Identifiable { case filters, details; var id: Int { rawValue } }
+    private var narrowPanel: Binding<NarrowPanel?> {
+        Binding(
+            get: {
+                guard isNarrow else { return nil }
+                if showInspector { return .details }
+                if showFilters { return .filters }
+                return nil
+            },
+            set: { if $0 == nil { showInspector = false; showFilters = false } })
+    }
+    /// The filter sidebar is a column only when not narrow (narrow uses the sheet).
+    private var filterColumn: Binding<NavigationSplitViewVisibility> {
+        Binding(get: { (showFilters && !isNarrow) ? .all : .detailOnly },
+                set: { v in if !isNarrow { showFilters = (v != .detailOnly) } })
+    }
+    /// The detail inspector is a column only when not narrow (narrow uses the sheet).
+    private var inspectorColumn: Binding<Bool> {
+        Binding(get: { showInspector && !isNarrow }, set: { showInspector = $0 })
     }
 
-    /// Show the details panel; below wide, hide the filter sidebar (one at a time).
+    /// Toggle the filter sidebar; below wide, showing it closes the details panel.
+    private func toggleFilters() {
+        showFilters.toggle()
+        if showFilters && !isWide { showInspector = false }
+    }
+
+    /// Show the details panel; below wide, close the filter sidebar (one at a time).
     private func presentDetails() {
         showInspector = true
-        if !isWide { columnVisibility = .detailOnly }
+        if !isWide { showFilters = false }
     }
 
     /// Toggle the details panel (toolbar button).
@@ -63,7 +86,7 @@ struct GalleryView: View {
     }
 
     var body: some View {
-        NavigationSplitView(columnVisibility: $columnVisibility) {
+        NavigationSplitView(columnVisibility: filterColumn) {
             FilterSidebar(vm: vm, store: store)
                 .navigationSplitViewColumnWidth(min: 280, ideal: 300, max: 360)
                 .toolbar(removing: .sidebarToggle)   // replaced by our own Filters toggle
@@ -73,7 +96,7 @@ struct GalleryView: View {
                 .searchable(text: $searchText, prompt: "Search title, author, tags, notes")
                 .onChange(of: searchText) { _, newValue in debounceSearch(newValue) }
                 .toolbar { toolbarContent }
-                .inspector(isPresented: $showInspector) {
+                .inspector(isPresented: inspectorColumn) {
                     if let item = selectedItem {
                         WorkDetailView(item: item, store: store, archiveRoot: archiveRoot,
                                        onChanged: { vm.load(from: store) })
@@ -87,11 +110,46 @@ struct GalleryView: View {
                               reload: { vm.load(from: store) })
                 }
         }
+        // Narrow: panels take over as a sheet rather than splitting the gallery.
+        .sheet(item: narrowPanel) { panel in narrowTakeover(panel) }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { availableWidth = $0 }
-        .onChange(of: availableWidth) { _, w in
-            // Shrinking below wide with both panels open → keep filters, step the details aside.
-            if w < Self.wideMinWidth, sidebarShown, showInspector { showInspector = false }
+        .onChange(of: isWide) { _, nowWide in
+            // Leaving wide can't show both columns → keep filters, step the details aside.
+            if !nowWide, showFilters, showInspector { showInspector = false }
         }
+        .onChange(of: isNarrow) { _, nowNarrow in
+            // Cross the narrow boundary with a clean slate so a stale intent doesn't auto-open a
+            // sheet (entering) or two columns (leaving).
+            if nowNarrow { showFilters = false; showInspector = false }
+            else { showFilters = true; showInspector = false }
+        }
+    }
+
+    /// A panel presented full-window over the gallery when the window is narrow.
+    @ViewBuilder
+    private func narrowTakeover(_ panel: NarrowPanel) -> some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text(panel == .filters ? "Filters" : "Details").font(.headline)
+                Spacer()
+                Button("Done") { showFilters = false; showInspector = false }
+                    .keyboardShortcut(.cancelAction)
+            }
+            .padding()
+            Divider()
+            switch panel {
+            case .filters:
+                FilterSidebar(vm: vm, store: store)
+            case .details:
+                if let item = selectedItem {
+                    WorkDetailView(item: item, store: store, archiveRoot: archiveRoot,
+                                   onChanged: { vm.load(from: store) })
+                } else {
+                    ContentUnavailableView("No selection", systemImage: "sidebar.right")
+                }
+            }
+        }
+        .frame(minWidth: 360, idealWidth: 460, minHeight: 480, idealHeight: 680)
     }
 
     /// Push the search text into the filter after a short quiet period, so a burst of
