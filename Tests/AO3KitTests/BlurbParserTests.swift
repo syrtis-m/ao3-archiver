@@ -251,3 +251,123 @@ import Foundation
         #expect(try store.worksNeedingDownload().count == 6)
     }
 }
+
+/// Gallery read/filter/sort model — the layer beneath the SwiftUI views. Runs offline
+/// against the same fixtures so the gallery's data is verified without rendering anything.
+@Suite struct GalleryModelTests {
+
+    func fixture(_ name: String) throws -> String {
+        let url = try #require(
+            Bundle.module.url(forResource: name, withExtension: "html", subdirectory: "Fixtures"))
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
+    func ingest(_ store: Store, _ cards: [WorkBlurb]) throws {
+        for b in cards {
+            switch b.kind {
+            case .work, .external:
+                try store.upsertWork(b)
+                try store.upsertBookmark(b, itemKind: b.kind, itemID: b.workID)
+            case .series:
+                try store.upsertSeries(b)
+                try store.upsertBookmark(b, itemKind: .series, itemID: b.workID)
+            }
+        }
+    }
+
+    func loadedItems() throws -> ([WorkBlurb], [WorkListItem]) {
+        let cards = try BlurbParser.parseListing(html: fixture("bookmarks_page"))
+        let store = try Store(inMemory: true)
+        try ingest(store, cards)
+        return (cards, try store.fetchAllListItems())
+    }
+
+    @Test func joinHasNoFanOut() throws {
+        let (cards, items) = try loadedItems()
+        #expect(items.count == 20)                                   // one item per bookmark
+        #expect(items.filter { $0.itemID == 1413325 }.count == 1)    // not duplicated per tag
+        let blurb = try #require(cards.first { $0.workID == 1413325 })
+        let item = try #require(items.first { $0.itemID == 1413325 })
+        #expect(item.fandoms == blurb.fandoms)                       // N tags, one row
+        #expect(item.kind == .work)
+    }
+
+    @Test func kindMappingIsCorrect() throws {
+        let (_, items) = try loadedItems()
+        #expect(items.filter { $0.kind == .work }.count == 19)
+        #expect(items.filter { $0.kind == .external }.count == 1)
+    }
+
+    @Test func filtersComposeWithAnd() throws {
+        let (_, items) = try loadedItems()
+        var f = GalleryFilter()
+        f.bookmarkTypes = [.external]
+        #expect(f.apply(to: items).count == 1)
+
+        f = GalleryFilter(); f.searchText = "circus"
+        #expect(f.apply(to: items).map(\.itemID) == [1413325])
+
+        f = GalleryFilter(); f.bookmarkTypes = [.work]; f.completion = .complete
+        let composed = f.apply(to: items)
+        #expect(composed.allSatisfy { $0.kind == .work && $0.isComplete == true })
+        #expect(composed.count <= items.filter { $0.kind == .work }.count)
+    }
+
+    @Test func sortAndFacets() throws {
+        let (_, items) = try loadedItems()
+        let byBk = GallerySort.dateBookmarked.sorted(items)
+        #expect(byBk.first!.bookmarkID! >= byBk.last!.bookmarkID!)
+
+        let types = Facets.bookmarkTypes(items)
+        #expect(types.reduce(0) { $0 + $1.count } == 20)
+        #expect(types.first?.name == "work")
+    }
+
+    @Test func seriesBookmarkIsOneItem() throws {
+        let card = try #require(try BlurbParser.parseListing(html: fixture("series_card")).first)
+        let members = try BlurbParser.parseListing(html: fixture("series_page"))
+        let store = try Store(inMemory: true)
+        try store.upsertSeries(card)
+        try store.upsertBookmark(card, itemKind: .series, itemID: card.workID)
+        for (i, m) in members.enumerated() {
+            try store.upsertWork(m)
+            try store.linkSeriesWork(seriesID: card.workID, workID: m.workID, part: i + 1)
+        }
+        let items = try store.fetchAllListItems()
+        #expect(items.count == 1)                       // members aren't separately listed
+        #expect(items.first?.kind == .series)
+        #expect(items.first?.worksCount == 6)
+    }
+
+    @Test func viewModelDerivesVisibleSet() throws {
+        let cards = try BlurbParser.parseListing(html: fixture("bookmarks_page"))
+        let store = try Store(inMemory: true)
+        try ingest(store, cards)
+        let vm = GalleryViewModel()
+        vm.load(from: store)
+        #expect(vm.totalCount == 20)
+        vm.toggleType(.external)
+        #expect(vm.visibleCount == 1)
+        vm.clearFilters()
+        #expect(vm.visibleCount == 20)
+    }
+
+    /// Faceted-search invariant: selecting one value in a dimension must keep that
+    /// dimension's other values visible (so multi-select OR is reachable from the sidebar),
+    /// while still narrowing the visible item list. Guards against facet self-collapse.
+    @Test func facetsDoNotSelfCollapse() throws {
+        let (_, items) = try loadedItems()
+        let store = try Store(inMemory: true)
+        try ingest(store, try BlurbParser.parseListing(html: fixture("bookmarks_page")))
+        let vm = GalleryViewModel(); vm.load(from: store)
+
+        let allRatings = Set(Facets.ratings(items).map(\.name))
+        try #require(allRatings.count > 1)
+        let pick = try #require(allRatings.first)
+        vm.toggleRating(pick)
+
+        let shownInFacet = Set(vm.ratingFacets.map(\.name))
+        #expect(shownInFacet.isSuperset(of: allRatings))            // other ratings stay listed
+        #expect(vm.visibleItems.allSatisfy { $0.rating == pick })    // but the list narrows
+    }
+}

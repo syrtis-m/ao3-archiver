@@ -357,9 +357,11 @@ RAM and only fall back to SQL when the result set is huge.
 **Layout (mirrors AO3 bookmarks):**
 - **Left:** glass filter sidebar — collapsible facet sections with live counts, exactly
   the AO3 ordering (Sort & Include / Exclude / More options).
-- **Center:** the gallery. Toggle between **card list** (AO3-style: title, author,
-  fandoms, tag pills, stats row, summary, your tags/notes) and a **cover grid**
-  (`LazyVGrid` of extracted EPUB covers).
+- **Center:** the gallery — a list of rich **metadata cards** (AO3-style: title, author,
+  fandoms, tag pills, stats row, summary, your tags/notes) with a comfortable/compact
+  density toggle. *(Revised in M2: the originally-planned cover grid was dropped — AO3
+  EPUBs contain no cover art, and a book cover is the wrong metaphor for browsing fic;
+  what a reader scans is the metadata, so that's what the card foregrounds.)*
 - **Top:** glass search bar + sort control + sync button with progress.
 - **Detail:** work sheet with full metadata, "Open in Books / Quick Look," reveal-in-
   Finder, re-download, and "view on AO3."
@@ -429,8 +431,19 @@ RAM and only fall back to SQL when the result set is huge.
   Deviations from §5 noted there: `work.updated_at` stored as the unix-ts cache key (not
   ISO); the security-scoped **folder bookmark** is deferred to M2 (it needs the app sandbox,
   which a SwiftPM CLI can't hold — M1's `FileStore` is plain directory management).
-- **M2 — Gallery MVP:** card list + cover grid, open/reveal, basic search and a few
-  filters; the snappy in-memory pipeline.
+- **M2 — Gallery MVP: ✅ done.** SwiftUI app (`AO3ArchiverApp`) over the M1 store: dark
+  Liquid Glass (`.glassEffect`), glass filter sidebar with live facet counts (bookmark
+  type / rating / completion / download state / fandom), `.searchable` full-text, sort
+  control, and a detail inspector (open in Books, reveal in Finder, view on AO3). The
+  snappy in-memory pipeline is real and **unit-tested** in `AO3Kit`: `WorkListItem`,
+  `fetchAllListItems()` (fan-out-safe join), and a pure `GalleryFilter`/`GallerySort`/
+  `Facets` engine behind an `@Observable GalleryViewModel` — filter/sort/search is pure
+  compute over the in-memory working set. **Dropped the cover grid:** AO3 EPUBs carry no
+  cover art and a cover is the wrong metaphor for browsing fic — the centerpiece is a rich
+  **metadata card** (title, author, fandoms, tag pills, stats, summary, your tags/notes),
+  with a comfortable/compact density toggle. *Verification caveat:* the headless build
+  environment can compile (`swift build`) but not run/render the SwiftUI layer, so the
+  views are compile-verified only; all logic below the SwiftUI line is test-covered.
 - **M3 — Full filter parity:** every facet from §7, include/exclude, ranges, sorts, live
   counts, saved presets.
 - **M4 — Liquid glass polish:** materials, dark mode, animations, thumbnail cache,

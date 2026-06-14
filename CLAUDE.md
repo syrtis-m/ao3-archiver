@@ -6,19 +6,26 @@ Guidance for working in this repo. See `PLAN.md` for the full design/roadmap and
 ## What this is
 
 A native macOS app (in progress) that backs up the user's AO3 bookmarks as `.epub` files
-with a dark, liquid-glass, snappy gallery and full local filtering. **M0** (core spike) and
-**M1** (core sync + store) are done: a runnable Swift package that pages through bookmarks,
-ingests every card (work / external / series) into a GRDB/SQLite store with FTS5, expands
-bookmarked series into their member works, and runs a resumable, rate-limited EPUB download
-queue — all before any SwiftUI is written.
+with a dark, liquid-glass, snappy gallery and full local filtering. **M0** (core spike),
+**M1** (core sync + store), and **M2** (gallery MVP) are done: a Swift package that pages
+through bookmarks, ingests every card (work / external / series) into a GRDB/SQLite store
+with FTS5, expands bookmarked series, runs a resumable rate-limited EPUB download queue, and
+presents it all in a dark Liquid Glass SwiftUI gallery with in-memory filtering/search/sort.
 
 ## Build / test / run
 
 ```sh
-swift build                 # build library + CLI
-swift run selftest          # headless parser + Store checks against real captured HTML
+swift build                 # build library + CLI + app
+swift run selftest          # headless parser + Store + gallery-model checks (98 checks)
+swift test                  # swift-testing suite (needs Xcode; 24 tests, 4 suites)
 swift run ao3archiver        # bounded sync: paginate → ingest → expand series → download
+swift run AO3ArchiverApp     # M2 SwiftUI gallery over the synced DB (reads AO3_ARCHIVE_DIR)
 ```
+
+> **Headless caveat:** the SwiftUI gallery **compiles** here but can't be *run/rendered*
+> without a window server, so the view layer is compile-verified only. All gallery logic
+> lives below the SwiftUI line in `AO3Kit` (`GalleryModel.swift`) and is unit-tested — keep
+> it that way: anything with an `if` belongs in the model, not a View.
 
 Auth + config is via environment variables (see README): `AO3_USERNAME`,
 `AO3_SESSION_COOKIE`, `AO3_ARCHIVE_DIR`, `AO3_MIN_INTERVAL`, `AO3_USER_AGENT`,
@@ -48,10 +55,16 @@ Sources/AO3Kit/        reusable core the SwiftUI app will sit on
                        state); download-queue/stale query; sync_run bookkeeping
   FileStore.swift      archive folder + works/<id> - title.epub layout, write/exist
   SyncEngine.swift     orchestration: bounded paginate → ingest → expand series → download
+  GalleryModel.swift   M2 read/filter/sort layer (below the SwiftUI line, fully tested):
+                       WorkListItem, Store.fetchAllListItems() (fan-out-safe join),
+                       GalleryFilter/GallerySort/Facets, @Observable GalleryViewModel
   Models.swift         WorkBlurb, BookmarkKind
   ArchivePaths.swift   on-disk epub filename/sanitization
 Sources/ao3archiver/   CLI driver: runs a bounded SyncEngine pass (top-level code; not @main)
-Sources/selftest/      headless assertions (parser + Store) runnable without XCTest
+Sources/AO3ArchiverApp/  M2 SwiftUI gallery (thin Views over GalleryViewModel): App entry,
+                       GalleryView, FilterSidebar, WorkCardView (metadata card), WorkDetailView,
+                       Theme (Liquid Glass helpers). SwiftPM executable, not a .app bundle yet.
+Sources/selftest/      headless assertions (parser + Store + gallery model) without XCTest
 Tests/AO3KitTests/     swift-testing suite + Fixtures/ (real captured AO3 HTML):
                        works_listing, bookmarks_page, series_card, series_page
 ```
@@ -102,10 +115,29 @@ Tests/AO3KitTests/     swift-testing suite + Fixtures/ (real captured AO3 HTML):
   row. The polymorphic `bookmark(item_kind,item_id)` makes the overlap a non-issue.
 - **Sync is bounded by default** (`maxPages`, `maxDownloads`); external works are stored
   `download_state='unavailable'` and excluded from the queue.
-- **Folder bookmark is M2.** A security-scoped bookmark needs the app sandbox; M1's
-  `FileStore` is plain directory management.
+- **Folder bookmark is still deferred.** A security-scoped bookmark needs the app sandbox;
+  the M2 app is a SwiftPM executable (no Info.plist/entitlements/sandbox) and reads the DB
+  from a plain path (`AO3_ARCHIVE_DIR`). Real `.app` packaging + sandbox come later.
+
+## M2 facts (gallery)
+
+- **Platform is macOS 26 package-wide** (`.macOS("26.0")` in Package.swift) — one
+  deployment boundary so real Liquid Glass (`.glassEffect`, `.buttonStyle(.glass)`) and
+  Observation are available with no scattered `@available`. Glass is the only render path.
+- **Logic below the SwiftUI line.** `fetchAllListItems()` builds the gallery's display
+  rows from the `bookmark` table joined to `work`/`series` + tags, grouping tags in memory
+  so a work with N tags yields ONE item with N tags (no join fan-out — tested). Items come
+  from the `bookmark` table, so series *members* that aren't separately bookmarked don't
+  appear as their own cards.
+- **No covers.** AO3 EPUBs contain no cover art; the gallery is metadata cards, not a cover
+  grid. Don't reintroduce cover extraction.
+- **Facet counts** are a pure function over the currently-filtered set (decided + tested),
+  not emergent view behavior.
+- **Verification ceiling = `swift build`.** Don't `swift run AO3ArchiverApp` as a check —
+  it needs a window server and will hang headlessly. Test the model, compile the views.
 
 ## Roadmap pointer
 
-Next is the **SwiftUI gallery (M2)**: card list + cover grid over the M1 store, the snappy
-in-memory filter pipeline, open/reveal. Then full filter parity (M3). See `PLAN.md` §10.
+Next is **M3 — full filter parity**: every facet from §7 (include **and** exclude tags,
+ranges, crossovers, more sorts, live counts, saved presets) over the M2 model. Then Liquid
+Glass polish (M4) and hardening (M5). See `PLAN.md` §10.

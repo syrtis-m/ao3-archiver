@@ -4,10 +4,10 @@ A native macOS app (in progress) that backs up your AO3 bookmarks as `.epub` fil
 a fast, dark, liquid-glass gallery and full local filtering. See [PLAN.md](PLAN.md) for
 the full design and roadmap.
 
-## Status: M1 — core sync + store (done)
+## Status: M2 — gallery MVP (done)
 
-M0 de-risked the riskiest mechanics (auth, rate limiting, parsing, EPUB download). **M1**
-builds the real backup engine on top, runnable today as a CLI:
+M0 de-risked the core mechanics; M1 built the backup engine; **M2** adds the dark, Liquid
+Glass SwiftUI gallery over it. Runnable today as a CLI (sync) + a SwiftUI app (browse):
 
 - **`AO3Kit`** — the reusable core the SwiftUI app will sit on:
   - `AO3Client` — the only networked component. Polite single-flight **rate limiter**,
@@ -28,7 +28,16 @@ builds the real backup engine on top, runnable today as a CLI:
     the limiter, committing each immediately.
   - `WorkDownloader` — resolves the server-rendered EPUB link and downloads it, validating
     the ZIP/EPUB magic bytes.
+  - `GalleryModel` — the gallery's read/filter/sort layer (kept below the SwiftUI line so
+    it's unit-tested): `WorkListItem`, a fan-out-safe `fetchAllListItems()` join, and a pure
+    `GalleryFilter`/`GallerySort`/`Facets` engine behind an `@Observable` view model.
 - **`ao3archiver`** — CLI that runs a real bounded sync into a SQLite DB + archive folder.
+- **`AO3ArchiverApp`** — the **M2 SwiftUI gallery**: dark Liquid Glass, a glass filter
+  sidebar with live facet counts (bookmark type / rating / completion / download state /
+  fandom), full-text search, sort, and a detail inspector (open in Books, reveal in Finder,
+  view on AO3). The centerpiece is a rich **metadata card** — title, author, fandoms, tag
+  pills, stats, summary, and your own bookmark tags/notes — *not* a book cover (AO3 EPUBs
+  have none, and metadata is what you actually browse on).
 
 ### Run it
 
@@ -63,6 +72,19 @@ Note the *index* pass re-reads pages 1…`AO3_MAX_PAGES` each run; it's download
 fetches, that accumulate across runs — so set `AO3_MAX_PAGES` wide rather than expecting
 deep pages to be reached a few at a time.
 
+### Browse it (the app)
+
+Once you've synced, open the gallery over the same archive folder:
+
+```sh
+AO3_ARCHIVE_DIR=/path/to/archive swift run AO3ArchiverApp
+```
+
+A dark Liquid Glass window with a filter sidebar (bookmark type, rating, completion,
+download state, fandom — each with live counts), a search field, sort control, and a
+metadata-card gallery; click a card for the detail inspector. The app is **read-only** in
+M2 (syncing stays in the CLI). Building the app needs the macOS 26 SDK (Xcode 26).
+
 Getting the cookie: log in to AO3 in your browser → DevTools → Application/Storage →
 Cookies → `https://archiveofourown.org` → copy the **value** of `_otwarchive_session`.
 It's only ever sent to AO3 and never written to disk by this tool.
@@ -85,16 +107,22 @@ It's only ever sent to AO3 and never written to disk by this tool.
 
 The parser is pinned to **real captured AO3 HTML** in `Tests/AO3KitTests/Fixtures/`
 (works listing, bookmarks page, series card, series page). The store/sync logic
-(idempotency, stale-detection, FTS, series expansion) is exercised against those same
-fixtures with a temp database — no network.
+(idempotency, stale-detection, FTS, series expansion) **and the gallery model** (fan-out-safe
+join, composing filters, sort, facets) are exercised against those same fixtures with a temp
+database — no network, no rendering.
 
-- Full Xcode / CI: `swift test` (swift-testing suite in `Tests/AO3KitTests`).
-- Command Line Tools only (no Xcode): `swift run selftest` — same assertions (parser +
-  `Store`), no test framework needed.
+- Full Xcode: `swift test` (swift-testing suite — 24 tests, 4 suites).
+- Command Line Tools only (no Xcode): `swift run selftest` — equivalent assertions (98
+  checks), no test framework needed.
+
+> The SwiftUI gallery is **compile-verified** (`swift build`) but its rendering isn't
+> automatically tested — all of its logic lives in the unit-tested `GalleryModel`, so the
+> views are a thin, dumb skin over verified behavior.
 
 ## Requirements
 
-- macOS, Swift 5.10+ toolchain (Swift 6.3 used in development).
+- macOS 26 (Tahoe) + Xcode 26 to build the SwiftUI app (Liquid Glass); the CLI/library use
+  the Swift 6.3 toolchain. Package deployment target is macOS 26.
 - Dependencies: [SwiftSoup](https://github.com/scinfu/SwiftSoup) for HTML parsing,
   [GRDB](https://github.com/groue/GRDB.swift) for the SQLite store (FTS5).
 

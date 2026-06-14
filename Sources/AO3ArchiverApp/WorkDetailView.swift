@@ -1,0 +1,122 @@
+import SwiftUI
+import AO3Kit
+import AppKit
+
+/// Detail panel for the selected bookmark: full metadata plus actions — open the saved
+/// EPUB in Books, reveal it in Finder, and view the work on AO3.
+struct WorkDetailView: View {
+    let item: WorkListItem
+    /// Absolute path to the archive root, for resolving the relative epub path.
+    let archiveRoot: URL
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(item.title).font(.title2.bold())
+                    Text("by \(item.author)").foregroundStyle(.secondary)
+                }
+                actions
+                if let line = nonEmpty(item.statsLine) {
+                    Text(line).font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+                }
+                metaGrid
+                if let summary = nonEmpty(item.summary) {
+                    labeled("Summary") { Text(summary) }
+                }
+                if !item.fandoms.isEmpty { labeled("Fandoms") { wrap(item.fandoms) } }
+                if !item.relationships.isEmpty { labeled("Relationships") { wrap(item.relationships) } }
+                if !item.characters.isEmpty { labeled("Characters") { wrap(item.characters) } }
+                if !item.freeforms.isEmpty { labeled("Additional tags") { wrap(item.freeforms) } }
+                if !item.bookmarkTags.isEmpty { labeled("Your tags") { wrap(item.bookmarkTags) } }
+                if let notes = nonEmpty(item.bookmarkerNotes) {
+                    labeled("Your notes") { Text(notes).italic() }
+                }
+            }
+            .padding(20)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var actions: some View {
+        HStack(spacing: 10) {
+            if let rel = item.epubPath, item.downloadState == "downloaded" {
+                let url = archiveRoot.appendingPathComponent(rel)
+                Button { NSWorkspace.shared.open(url) } label: { Label("Open in Books", systemImage: "book") }
+                Button { NSWorkspace.shared.activateFileViewerSelecting([url]) } label: {
+                    Label("Reveal in Finder", systemImage: "folder")
+                }
+            }
+            if let ao3 = item.ao3URL {
+                Button { NSWorkspace.shared.open(ao3) } label: { Label("View on AO3", systemImage: "safari") }
+            }
+        }
+        .buttonStyle(.glass)
+        .controlSize(.large)
+    }
+
+    private var metaGrid: some View {
+        Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
+            if let r = item.rating { metaRow("Rating", r) }
+            if let c = item.category { metaRow("Category", c) }
+            if let l = item.language { metaRow("Language", l) }
+            if let k = item.kudos { metaRow("Kudos", k.formatted()) }
+            if let h = item.hits { metaRow("Hits", h.formatted()) }
+            if let bk = item.bookmarkedAt { metaRow("Bookmarked", bk) }
+            if let up = item.dateText { metaRow("Updated", up) }
+        }
+        .font(.callout)
+    }
+
+    private func metaRow(_ label: String, _ value: String) -> some View {
+        GridRow {
+            Text(label).foregroundStyle(.secondary)
+            Text(value)
+        }
+    }
+
+    private func labeled<Content: View>(_ title: String, @ViewBuilder _ content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(.headline)
+            content()
+        }
+    }
+
+    private func wrap(_ values: [String]) -> some View {
+        // Simple wrapping flow of pills.
+        FlowLayout(spacing: 6) { ForEach(values, id: \.self) { TagPill(text: $0) } }
+    }
+
+    private func nonEmpty(_ s: String?) -> String? {
+        guard let s, !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return s
+    }
+}
+
+/// Minimal wrapping layout for tag pills (a thin, dependency-free flow).
+struct FlowLayout: Layout {
+    var spacing: CGFloat = 6
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let maxWidth = proposal.width ?? .infinity
+        var x: CGFloat = 0, y: CGFloat = 0, rowHeight: CGFloat = 0
+        for view in subviews {
+            let size = view.sizeThatFits(.unspecified)
+            if x + size.width > maxWidth { x = 0; y += rowHeight + spacing; rowHeight = 0 }
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+        }
+        return CGSize(width: maxWidth == .infinity ? x : maxWidth, height: y + rowHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x = bounds.minX, y = bounds.minY, rowHeight: CGFloat = 0
+        for view in subviews {
+            let size = view.sizeThatFits(.unspecified)
+            if x + size.width > bounds.maxX { x = bounds.minX; y += rowHeight + spacing; rowHeight = 0 }
+            view.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+        }
+    }
+}

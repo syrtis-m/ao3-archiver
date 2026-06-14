@@ -207,6 +207,103 @@ do {
         check("all 6 members queued for download", try store.worksNeedingDownload().count == 6)
     }
 
+    // ── Gallery model: the join + pure filter/sort/facet engine (all offline) ─────────
+    if let bmHTML = try? String(contentsOf: bookmarksURL, encoding: .utf8) {
+        let cards = try BlurbParser.parseListing(html: bmHTML)
+        let store = try Store(inMemory: true)
+        try ingest(store, cards)
+        let items = try store.fetchAllListItems()
+
+        print("Gallery — fetchAllListItems join")
+        check("one item per bookmark (20)", items.count == 20)
+        check("no join fan-out: work 1413325 appears exactly once",
+              items.filter { $0.itemID == 1413325 }.count == 1)
+        // The flattened item's tags match the parsed blurb's — N tags, one row, not N rows.
+        if let blurb = cards.first(where: { $0.workID == 1413325 }),
+           let item = items.first(where: { $0.itemID == 1413325 }) {
+            check("flattened fandoms match the blurb", item.fandoms == blurb.fandoms)
+            check("flattened relationships match the blurb", item.relationships == blurb.relationships)
+        }
+        check("kind mapping: 19 work", items.filter { $0.kind == .work }.count == 19)
+        check("kind mapping: 1 external", items.filter { $0.kind == .external }.count == 1)
+        check("bookmark fields carried (bookmarkID set)", items.allSatisfy { $0.bookmarkID != nil })
+
+        print("Gallery — filters compose")
+        var f = GalleryFilter()
+        f.bookmarkTypes = [.external]
+        check("type=external → 1 item", f.apply(to: items).count == 1)
+        f = GalleryFilter(); f.searchText = "circus"
+        check("search 'circus' → the circus work", f.apply(to: items).map(\.itemID) == [1413325])
+        // Combined: a fandom AND a search term must AND together, not OR.
+        f = GalleryFilter()
+        f.bookmarkTypes = [.work]; f.completion = .complete
+        let composed = f.apply(to: items)
+        check("type=work AND completion=complete composes",
+              composed.allSatisfy { $0.kind == .work && $0.isComplete == true })
+        check("composed ⊆ type=work alone",
+              composed.count <= items.filter { $0.kind == .work }.count)
+
+        print("Gallery — sort")
+        let byBookmarked = GallerySort.dateBookmarked.sorted(items)
+        check("date-bookmarked is newest-first (bookmarkID desc)",
+              byBookmarked.first!.bookmarkID! >= byBookmarked.last!.bookmarkID!)
+        let byTitle = GallerySort.title.sorted(items).map(\.title)
+        check("title sort is alphabetical",
+              byTitle == byTitle.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending })
+
+        print("Gallery — facets")
+        let types = Facets.bookmarkTypes(items)
+        check("type facet counts sum to item count", types.reduce(0) { $0 + $1.count } == 20)
+        check("work is the largest type facet", types.first?.name == "work")
+        let fandomFacets = Facets.fandoms(items)
+        let resorted = fandomFacets.sorted { $0.count != $1.count ? $0.count > $1.count : $0.name < $1.name }
+        check("fandom facets are count-desc", fandomFacets.map(\.name) == resorted.map(\.name))
+
+        print("Gallery — view model")
+        let vm = GalleryViewModel()
+        vm.load(from: store)
+        check("VM loads all items", vm.totalCount == 20)
+        vm.toggleType(.external)
+        check("VM toggle filters visible set", vm.visibleCount == 1)
+        vm.clearFilters()
+        check("VM clear restores full set", vm.visibleCount == 20)
+
+        // Faceted-search invariant: selecting one value in a dimension must NOT collapse
+        // that dimension's facet list — other values stay visible so multi-select (OR) is
+        // reachable from the sidebar. (Counts are over the set filtered by all OTHER dims.)
+        let allRatings = Set(Facets.ratings(items).map(\.name))
+        if allRatings.count > 1, let pick = allRatings.first {
+            vm.clearFilters()
+            vm.toggleRating(pick)
+            let shown = Set(vm.ratingFacets.map(\.name))
+            check("selecting a rating keeps other ratings visible in the facet",
+                  shown.count > 1 && shown.isSuperset(of: allRatings))
+            check("but the visible list IS narrowed to that rating",
+                  vm.visibleItems.allSatisfy { $0.rating == pick })
+            vm.clearFilters()
+        }
+    }
+
+    // Series bookmark shows as one gallery item (members have no bookmark row → not listed).
+    if let scHTML = try? String(contentsOf: seriesCardURL, encoding: .utf8),
+       let spHTML = try? String(contentsOf: seriesPageURL, encoding: .utf8) {
+        let card = try BlurbParser.parseListing(html: scHTML).first!
+        let members = try BlurbParser.parseListing(html: spHTML)
+        let store = try Store(inMemory: true)
+        try store.upsertSeries(card)
+        try store.upsertBookmark(card, itemKind: .series, itemID: card.workID)
+        for (i, m) in members.enumerated() {
+            try store.upsertWork(m)
+            try store.linkSeriesWork(seriesID: card.workID, workID: m.workID, part: i + 1)
+        }
+        let items = try store.fetchAllListItems()
+        print("Gallery — series as a list item")
+        check("series bookmark is one item", items.count == 1)
+        check("its kind is series", items.first?.kind == .series)
+        check("series item carries worksCount", items.first?.worksCount == 6)
+        check("unbookmarked members aren't listed", items.allSatisfy { $0.kind == .series })
+    }
+
     print("WorkDownloader")
     let menu = """
     <li class="download"><ul>
