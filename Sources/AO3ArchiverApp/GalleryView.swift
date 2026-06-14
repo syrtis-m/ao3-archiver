@@ -7,6 +7,7 @@ struct GalleryView: View {
     @Bindable var vm: GalleryViewModel
     let store: Store
     let archiveRoot: URL
+    var onChooseFolder: () -> Void = {}
 
     @State private var selectionID: WorkListItem.ID?
     @State private var compact = false
@@ -49,8 +50,13 @@ struct GalleryView: View {
             ContentUnavailableView("Couldn't load archive", systemImage: "externaldrive.badge.xmark",
                                    description: Text(err))
         } else if vm.allItems.isEmpty {
-            ContentUnavailableView("No bookmarks yet", systemImage: "bookmark",
-                                   description: Text("Run a sync to populate the archive."))
+            ContentUnavailableView {
+                Label("No bookmarks yet", systemImage: "bookmark")
+            } description: {
+                Text("Sync from the CLI, or point at an existing archive folder.")
+            } actions: {
+                Button("Choose Archive Folder…", action: onChooseFolder)
+            }
         } else if vm.visibleItems.isEmpty {
             ContentUnavailableView.search
         } else {
@@ -88,6 +94,9 @@ struct GalleryView: View {
         }
         ToolbarItem(placement: .primaryAction) {
             Button { showInspector.toggle() } label: { Label("Details", systemImage: "sidebar.right") }
+        }
+        ToolbarItem(placement: .primaryAction) {
+            Button(action: onChooseFolder) { Label("Archive Folder", systemImage: "folder") }
         }
     }
 }

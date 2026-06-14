@@ -43,21 +43,9 @@ struct AO3ArchiverApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var vm = GalleryViewModel()
 
-    private let archiveRoot: URL = {
-        // Dev/CLI override wins (so `swift run` shares the CLI's folder). Otherwise default
-        // to Application Support — a stable location that works when double-clicked, where
-        // the current directory is "/". The folder picker (M4.3) will let the user change it.
-        if let dir = ProcessInfo.processInfo.environment["AO3_ARCHIVE_DIR"], !dir.isEmpty {
-            return URL(fileURLWithPath: dir)
-        }
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? URL(fileURLWithPath: NSHomeDirectory())
-        return base.appendingPathComponent("AO3Archiver/archive")
-    }()
-
     var body: some Scene {
         WindowGroup {
-            RootView(vm: vm, archiveRoot: archiveRoot)
+            RootView(vm: vm)
                 .preferredColorScheme(.dark)
                 .frame(minWidth: 760, minHeight: 520)
                 .background(WindowConfigurator())
@@ -68,33 +56,73 @@ struct AO3ArchiverApp: App {
     }
 }
 
-/// Opens the store from disk once, then hands a live `Store` + the view model to the gallery.
+/// Resolves the archive folder, opens the store, and hands a live `Store` to the gallery.
+/// Non-sandboxed, so the chosen folder is a plain path persisted in UserDefaults — no
+/// security-scoped bookmark needed. `AO3_ARCHIVE_DIR` (dev/CLI) overrides the picker.
 struct RootView: View {
     @Bindable var vm: GalleryViewModel
-    let archiveRoot: URL
+    @AppStorage("archiveFolderPath") private var storedPath = ""
 
     @State private var store: Store?
     @State private var openError: String?
 
+    private var archiveRoot: URL {
+        if let env = ProcessInfo.processInfo.environment["AO3_ARCHIVE_DIR"], !env.isEmpty {
+            return URL(fileURLWithPath: env)
+        }
+        if !storedPath.isEmpty { return URL(fileURLWithPath: storedPath) }
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory())
+        return base.appendingPathComponent("AO3Archiver/archive")
+    }
+
     var body: some View {
         Group {
             if let store {
-                GalleryView(vm: vm, store: store, archiveRoot: archiveRoot)
+                GalleryView(vm: vm, store: store, archiveRoot: archiveRoot, onChooseFolder: chooseFolder)
             } else if let openError {
-                ContentUnavailableView("Couldn't open archive", systemImage: "externaldrive.badge.xmark",
-                                       description: Text(openError))
+                ContentUnavailableView {
+                    Label("Couldn't open archive", systemImage: "externaldrive.badge.xmark")
+                } description: {
+                    Text(openError)
+                } actions: {
+                    Button("Choose Archive Folder…", action: chooseFolder)
+                }
             } else {
                 ProgressView("Opening archive…")
             }
         }
-        .task {
-            do {
-                let s = try Store(path: archiveRoot.appendingPathComponent("archive.sqlite").path)
-                vm.load(from: s)   // populate BEFORE presenting the sidebar list, so the
-                store = s          // NSTableView-backed List renders once with data in place
-            } catch {              // (an empty-then-reload cascade triggers a reentrancy warning)
-                openError = String(describing: error)
-            }
+        .task(id: archiveRoot) { open() }   // re-open when the chosen folder changes
+    }
+
+    private func open() {
+        do {
+            // Create the archive folder first — when double-clicked there's no
+            // AO3_ARCHIVE_DIR and the default Application Support path won't exist yet,
+            // so SQLite can't create the db file (error 14).
+            try FileManager.default.createDirectory(at: archiveRoot, withIntermediateDirectories: true)
+            let s = try Store(path: archiveRoot.appendingPathComponent("archive.sqlite").path)
+            vm.load(from: s)   // populate BEFORE presenting the sidebar list, so the
+            store = s          // NSTableView-backed List renders once with data in place
+            openError = nil
+        } catch {              // (an empty-then-reload cascade triggers a reentrancy warning)
+            openError = String(describing: error)
+        }
+    }
+
+    /// Pick the archive folder (the one containing `archive.sqlite` + `works/`). Stores the
+    /// plain path; `.task(id: archiveRoot)` re-opens the store when it changes.
+    private func chooseFolder() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose your AO3 Archiver folder"
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Choose"
+        if panel.runModal() == .OK, let url = panel.url {
+            store = nil            // show the spinner while the new folder opens
+            storedPath = url.path
         }
     }
 }
