@@ -1,5 +1,24 @@
 import SwiftUI
+import AppKit
 import AO3Kit
+
+/// Forces the host `NSWindow` to be resizable/zoomable. When the app runs as a bare SwiftPM
+/// executable (`swift run`, no .app bundle/Info.plist), the window is created without the
+/// `.resizable` style mask, so SwiftUI's `.windowResizability` has nothing to act on. A
+/// proper bundled app won't need this. (Harmless when the mask is already set.)
+private struct WindowConfigurator: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async {
+            if let window = view.window {
+                window.styleMask.insert([.resizable, .miniaturizable])
+                window.collectionBehavior.insert(.fullScreenPrimary)
+            }
+        }
+        return view
+    }
+    func updateNSView(_ nsView: NSView, context: Context) {}
+}
 
 // M2 SwiftUI gallery — dark, Liquid Glass, snappy. The views are a thin skin over AO3Kit's
 // tested gallery model (load → filter → sort → facets all happen below this line).
@@ -21,6 +40,7 @@ struct AO3ArchiverApp: App {
             RootView(vm: vm, archiveRoot: archiveRoot)
                 .preferredColorScheme(.dark)
                 .frame(minWidth: 760, minHeight: 520)
+                .background(WindowConfigurator())
         }
         .windowStyle(.titleBar)
         .windowToolbarStyle(.unified)

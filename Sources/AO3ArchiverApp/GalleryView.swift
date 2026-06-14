@@ -11,6 +11,10 @@ struct GalleryView: View {
     @State private var selectionID: WorkListItem.ID?
     @State private var compact = false
     @State private var showInspector = false
+    // The search field binds to local state and pushes into the model on change. Binding
+    // `.searchable` straight into `$vm.filter.searchText` (a nested property of an
+    // @Observable) can drop live updates inside a NavigationSplitView on macOS.
+    @State private var searchText = ""
 
     private var selectedItem: WorkListItem? {
         // Resolve against the full set so the detail survives filter changes (and so we
@@ -25,7 +29,8 @@ struct GalleryView: View {
         } detail: {
             gallery
                 .navigationTitle("Bookmarks")
-                .searchable(text: $vm.filter.searchText, prompt: "Search title, author, tags, notes")
+                .searchable(text: $searchText, prompt: "Search title, author, tags, notes")
+                .onChange(of: searchText) { _, newValue in vm.filter.searchText = newValue }
                 .toolbar { toolbarContent }
                 .inspector(isPresented: $showInspector) {
                     if let item = selectedItem {
