@@ -188,6 +188,18 @@ do {
 
         // FTS: a word from a real title is findable.
         check("FTS finds 'circus' (work 1413325)", try store.searchWorkIDs("circus").contains(1413325))
+
+        // Re-bookmark: the same work under a NEW bookmark id (old bookmark deleted, fresh
+        // one made) must not trip UNIQUE(item_kind,item_id) — it replaces the stale row.
+        if var rebm = cards.first(where: { $0.kind == .work && $0.bookmarkID != nil }) {
+            let bookmarksBefore = try store.count("bookmark")
+            let oldBID = rebm.bookmarkID!
+            rebm.bookmarkID = oldBID + 9_000_000   // a brand-new bookmark id, same work
+            check("re-bookmark under a new id does not throw",
+                  (try? store.upsertBookmark(rebm, itemKind: .work, itemID: rebm.workID)) != nil)
+            check("re-bookmark keeps one row per item (no duplicate)",
+                  try store.count("bookmark") == bookmarksBefore)
+        }
     }
 
     // Store — series expansion wiring (card + member page fixtures).

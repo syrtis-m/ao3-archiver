@@ -238,6 +238,22 @@ import Foundation
         #expect(try store.searchWorkIDs("circus").contains(1413325))
     }
 
+    @Test func reBookmarkUnderNewIdReplacesStaleRow() throws {
+        // A work re-bookmarked on AO3 (old bookmark deleted, fresh one made) arrives with a
+        // brand-new bookmark id but the same (item_kind,item_id). That must replace the stale
+        // row, not trip its UNIQUE constraint and abort the whole sync (SQLite error 19).
+        let cards = try BlurbParser.parseListing(html: fixture("bookmarks_page"))
+        let store = try Store(inMemory: true)
+        try ingest(store, cards)
+        let before = try store.count("bookmark")
+
+        var rebm = try #require(cards.first { $0.kind == .work && $0.bookmarkID != nil })
+        rebm.bookmarkID = rebm.bookmarkID! + 9_000_000      // a brand-new bookmark id, same work
+        try store.upsertBookmark(rebm, itemKind: .work, itemID: rebm.workID)
+
+        #expect(try store.count("bookmark") == before)      // replaced, not duplicated
+    }
+
     @Test func seriesExpansionLinksMembers() throws {
         let card = try #require(try BlurbParser.parseListing(html: fixture("series_card")).first)
         let members = try BlurbParser.parseListing(html: fixture("series_page"))

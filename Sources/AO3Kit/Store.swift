@@ -257,6 +257,15 @@ public final class Store: @unchecked Sendable {
         // item_kind is the polymorphic target: a series bookmark → 'series', everything
         // else (work/external) → 'work'.
         let kindStr = itemKind == .series ? "series" : "work"
+        // A work/series can be re-bookmarked under a NEW bookmark id (the old bookmark
+        // deleted, a fresh one created — common on AO3). That fresh row shares this
+        // item's (item_kind,item_id) and trips its UNIQUE constraint, which the
+        // ON CONFLICT(bookmark_id) clause below does NOT cover — so drop any stale
+        // duplicate (same target, different bookmark id) first. Its bookmark_tag rows
+        // cascade away via ON DELETE CASCADE.
+        try db.execute(sql: """
+            DELETE FROM bookmark WHERE item_kind = ? AND item_id = ? AND bookmark_id <> ?
+            """, arguments: [kindStr, itemID, bid])
         try db.execute(sql: """
             INSERT INTO bookmark
               (bookmark_id, item_kind, item_id, bookmarked_at, bookmarker_notes,
