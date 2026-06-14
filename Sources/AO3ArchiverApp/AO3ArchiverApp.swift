@@ -47,7 +47,7 @@ struct AO3ArchiverApp: App {
         WindowGroup {
             RootView(vm: vm)
                 .preferredColorScheme(.dark)
-                .frame(minWidth: 760, minHeight: 520)
+                .frame(minWidth: 480, minHeight: 520)
                 .background(WindowConfigurator())
         }
         .windowStyle(.titleBar)

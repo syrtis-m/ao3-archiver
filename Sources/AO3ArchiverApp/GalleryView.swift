@@ -23,22 +23,6 @@ struct GalleryView: View {
     // full recompute. ~200ms collapses a burst of keystrokes into one. Clearing applies at once.
     @State private var searchDebounce: Task<Void, Never>?
 
-    // Responsive layout: the detail inspector is the flex pane. Below the width where sidebar +
-    // gallery + inspector all fit comfortably, the inspector auto-hides (and returns when the
-    // window widens) so the remaining panes never get squeezed below their content. The sidebar
-    // collapses to a toggle on its own (NavigationSplitView) when there's no room for its min.
-    @State private var availableWidth: CGFloat = 0
-    // sidebar(280) + a readable gallery(~340) + inspector(280) ≈ 900; below this, three panes
-    // get cramped, so the inspector steps aside until the window widens again.
-    private static let threePaneMinWidth: CGFloat = 900
-
-    /// User intent (the toolbar toggle) gated by available width: the inspector shows only when
-    /// the user wants it AND the window is wide enough for three panes.
-    private var inspectorVisible: Binding<Bool> {
-        Binding(get: { showInspector && availableWidth >= Self.threePaneMinWidth },
-                set: { showInspector = $0 })
-    }
-
     private var selectedItem: WorkListItem? {
         // Resolve against the full set so the detail survives filter changes (and so we
         // don't trigger another filter+sort pass just to look up the selection).
@@ -55,7 +39,7 @@ struct GalleryView: View {
                 .searchable(text: $searchText, prompt: "Search title, author, tags, notes")
                 .onChange(of: searchText) { _, newValue in debounceSearch(newValue) }
                 .toolbar { toolbarContent }
-                .inspector(isPresented: inspectorVisible) {
+                .inspector(isPresented: $showInspector) {
                     if let item = selectedItem {
                         WorkDetailView(item: item, store: store, archiveRoot: archiveRoot,
                                        onChanged: { vm.load(from: store) })
@@ -69,7 +53,6 @@ struct GalleryView: View {
                               reload: { vm.load(from: store) })
                 }
         }
-        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { availableWidth = $0 }
     }
 
     /// Push the search text into the filter after a short quiet period, so a burst of
