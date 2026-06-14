@@ -121,8 +121,9 @@ On-disk layout:
 
 **`AO3Client`** is the only networked component: a single-flight token-slot `RateLimiter`
 (default ~1 req / 4s, user-tunable), 429/503 `Retry-After` backoff with jitter and exponential
-growth on repeats, 5xx + timeout retries, explicit cookie injection, an honest User-Agent
-(`syrtis@sysd.info`), and automatic following of the EPUB download redirect. It exposes
+growth on repeats, 5xx + timeout retries, explicit cookie injection, an honest User-Agent (the requester's AO3
+username when known + contact `syrtis@sysd.info`, built by `AO3Config.defaultUserAgent`), and
+automatic following of the EPUB download redirect. It exposes
 `onRateLimit` so the UI can surface a backoff instead of looking stalled.
 
 **`SyncEngine`** orchestrates a bounded, resumable run (each step committed immediately):

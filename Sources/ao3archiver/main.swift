@@ -25,7 +25,7 @@ func stderr(_ s: String) { FileHandle.standardError.write(Data((s + "\n").utf8))
 let username   = env("AO3_USERNAME")
 let cookie     = env("AO3_SESSION_COOKIE")
 let userAgent  = env("AO3_USER_AGENT")
-    ?? "ao3-archiver/0.1 (personal bookmark backup; contact syrtis@sysd.info)"
+    ?? AO3Config.defaultUserAgent(ao3User: username)
 // Default to ~/Documents/ao3archive (same as the app), so CLI sync and the GUI share a folder.
 let defaultArchiveDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)
     .first?.appendingPathComponent("ao3archive").path

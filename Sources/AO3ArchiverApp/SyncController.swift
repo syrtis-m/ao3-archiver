@@ -71,7 +71,7 @@ final class SyncController {
         currentPage = 0; totalPages = nil; downloaded = 0; failed = 0
         lastError = nil; rateLimit = nil; activity = []
 
-        let userAgent = "ao3-archiver/0.1 (personal bookmark backup; contact syrtis@sysd.info)"
+        let userAgent = AO3Config.defaultUserAgent(ao3User: username)
         let listPath = username.flatMap { $0.isEmpty ? nil : "/users/\($0)/bookmarks?page=1" }
             ?? "/tags/Good%20Omens%20(TV)/works"   // anonymous demo when no username
 

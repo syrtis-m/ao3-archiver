@@ -122,6 +122,13 @@ Dependencies: [SwiftSoup](https://github.com/scinfu/SwiftSoup) (HTML parsing) an
 
 ---
 
+## Contact
+
+Questions, bugs, or feedback: **syrtis@sysd.info**. (This is also the contact address the app
+identifies itself with when it talks to AO3.)
+
+---
+
 ## License
 
 [PolyForm Noncommercial License 1.0.0](LICENSE) — free to use, modify, and share for any

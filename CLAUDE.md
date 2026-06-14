@@ -67,7 +67,8 @@ Packaging/             make-app.sh, Info.plist, IconGen.swift + make-icon.sh
   in the model, not a View — that's what keeps it testable in a headless environment.
 - **Parser fails soft per-field;** selectors are pinned to fixtures. When AO3 markup drifts, update
   the fixture + expectations together. One bad card must never abort a whole page.
-- **Honest User-Agent** with contact `syrtis@sysd.info`; no forged browser UA.
+- **Honest User-Agent** (`AO3Config.defaultUserAgent`): the requester's AO3 username when known +
+  contact `syrtis@sysd.info`; no forged browser UA.
 
 ## Invariants you must not break (full rationale in ARCHITECTURE.md)
 

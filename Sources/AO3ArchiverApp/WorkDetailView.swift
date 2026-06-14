@@ -114,7 +114,7 @@ struct WorkDetailView: View {
         Task {
             do {
                 let client = AO3Client(config: AO3Config(
-                    userAgent: "ao3-archiver/0.1 (personal bookmark backup; contact syrtis@sysd.info)",
+                    userAgent: AO3Config.defaultUserAgent(ao3User: CredentialStore.username),
                     sessionCookie: CredentialStore.cookie))
                 let data = try await WorkDownloader(client: client).downloadEPUB(workID: workID)
                 let rel = try FileStore(root: root).writeEPUB(data, workID: workID, title: title)

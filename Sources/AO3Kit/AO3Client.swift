@@ -27,6 +27,16 @@ public struct AO3Config: Sendable {
         self.requestTimeout = requestTimeout
         self.baseURL = baseURL
     }
+
+    /// Honest, descriptive User-Agent. Includes the requester's AO3 username when known, so AO3
+    /// can identify whose account is making the (polite) requests; `contact` stays the tool
+    /// maintainer's address. Anonymous runs omit the user clause.
+    public static func defaultUserAgent(ao3User: String? = nil,
+                                        contact: String = "syrtis@sysd.info") -> String {
+        let user = ao3User?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let who = (user?.isEmpty == false) ? "AO3 user: \(user!); " : ""
+        return "ao3-archiver/0.1 (personal bookmark backup; \(who)contact \(contact))"
+    }
 }
 
 public enum AO3Error: Error, CustomStringConvertible {
