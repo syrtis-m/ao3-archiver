@@ -37,7 +37,8 @@ struct GalleryView: View {
                 .toolbar { toolbarContent }
                 .inspector(isPresented: $showInspector) {
                     if let item = selectedItem {
-                        WorkDetailView(item: item, store: store, archiveRoot: archiveRoot)
+                        WorkDetailView(item: item, store: store, archiveRoot: archiveRoot,
+                                       onChanged: { vm.load(from: store) })
                             .inspectorColumnWidth(min: 280, ideal: 360, max: 460)
                     } else {
                         ContentUnavailableView("No selection", systemImage: "sidebar.right")
@@ -45,7 +46,7 @@ struct GalleryView: View {
                 }
                 .sheet(isPresented: $showSync) {
                     SyncSheet(controller: syncController, store: store, archiveRoot: archiveRoot,
-                              onFinished: { vm.load(from: store) })
+                              reload: { vm.load(from: store) })
                 }
         }
     }

@@ -24,14 +24,23 @@ final class SyncController {
     var activity: [String] = []
 
     private var task: Task<Void, Never>?
+    /// Refreshes the gallery from the store. Called live as pages index (so the list builds
+    /// up before your eyes) and whenever a run ends — even partial/cancelled, so whatever got
+    /// indexed is shown.
+    private var reload: () -> Void = {}
 
     var isRunning: Bool { phase == .running }
 
+    /// `downloadEPUBs == false` is an **index-only** run: page through bookmarks and record
+    /// the lightweight metadata in the DB, no EPUB downloads (faster, gentler on AO3 — get
+    /// the list first, download works individually or in a later full sync). `interval` is
+    /// the seconds between requests (politeness; raise it if AO3 throttles you).
     func start(store: Store, username: String?, cookie: String?, archiveRoot: URL,
-               maxPages: Int = 999, maxDownloads: Int = 50,
-               onFinished: @escaping () -> Void) {
+               interval: TimeInterval, downloadEPUBs: Bool, maxPages: Int = 999,
+               reload: @escaping () -> Void) {
         guard phase != .running else { return }
-        phase = .running; statusLine = "Starting…"
+        self.reload = reload
+        phase = .running; statusLine = downloadEPUBs ? "Starting…" : "Building bookmark list…"
         currentPage = 0; totalPages = nil; downloaded = 0; failed = 0
         lastError = nil; rateLimit = nil; activity = []
 
@@ -41,46 +50,52 @@ final class SyncController {
 
         task = Task { [weak self] in
             do {
-                // maxRetries bumped: a 130-page index reliably hits AO3's throttle, and we
-                // want it to wait it out (visibly) rather than give up.
+                // maxRetries bumped: a long index reliably hits AO3's throttle, and we want
+                // it to wait it out (visibly) rather than give up.
                 let client = AO3Client(config: AO3Config(
-                    userAgent: userAgent, sessionCookie: cookie, maxRetries: 8))
+                    userAgent: userAgent, sessionCookie: cookie,
+                    minRequestInterval: interval, maxRetries: 8))
                 client.onRateLimit = { secs, attempt, max in
                     Task { @MainActor in self?.noteRateLimit(secs, attempt: attempt, max: max) }
                 }
                 let files = FileStore(root: archiveRoot)
                 try files.ensureDirectories()
                 let engine = SyncEngine(client: client, store: store, files: files)
-                let options = SyncEngine.Options(maxPages: maxPages, maxDownloads: maxDownloads,
-                                                 expandSeries: true)
+                let options = SyncEngine.Options(maxPages: maxPages,
+                                                 maxDownloads: downloadEPUBs ? 50 : 0,
+                                                 expandSeries: downloadEPUBs)
                 let result = try await engine.run(listPath: listPath, options: options) { event in
                     Task { @MainActor in self?.apply(event) }
                 }
-                self?.finish(result: result, onFinished: onFinished)
+                self?.finish(result: result)
             } catch is CancellationError {
-                self?.phase = .cancelled
+                self?.endRun(.cancelled)
             } catch {
-                self?.phase = .failed
                 self?.lastError = String(describing: error)
                 self?.push("Stopped: \(error)")
+                self?.endRun(.failed)
             }
         }
     }
 
     func cancel() {
         task?.cancel()
-        if phase == .running { phase = .cancelled; statusLine = "Cancelled" }
+        if phase == .running { statusLine = "Cancelled"; endRun(.cancelled) }
     }
 
-    private func finish(result: SyncEngine.Result, onFinished: @escaping () -> Void) {
+    private func finish(result: SyncEngine.Result) {
         downloaded = result.epubsDownloaded
         failed = result.downloadsFailed
-        rateLimit = nil
-        statusLine = "Done — \(result.works) works seen, \(result.epubsDownloaded) saved"
+        statusLine = "Done — \(result.works) works listed, \(result.epubsDownloaded) saved"
             + (result.downloadsFailed > 0 ? " (\(result.downloadsFailed) need a cookie)" : "")
-        phase = .done
         push(statusLine)
-        onFinished()
+        endRun(.done)
+    }
+
+    private func endRun(_ phase: Phase) {
+        self.phase = phase
+        rateLimit = nil
+        reload()   // show whatever got indexed, even on cancel/fail
     }
 
     private func noteRateLimit(_ seconds: TimeInterval, attempt: Int, max: Int) {
@@ -95,6 +110,7 @@ final class SyncController {
             currentPage = n; totalPages = total
             statusLine = "Indexing page \(n)\(total.map { " of \($0)" } ?? "")"
             push("Page \(n)\(total.map { " of \($0)" } ?? ""): \(cards) bookmarks")
+            reload()                        // grow the gallery live as the list is built
         case let .expandingSeries(id, members):
             statusLine = "Expanding series"
             push("Series \(id): \(members) works")
@@ -102,6 +118,7 @@ final class SyncController {
             downloaded += 1
             statusLine = "Saved \(downloaded)"
             push("Saved (\(bytes / 1024) KB): \(title)")
+            reload()                        // reflect the saved state in the gallery
         case let .downloadFailed(workID, reason):
             failed += 1
             push("Couldn't download \(workID): \(reason)")

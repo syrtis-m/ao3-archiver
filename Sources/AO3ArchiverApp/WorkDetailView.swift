@@ -9,8 +9,12 @@ struct WorkDetailView: View {
     let store: Store
     /// Absolute path to the archive root, for resolving the relative epub path.
     let archiveRoot: URL
+    /// Called after a single-work download so the gallery (and this item) refresh.
+    var onChanged: () -> Void = {}
 
     @State private var seriesMembers: [WorkListItem] = []
+    @State private var downloading = false
+    @State private var downloadError: String?
 
     var body: some View {
         ScrollView {
@@ -70,13 +74,21 @@ struct WorkDetailView: View {
         }
     }
 
+    @ViewBuilder
     private var actions: some View {
         HStack(spacing: 10) {
-            if let rel = item.epubPath, item.downloadState == "downloaded" {
+            if item.downloadState == "downloaded", let rel = item.epubPath {
                 let url = archiveRoot.appendingPathComponent(rel)
                 Button { NSWorkspace.shared.open(url) } label: { Label("Open in Books", systemImage: "book") }
                 Button { NSWorkspace.shared.activateFileViewerSelecting([url]) } label: {
                     Label("Reveal in Finder", systemImage: "folder")
+                }
+            } else if item.kind == .work {
+                // Download just this work on demand (after indexing builds the list).
+                if downloading {
+                    HStack(spacing: 6) { ProgressView().controlSize(.small); Text("Downloading…") }
+                } else {
+                    Button { download() } label: { Label("Download EPUB", systemImage: "arrow.down.circle") }
                 }
             }
             if let ao3 = item.ao3URL {
@@ -85,6 +97,33 @@ struct WorkDetailView: View {
         }
         .buttonStyle(.glass)
         .controlSize(.large)
+        if let downloadError {
+            Label(downloadError, systemImage: "exclamationmark.triangle")
+                .font(.caption).foregroundStyle(.orange)
+        }
+    }
+
+    /// Fetch this single work's EPUB (using the stored cookie if present), write it, and
+    /// mark it downloaded — then refresh so the buttons flip to Open/Reveal.
+    private func download() {
+        downloading = true; downloadError = nil
+        let workID = item.itemID, title = item.title, updatedAt = item.updatedAt
+        let root = archiveRoot, store = store
+        Task {
+            do {
+                let client = AO3Client(config: AO3Config(
+                    userAgent: "ao3-archiver/0.1 (personal bookmark backup; contact syrtis@sysd.info)",
+                    sessionCookie: CredentialStore.cookie))
+                let data = try await WorkDownloader(client: client).downloadEPUB(workID: workID)
+                let rel = try FileStore(root: root).writeEPUB(data, workID: workID, title: title)
+                try store.markDownloaded(workID: workID, epubPath: rel, updatedAt: updatedAt)
+                downloading = false
+                onChanged()
+            } catch {
+                downloading = false
+                downloadError = String(describing: error)
+            }
+        }
     }
 
     private var metaGrid: some View {

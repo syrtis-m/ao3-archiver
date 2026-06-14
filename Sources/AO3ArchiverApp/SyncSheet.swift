@@ -7,11 +7,13 @@ struct SyncSheet: View {
     @Bindable var controller: SyncController
     let store: Store
     let archiveRoot: URL
-    let onFinished: () -> Void
+    let reload: () -> Void
     @Environment(\.dismiss) private var dismiss
 
     @State private var username = ""
     @State private var cookie = ""
+    @AppStorage("syncDownloadEPUBs") private var downloadEPUBs = false
+    @AppStorage("syncInterval") private var interval = 5.0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -29,6 +31,24 @@ struct SyncSheet: View {
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             .textFieldStyle(.roundedBorder)
+            .disabled(controller.isRunning)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Toggle("Download EPUB files too (slower)", isOn: $downloadEPUBs)
+                Text(downloadEPUBs
+                     ? "Builds the bookmark list AND downloads EPUBs."
+                     : "Index only — builds the bookmark list in the database (no EPUB files). Faster and gentler on AO3; download works individually from their detail panel, or run a full sync later.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                HStack {
+                    Text("Seconds between requests")
+                    Stepper(value: $interval, in: 3...60, step: 1) {
+                        Text("\(Int(interval))s").monospacedDigit()
+                    }
+                    .fixedSize()
+                }
+                Text("Higher = more polite. If AO3 says “retry later”, raise this and wait a while before retrying.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
             .disabled(controller.isRunning)
 
             progress
@@ -117,6 +137,8 @@ struct SyncSheet: View {
                          username: username.isEmpty ? nil : username,
                          cookie: cookie.isEmpty ? nil : cookie,
                          archiveRoot: archiveRoot,
-                         onFinished: onFinished)
+                         interval: interval,
+                         downloadEPUBs: downloadEPUBs,
+                         reload: reload)
     }
 }
