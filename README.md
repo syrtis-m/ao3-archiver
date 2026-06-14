@@ -10,6 +10,8 @@ Books reads) and keeps them in a folder you choose — so your favourites are yo
 It's a native Mac app with a dark, glassy look, and it's **private**: everything stays on your
 computer. Your login is stored in the Mac's Keychain and is only ever sent to AO3.
 
+<img width="1012" height="684" alt="image" src="https://github.com/user-attachments/assets/e3003b93-a463-4c1c-b394-e4fa35f74fbc" />
+
 ---
 
 ## What you can do with it
@@ -19,12 +21,15 @@ computer. Your login is stored in the Mac's Keychain and is only ever sent to AO
   count, and your own bookmark notes.
 - **Find anything instantly.** Search by any word, or filter by fandom, relationship, character,
   rating, tags, length, kudos, date — and combine as many filters as you want. It stays fast even
-  with tens of thousands of bookmarks.
-- **Save your favourite filter combinations** ("Smart Bookmarks") and reapply them in one click.
-- **Read offline.** Once saved, your works don't need AO3 — or even an internet connection.
+  with tens of thousands of bookmarks. 
+- **Save your favourite filter combinations** ("Presets") and reapply them in one click.
+- **Read offline.** Once saved, your works don't need AO3 or an internet connection.
 
 > Works you bookmarked that live on *other* sites (external works) can't be saved as ebooks —
 > AO3 doesn't host their files — but they're still listed so you have the record.
+
+<img width="1408" height="881" alt="image" src="https://github.com/user-attachments/assets/83c3d664-75ac-46ab-82a9-c1a4d80e9052" />
+
 
 ---
 
@@ -69,6 +74,9 @@ To actually save a story's ebook file, open it and click **Download EPUB** — o
 > The app shows you when it's waiting, and if it gets interrupted it picks up where it left off
 > next time.
 
+<img width="1214" height="772" alt="image" src="https://github.com/user-attachments/assets/9a1433fa-36c5-4c01-8af7-9c0b6a4de8f9" />
+
+
 #### Where do I find the login cookie?
 
 If you want your private/restricted bookmarks too, you'll paste one value from your browser:
@@ -88,6 +96,9 @@ details, open the saved ebook in Books, or jump to it on AO3.
 
 Tip: click a filter once to **include** it, again to **exclude** it, once more to clear it.
 
+<img width="286" height="229" alt="image" src="https://github.com/user-attachments/assets/15ec1262-1e68-4947-9266-2c62ad2e2907" />
+
+
 ---
 
 ## Your privacy & being a good citizen
@@ -97,7 +108,7 @@ Tip: click a filter once to **include** it, again to **exclude** it, once more t
 - **Your login never leaves your machine** except to talk to AO3 itself.
 - **It's polite to AO3 by design** — slow, one request at a time, and it backs off the moment AO3
   asks. This is a personal backup tool for **your own bookmarks**, in the spirit of AO3's own
-  "fans backing up works" guidance — not a bulk scraper.
+  "fans backing up works" guidance — not a bulk scraper. Additionally, it identifies itself to AO3 (via user-agent string) as "ao3-archiver/0.1 (personal bookmark backup; AO3 user:\[your username is added here]; contact syrtis@sysd.info)."
 
 ---
 
@@ -120,9 +131,9 @@ configured by environment variables (`AO3_USERNAME`, `AO3_SESSION_COOKIE`, `AO3_
 `AO3_MIN_INTERVAL`, `AO3_MAX_PAGES`, `AO3_MAX_DOWNLOADS`, …). Syncs are **bounded by default** so a
 casual run never crawls a whole account by accident.
 
+If you fork this tool, please update the user-agent string logic in Sources/AO3Kit/AO3Client.swift to use your own contact information.
+
 - **How it's built:** [ARCHITECTURE.md](ARCHITECTURE.md)
-- **What's next:** [PLAN.md](PLAN.md)
-- **Contributor conventions:** [CLAUDE.md](CLAUDE.md)
 
 **Requirements:** macOS 26 (Tahoe) + Xcode 26 to build the app (it uses Apple's Liquid Glass).
 Dependencies: [SwiftSoup](https://github.com/scinfu/SwiftSoup) (HTML parsing) and
@@ -132,8 +143,9 @@ Dependencies: [SwiftSoup](https://github.com/scinfu/SwiftSoup) (HTML parsing) an
 
 ## Contact
 
-Questions, bugs, or feedback: **syrtis@sysd.info**. (This is also the contact address the app
-identifies itself with when it talks to AO3.)
+Questions, bugs, or feedback: **syrtis@sysd.info**.
+
+This software is provided as-is. This was a weekend hobby project - I may not maintain over time and will not produce versions for other operating systems. Please see the License section for more information if you wish to Fork or create your own version.
 
 ---
 
