@@ -150,7 +150,58 @@ public enum FacetDimension: String, Sendable, CaseIterable, Hashable, Codable {
     }
 }
 
+/// A numeric/date filterable field. Counts are plain ints; dates are compared as unix
+/// seconds (works' `updatedAt` is already unix; the bookmark date is parsed at load), so one
+/// `Double?` extractor + one `min/max` bound covers them all.
+public enum RangeField: String, Sendable, CaseIterable, Hashable, Codable {
+    case wordCount, kudos, comments, bookmarks, hits, dateUpdated, dateBookmarked
+
+    public var title: String {
+        switch self {
+        case .wordCount:      return "Word count"
+        case .kudos:          return "Kudos"
+        case .comments:       return "Comments"
+        case .bookmarks:      return "Bookmarks"
+        case .hits:           return "Hits"
+        case .dateUpdated:    return "Date updated"
+        case .dateBookmarked: return "Date bookmarked"
+        }
+    }
+
+    public var isDate: Bool { self == .dateUpdated || self == .dateBookmarked }
+}
+
+/// Inclusive `[min, max]` bound; either end may be open. An item whose value is `nil` (e.g. a
+/// series has no word count) fails an *active* bound — it drops out rather than sneaking in.
+public struct NumericBound: Sendable, Equatable, Codable {
+    public var min: Double?
+    public var max: Double?
+    public init(min: Double? = nil, max: Double? = nil) { self.min = min; self.max = max }
+
+    public var isActive: Bool { min != nil || max != nil }
+
+    public func contains(_ value: Double?) -> Bool {
+        guard let value else { return false }
+        if let min, value < min { return false }
+        if let max, value > max { return false }
+        return true
+    }
+}
+
 extension WorkListItem {
+    /// The item's comparable value for a range field (`nil` when it has none).
+    public func value(for field: RangeField) -> Double? {
+        switch field {
+        case .wordCount:      return wordCount.map(Double.init)
+        case .kudos:          return kudos.map(Double.init)
+        case .comments:       return comments.map(Double.init)
+        case .bookmarks:      return bookmarksCount.map(Double.init)
+        case .hits:           return hits.map(Double.init)
+        case .dateUpdated:    return updatedAt.map(Double.init)
+        case .dateBookmarked: return bookmarkedDate?.timeIntervalSince1970
+        }
+    }
+
     /// The item's values along one dimension (the set a filter matches against, the multiset
     /// facet counts tally). Empty when the item has no value there.
     public func values(for dim: FacetDimension) -> [String] {
@@ -379,6 +430,7 @@ public enum DownloadFilter: String, Sendable, CaseIterable, Codable {
 public struct GalleryFilter: Sendable, Equatable, Codable {
     public var include: [FacetDimension: Set<String>] = [:]
     public var exclude: [FacetDimension: Set<String>] = [:]
+    public var ranges: [RangeField: NumericBound] = [:]   // invariant: no inactive bound stored
     public var completion: CompletionFilter = .any
     public var download: DownloadFilter = .any
     public var searchText: String = ""
@@ -387,6 +439,12 @@ public struct GalleryFilter: Sendable, Equatable, Codable {
 
     public func included(_ dim: FacetDimension) -> Set<String> { include[dim] ?? [] }
     public func excluded(_ dim: FacetDimension) -> Set<String> { exclude[dim] ?? [] }
+    public func bound(_ field: RangeField) -> NumericBound { ranges[field] ?? NumericBound() }
+
+    /// Set a range bound, dropping the key when inactive (mirrors the include/exclude invariant).
+    public mutating func setBound(_ field: RangeField, _ bound: NumericBound) {
+        ranges[field] = bound.isActive ? bound : nil
+    }
 
     /// Set a dimension's include/exclude set, dropping the key when empty (the invariant).
     public mutating func setInclude(_ dim: FacetDimension, _ values: Set<String>) {
@@ -398,6 +456,7 @@ public struct GalleryFilter: Sendable, Equatable, Codable {
 
     public var isActive: Bool {
         include.values.contains { !$0.isEmpty } || exclude.values.contains { !$0.isEmpty }
+            || ranges.values.contains { $0.isActive }
             || completion != .any || download != .any
             || !searchText.trimmingCharacters(in: .whitespaces).isEmpty
     }
@@ -411,6 +470,10 @@ public struct GalleryFilter: Sendable, Equatable, Codable {
         }
         for (dim, exc) in exclude where !exc.isEmpty {
             if !Set(item.values(for: dim)).isDisjoint(with: exc) { return false }
+        }
+        // Numeric / date ranges.
+        for (field, bound) in ranges where bound.isActive {
+            if !bound.contains(item.value(for: field)) { return false }
         }
         // Download / archive state (single-select).
         if !download.matches(item.downloadState) { return false }
@@ -440,7 +503,7 @@ public struct GalleryFilter: Sendable, Equatable, Codable {
 /// Sort options. "Date bookmarked" uses the monotonic bookmark id (reliable; the stored
 /// bookmark date is human text), newest first.
 public enum GallerySort: String, Sendable, CaseIterable {
-    case dateBookmarked, dateUpdated, title, author, wordCount, kudos, hits
+    case dateBookmarked, dateUpdated, title, author, wordCount, kudos, comments, bookmarks, hits
 
     public var label: String {
         switch self {
@@ -450,6 +513,8 @@ public enum GallerySort: String, Sendable, CaseIterable {
         case .author:         return "Author"
         case .wordCount:      return "Word count"
         case .kudos:          return "Kudos"
+        case .comments:       return "Comments"
+        case .bookmarks:      return "Bookmarks"
         case .hits:           return "Hits"
         }
     }
@@ -462,6 +527,8 @@ public enum GallerySort: String, Sendable, CaseIterable {
         case .author:         return items.sorted { $0.author.localizedCaseInsensitiveCompare($1.author) == .orderedAscending }
         case .wordCount:      return items.sorted { ($0.wordCount ?? 0) > ($1.wordCount ?? 0) }
         case .kudos:          return items.sorted { ($0.kudos ?? 0) > ($1.kudos ?? 0) }
+        case .comments:       return items.sorted { ($0.comments ?? 0) > ($1.comments ?? 0) }
+        case .bookmarks:      return items.sorted { ($0.bookmarksCount ?? 0) > ($1.bookmarksCount ?? 0) }
         case .hits:           return items.sorted { ($0.hits ?? 0) > ($1.hits ?? 0) }
         }
     }
@@ -549,6 +616,12 @@ public final class GalleryViewModel {
     public var visibleCount: Int { derived.visible.count }
 
     public func clearFilters() { filter = GalleryFilter() }
+
+    /// Range-bound accessors for the sidebar's min/max fields and date pickers.
+    public func bound(_ field: RangeField) -> NumericBound { filter.bound(field) }
+    public func setBound(_ field: RangeField, _ bound: NumericBound) {
+        var f = filter; f.setBound(field, bound); filter = f
+    }
 
     /// Include-only toggle (simple uses / tests): neutral → include → neutral.
     public func toggle(_ dim: FacetDimension, _ value: String) {

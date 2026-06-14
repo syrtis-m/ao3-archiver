@@ -359,6 +359,31 @@ do {
                   cf.apply(to: items).allSatisfy { !$0.categories.contains(aCat) })
         }
 
+        print("Gallery — range filters")
+        // Word count: items are real fixture works; pick a threshold and check both ends.
+        let wcs = items.compactMap(\.wordCount).sorted()
+        if let median = wcs.dropFirst(wcs.count / 2).first {
+            var rf = GalleryFilter(); rf.setBound(.wordCount, NumericBound(min: Double(median)))
+            check("word-count min keeps only >= median",
+                  rf.apply(to: items).allSatisfy { ($0.wordCount ?? -1) >= median })
+            // A series has no word count → must drop out of an active word-count range.
+            check("nil-valued items drop out of an active numeric range",
+                  rf.apply(to: items).allSatisfy { $0.wordCount != nil })
+            rf = GalleryFilter(); rf.setBound(.wordCount, NumericBound(max: Double(median)))
+            check("word-count max keeps only <= median",
+                  rf.apply(to: items).allSatisfy { ($0.wordCount ?? .max) <= median })
+        }
+        // Inactive bound stores no key (mirrors the facet no-empty invariant).
+        var rEmpty = GalleryFilter(); rEmpty.setBound(.kudos, NumericBound())
+        check("an inactive bound is not stored", rEmpty == GalleryFilter() && !rEmpty.isActive)
+        // Date-updated range over the known unix timestamps.
+        let ups = items.compactMap(\.updatedAt).sorted()
+        if let mid = ups.dropFirst(ups.count / 2).first {
+            var df = GalleryFilter(); df.setBound(.dateUpdated, NumericBound(min: Double(mid)))
+            check("date-updated min filters by unix ts",
+                  df.apply(to: items).allSatisfy { ($0.updatedAt ?? -1) >= mid })
+        }
+
         print("Gallery — download filter (single-select)")
         var d = GalleryFilter(); d.download = .offsite
         check("offsite → the external item", d.apply(to: items).map(\.kind) == [.external])

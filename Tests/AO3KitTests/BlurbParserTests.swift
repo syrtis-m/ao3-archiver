@@ -466,6 +466,42 @@ import Foundation
         #expect(f.apply(to: items).isEmpty)
     }
 
+    @Test func numericAndDateRangeFilters() throws {
+        let (_, items) = try loadedItems()
+        let wcs = items.compactMap(\.wordCount).sorted()
+        let median = try #require(wcs.dropFirst(wcs.count / 2).first)
+
+        var f = GalleryFilter(); f.setBound(.wordCount, NumericBound(min: Double(median)))
+        let kept = f.apply(to: items)
+        #expect(kept.allSatisfy { ($0.wordCount ?? -1) >= median })
+        #expect(kept.allSatisfy { $0.wordCount != nil })   // nil value drops out of an active range
+        #expect(kept.count < items.count)
+
+        // Both ends compose into an inclusive window.
+        f = GalleryFilter(); f.setBound(.kudos, NumericBound(min: 1, max: 100))
+        #expect(f.apply(to: items).allSatisfy { ($0.kudos ?? -1) >= 1 && ($0.kudos ?? .max) <= 100 })
+
+        // An inactive bound is never stored (mirrors the facet no-empty-key invariant).
+        var g = GalleryFilter(); g.setBound(.hits, NumericBound())
+        #expect(g == GalleryFilter())
+        #expect(!g.isActive)
+
+        // Date-updated range filters by the parsed unix timestamp.
+        let ups = items.compactMap(\.updatedAt).sorted()
+        let mid = try #require(ups.dropFirst(ups.count / 2).first)
+        var d = GalleryFilter(); d.setBound(.dateUpdated, NumericBound(min: Double(mid)))
+        #expect(d.apply(to: items).allSatisfy { ($0.updatedAt ?? -1) >= mid })
+    }
+
+    @Test func bookmarkDateParses() throws {
+        // AO3's "04 Apr 2014" → a real Date (UTC, POSIX); garbage → nil (fail-soft).
+        #expect(WorkListItem.parseBookmarkDate("04 Apr 2014") != nil)
+        #expect(WorkListItem.parseBookmarkDate("not a date") == nil)
+        #expect(WorkListItem.parseBookmarkDate(nil) == nil)
+        let (_, items) = try loadedItems()
+        #expect(items.contains { $0.bookmarkedDate != nil })   // the fixture's dates parsed
+    }
+
     @Test func metaStoreAndPageNumber() throws {
         let store = try Store(inMemory: true)
         #expect(try store.getMeta("k") == nil)

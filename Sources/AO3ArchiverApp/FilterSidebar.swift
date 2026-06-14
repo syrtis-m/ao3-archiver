@@ -40,6 +40,8 @@ struct FilterSidebar: View {
                 segmentedGroup("Download", selection: $vm.filter.download,
                                cases: [.any, .saved, .notDownloaded], label: { $0.label })
 
+                rangesSection
+
                 facetSection(.language)
                 facetSection(.fandom)
                 facetSection(.relationship)
@@ -119,6 +121,84 @@ struct FilterSidebar: View {
 
     private func queryBinding(_ dim: FacetDimension) -> Binding<String> {
         Binding(get: { queries[dim] ?? "" }, set: { queries[dim] = $0 })
+    }
+
+    /// Numeric + date range filters (min/max). Empty fields mean "open end"; a value the item
+    /// lacks (e.g. a series has no word count) drops out of an active range.
+    private var rangesSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            groupTitle("Ranges")
+            numericRangeRow(.wordCount)
+            numericRangeRow(.kudos)
+            numericRangeRow(.comments)
+            numericRangeRow(.bookmarks)
+            numericRangeRow(.hits)
+            dateRangeRow(.dateUpdated)
+            dateRangeRow(.dateBookmarked)
+        }
+    }
+
+    private func numericRangeRow(_ field: RangeField) -> some View {
+        HStack(spacing: 6) {
+            Text(field.title).font(.caption).frame(width: 78, alignment: .leading)
+            TextField("min", text: numericBinding(field, \.min)).frame(width: 56)
+            Text("–").foregroundStyle(.secondary)
+            TextField("max", text: numericBinding(field, \.max)).frame(width: 56)
+        }
+        .textFieldStyle(.roundedBorder).controlSize(.small)
+    }
+
+    /// String binding over one end of a numeric bound — empty string clears that end.
+    private func numericBinding(_ field: RangeField,
+                                _ end: WritableKeyPath<NumericBound, Double?>) -> Binding<String> {
+        Binding(
+            get: {
+                guard let v = vm.bound(field)[keyPath: end] else { return "" }
+                return String(Int(v))
+            },
+            set: { str in
+                var b = vm.bound(field)
+                let digits = str.filter(\.isNumber)
+                b[keyPath: end] = digits.isEmpty ? nil : Double(digits)
+                vm.setBound(field, b)
+            })
+    }
+
+    private func dateRangeRow(_ field: RangeField) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(field.title).font(.caption)
+            HStack(spacing: 8) {
+                dateEndPicker(field, \.min, label: "From")
+                dateEndPicker(field, \.max, label: "To")
+            }
+        }
+    }
+
+    /// A checkbox that enables one end of a date range, revealing a compact DatePicker.
+    @ViewBuilder
+    private func dateEndPicker(_ field: RangeField,
+                              _ end: WritableKeyPath<NumericBound, Double?>, label: String) -> some View {
+        let current = vm.bound(field)[keyPath: end]
+        HStack(spacing: 4) {
+            Toggle(isOn: Binding(
+                get: { current != nil },
+                set: { on in
+                    var b = vm.bound(field)
+                    b[keyPath: end] = on ? (current ?? Date().timeIntervalSince1970) : nil
+                    vm.setBound(field, b)
+                })) { Text(label).font(.caption2) }
+                .toggleStyle(.checkbox)
+            if let current {
+                DatePicker("", selection: Binding(
+                    get: { Date(timeIntervalSince1970: current) },
+                    set: { d in
+                        var b = vm.bound(field)
+                        b[keyPath: end] = d.timeIntervalSince1970
+                        vm.setBound(field, b)
+                    }), displayedComponents: .date)
+                    .labelsHidden().datePickerStyle(.compact).controlSize(.small)
+            }
+        }
     }
 
     private func segmentedGroup<T: Hashable>(_ title: String, selection: Binding<T>,
