@@ -498,6 +498,36 @@ do {
     check("rating facet doesn't collapse at scale (all 5 listed)",
           Set(vmBig.facets(for: .rating).map(\.name)).count == 5)
 
+    // ── M6/P0: 20k scale baseline + per-recompute regression guard ────────────────────
+    // The design target is 20k bookmarks. This prints a baseline (first compute + steady-state
+    // recompute = one visible filter+sort + all facet passes) and asserts the recompute stays
+    // under a generous budget, so later perf phases (P2 parallel facets, P3 off-main) can prove
+    // they moved the number and nothing silently regresses. Generous to survive debug/CI variance.
+    print("Gallery — scale baseline (20k items, M6/P0)")
+    let big20 = synthItems(20_000)
+    let vm20 = GalleryViewModel()
+    let t0 = Date()
+    vm20.allItems = big20
+    _ = vm20.visibleItems                       // first access does the full derive (visible + facets)
+    let firstMs = Date().timeIntervalSince(t0) * 1000
+    check("loads 20000 items", vm20.totalCount == 20_000)
+
+    func timeRecompute(_ q: String) -> Double {
+        let before = vm20.recomputeCount
+        vm20.filter.searchText = q              // unique query → forces exactly one recompute
+        let t = Date()
+        _ = vm20.visibleItems                   // derive runs here (facets computed in the same pass)
+        let ms = Date().timeIntervalSince(t) * 1000
+        precondition(vm20.recomputeCount == before + 1, "expected exactly one recompute")
+        return ms
+    }
+    var samples: [Double] = []
+    for i in 0..<5 { samples.append(timeRecompute("work\(i)_\(Int.random(in: 0..<999999))")) }
+    let medianMs = samples.sorted()[samples.count / 2]
+    print(String(format: "  · first compute %.0f ms · median recompute %.0f ms (visible + %d facets)",
+                 firstMs, medianMs, FacetDimension.allCases.count))
+    check("20k full recompute stays under budget (regression guard)", medianMs < 1500)
+
     print("Store — meta + index resume")
     let metaStore = try Store(inMemory: true)
     check("meta nil initially", try metaStore.getMeta("k") == nil)

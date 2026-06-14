@@ -52,6 +52,16 @@ public struct WorkListItem: Sendable, Identifiable, Equatable, Hashable {
     public var downloadState: String
     public var epubPath: String?
 
+    // ── Precomputed once at construction (perf: M6/P1) ──────────────────────────────
+    /// Concatenated, lowercased text the search box matches against. Built ONCE in `init`
+    /// (not per access) — at 20k items, rebuilding+lowercasing ~10 arrays per keystroke per
+    /// item was the dominant search cost.
+    public let searchHaystack: String
+    /// Lowercased title/author, so title/author sorts compare with a plain `<` instead of a
+    /// per-comparison `localizedCaseInsensitiveCompare` (O(n log n) of locale bridging).
+    public let titleSortKey: String
+    public let authorSortKey: String
+
     /// Public initializer with defaults for the long tail of fields, so the app and tests
     /// can construct items without spelling out all ~33 parameters.
     public init(
@@ -82,6 +92,12 @@ public struct WorkListItem: Sendable, Identifiable, Equatable, Hashable {
         self.bookmarkTags = bookmarkTags
         self.bookmarkerNotes = bookmarkerNotes; self.isRec = isRec; self.isPrivate = isPrivate
         self.downloadState = downloadState; self.epubPath = epubPath
+        // Derived, computed once (see field docs).
+        self.searchHaystack = ([title, author, summary ?? "", bookmarkerNotes ?? ""]
+            + fandoms + relationships + characters + freeforms + bookmarkTags)
+            .joined(separator: " ").lowercased()
+        self.titleSortKey = title.lowercased()
+        self.authorSortKey = author.lowercased()
     }
 
     /// Stable, list-unique id (bookmark ids are unique; fall back for safety).
@@ -89,13 +105,6 @@ public struct WorkListItem: Sendable, Identifiable, Equatable, Hashable {
 
     /// Full AO3 URL for "view on AO3".
     public var ao3URL: URL? { URL(string: "https://archiveofourown.org" + sourcePath) }
-
-    /// Concatenated text the search box matches against (built once at load).
-    public var searchHaystack: String {
-        ([title, author, summary ?? "", bookmarkerNotes ?? ""]
-         + fandoms + relationships + characters + freeforms + bookmarkTags)
-            .joined(separator: " ").lowercased()
-    }
 
     /// A crossover = bookmarked across more than one fandom.
     public var isCrossover: Bool { fandoms.count > 1 }
@@ -555,8 +564,8 @@ public enum GallerySort: String, Sendable, CaseIterable, Codable {
         switch self {
         case .dateBookmarked: return items.sorted { ($0.bookmarkID ?? 0) > ($1.bookmarkID ?? 0) }
         case .dateUpdated:    return items.sorted { ($0.updatedAt ?? 0) > ($1.updatedAt ?? 0) }
-        case .title:          return items.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
-        case .author:         return items.sorted { $0.author.localizedCaseInsensitiveCompare($1.author) == .orderedAscending }
+        case .title:          return items.sorted { $0.titleSortKey < $1.titleSortKey }
+        case .author:         return items.sorted { $0.authorSortKey < $1.authorSortKey }
         case .wordCount:      return items.sorted { ($0.wordCount ?? 0) > ($1.wordCount ?? 0) }
         case .kudos:          return items.sorted { ($0.kudos ?? 0) > ($1.kudos ?? 0) }
         case .comments:       return items.sorted { ($0.comments ?? 0) > ($1.comments ?? 0) }

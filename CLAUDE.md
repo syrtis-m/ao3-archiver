@@ -20,8 +20,8 @@ sort are out of scope: the listing blurb carries only the updated date — no pe
 
 ```sh
 swift build                 # build library + CLI + app
-swift run selftest          # headless parser + Store + gallery-model checks (157 checks)
-swift test                  # swift-testing suite (needs Xcode; 38 tests, 4 suites)
+swift run selftest          # headless parser + Store + gallery-model checks (161 checks)
+swift test                  # swift-testing suite (needs Xcode; 39 tests, 4 suites)
 swift run ao3archiver        # bounded sync: paginate → ingest → expand series → download
 swift run AO3ArchiverApp     # SwiftUI gallery over the synced DB (reads AO3_ARCHIVE_DIR)
 ./Packaging/make-icon.sh     # render the liquid-glass app icon → Packaging/AppIcon.icns
@@ -72,7 +72,7 @@ pages by accident; politeness is a hard requirement.
 ### Testing note
 
 Full **Xcode is installed**, so `swift test` runs the swift-testing suite in
-`Tests/AO3KitTests/` (38 tests, 4 suites — parser, downloader, Store, gallery model).
+`Tests/AO3KitTests/` (39 tests, 4 suites — parser, downloader, Store, gallery model).
 `swift run selftest`
 is the equivalent **framework-free** runner (same assertions against the same fixtures) and
 also works under Command-Line-Tools-only toolchains, where `swift test` fails with "no such

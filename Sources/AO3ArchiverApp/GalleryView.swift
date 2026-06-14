@@ -19,6 +19,9 @@ struct GalleryView: View {
     // `.searchable` straight into `$vm.filter.searchText` (a nested property of an
     // @Observable) can drop live updates inside a NavigationSplitView on macOS.
     @State private var searchText = ""
+    // Debounce typing before it reaches the filter (M6/P1): each keystroke otherwise forces a
+    // full recompute. ~200ms collapses a burst of keystrokes into one. Clearing applies at once.
+    @State private var searchDebounce: Task<Void, Never>?
 
     private var selectedItem: WorkListItem? {
         // Resolve against the full set so the detail survives filter changes (and so we
@@ -34,7 +37,7 @@ struct GalleryView: View {
             gallery
                 .navigationTitle("Bookmarks")
                 .searchable(text: $searchText, prompt: "Search title, author, tags, notes")
-                .onChange(of: searchText) { _, newValue in vm.filter.searchText = newValue }
+                .onChange(of: searchText) { _, newValue in debounceSearch(newValue) }
                 .toolbar { toolbarContent }
                 .inspector(isPresented: $showInspector) {
                     if let item = selectedItem {
@@ -49,6 +52,19 @@ struct GalleryView: View {
                     SyncSheet(controller: syncController, store: store, archiveRoot: archiveRoot,
                               reload: { vm.load(from: store) })
                 }
+        }
+    }
+
+    /// Push the search text into the filter after a short quiet period, so a burst of
+    /// keystrokes triggers one recompute, not one per character. An empty query (the user
+    /// cleared the field) applies immediately — clearing should feel instant.
+    private func debounceSearch(_ newValue: String) {
+        searchDebounce?.cancel()
+        if newValue.isEmpty { vm.filter.searchText = ""; return }
+        searchDebounce = Task {
+            try? await Task.sleep(for: .milliseconds(200))
+            guard !Task.isCancelled else { return }
+            vm.filter.searchText = newValue
         }
     }
 

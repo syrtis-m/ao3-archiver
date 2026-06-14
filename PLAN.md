@@ -543,8 +543,9 @@ Not part of V1; captured here as the natural next iteration if the tool grows be
   → `deleted_on_ao3`, highlight "your backup is the only copy."
 - **M5.3 — Scheduled background sync** (opt-in), politeness-respecting.
 - **M5.4 — Export/import** the archive folder; backup integrity checks.
-- **M5.5 — Large-library perf pass** (10k+: fall back to an FTS5/SQL search path when result
-  sets are huge — the in-memory pipeline is already memoized and proven snappy at 2k).
+- **M5.5 — Large-library perf pass** → superseded/expanded by **§13 (M6)**, a full whole-app
+  plan designed around 20k bookmarks (debounce + precompute + parallel facets + off-main
+  compute; FTS/SQL fallback demoted to a >100k ceiling-raiser).
 - **M5.6 — Local file-size / download-status sort** (the one deferred M3 sort; store epub byte
   size at download).
 
@@ -557,7 +558,7 @@ Not part of V1; captured here as the natural next iteration if the tool grows be
 | AO3 HTML changes break the parser | Isolate all selectors in one `Parser` type with snapshot tests against saved fixture HTML; fail soft per-field. |
 | Rate limiting / IP throttle | Conservative defaults, 429 backoff, single-threaded, aggressive caching (§2). |
 | Cookie expiry mid-sync | Detect login redirect, pause sync, prompt to re-paste; resume. |
-| Large libraries (10k+ bookmarks) | Virtualized UI, indexed SQL, paged + resumable sync, memoized in-memory filter pipeline (proven snappy at 2k; FTS5/SQL fallback for huge sets is M5.5). |
+| Large libraries (10k–20k bookmarks) | Virtualized UI, paged + resumable sync, memoized in-memory pipeline. The 20k perf plan (§13/M6): debounce input, precompute haystack/sort keys/value-sets, parallelize the 9 facet passes, move recompute off-main, fix the per-page sync reload. FTS5/SQL fallback only past ~100k. |
 | No cover art in AO3 EPUBs | Resolved by design: the gallery is **metadata cards** (title/author/tags/stats/summary), not a cover grid — no cover extraction needed. |
 | Restricted/anon works | Require cookie; mark clearly when unavailable; never crash a sync over one work. |
 | ToS / ethics | Scope to user's own bookmarks; polite client; honest UA; local-only; no bulk dataset features. |
@@ -577,3 +578,107 @@ These were the pre-build open questions; here's what V1 settled on.
 5. **Scheduled background backups:** ✅ manual refresh for V1 (in-app sync with live progress +
    resumable index); a scheduled opt-in sync is post-V1 (M5.3).
 ```
+
+---
+
+## 13. M6 — Performance & scale (design target: 20k bookmarks)
+
+> **Design point:** ~20k unique bookmarks on current Apple-Silicon compute (many fast cores,
+> fast SSD, ample RAM). At this scale **nothing in the pipeline is O(n²)** and 20k
+> `WorkListItem`s are only tens of MB resident — so the fix is *not* a SQL/FTS rewrite. The
+> slowness is **wasted recomputation, main-thread blocking, and no input debounce**. The
+> abundant-compute constraint argues *for* aggressive precompute + parallelism and *against*
+> pushing the tested in-memory engine into SQLite. Keep the proven faceting/filter core; make
+> it do less work, less often, off the main thread, across more cores.
+
+### Measured symptoms (root causes, verified in code)
+
+1. **No search debounce.** `GalleryView` pipes every keystroke straight into
+   `vm.filter.searchText` (`onChange`), so each character is a fresh memo key → a full recompute.
+2. **`searchHaystack` is recomputed per access.** Despite the "built once at load" comment it's a
+   *computed* property — every `matches` call re-joins ~10 arrays and re-lowercases them. This is
+   the dominant per-keystroke allocation cost.
+3. **Facets are 9 passes, not 1.** A recompute does **one** filter+sort for the visible list but
+   **nine** more (`filter.clearing(dim).apply(to: allItems)` + tally for every
+   `FacetDimension.allCases`). Because `searchText` is in the memo key, all nine rerun on every
+   keystroke. This 9× is where the wall-clock goes — and the nine passes are pure and
+   independent, i.e. embarrassingly parallel.
+4. **Per-item allocation in the hot loop.** `matches` builds `Set(item.values(for:))` per active
+   dimension, and `values(for:)` allocates an array, per item per dimension — same in `Facets.counts`.
+5. **All of it is synchronous on the main thread.** `visibleItems`/`facets(for:)` resolve the
+   `derived` computed property during view-body evaluation, so a 50–150 ms recompute blocks input.
+6. **Whole-app, not just search:** `vm.load(from:)` is a synchronous main-thread
+   `fetchAllListItems` (3 table scans + rebuilding all structs), and **`SyncController` calls it
+   on every indexed page** (`SyncController.swift:114`). Mid-sync at 20k that's a full O(n)
+   reload **+** full recompute per page — likely the worst stutter in the app.
+7. **Sort cost:** `title`/`author` sorts use `localizedCaseInsensitiveCompare` (locale-aware,
+   per-comparison bridging) — O(n log n) of expensive compares.
+8. **Sidebar rendering:** high-cardinality dimensions (thousands of fandoms/freeforms/characters)
+   feed the facet list; rendering thousands of rows is its own hit, independent of compute.
+
+### Phase 0 — Measure first (gating; no optimization without a number)
+
+Extend the existing "scale + memoization (2000 items)" selftest/`swift test` case to **20k**
+synthetic items. Capture and print a **baseline**: `fetchAllListItems` ms, single-recompute ms
+(visible + all facets), and a simulated 10-keystroke type. Turn per-recompute time into a
+**regression-guarded assertion** (a generous ceiling) the way memoization is already proven —
+every later phase must move this number and keep the assertion green. Keep selftest and
+`swift test` in lockstep, as today.
+
+### Phase 1 — Cheap, low-risk wins (model + one view change)
+
+- **Store `searchHaystack`** as a stored, lowercased property built once in `fetchAllListItems`
+  (make the lying comment true). Kills cause #2.
+- **Debounce search input** ~200 ms in the view before it reaches `filter.searchText` (a small
+  `@Observable`/`Task`-based debouncer, or Combine `debounce`). Kills cause #1 — typing
+  "glitchyrobo" goes from 11 recomputes to ~1.
+- **Precompute lowercased sort keys** for title/author at load; sort on those with a plain
+  `<` instead of `localizedCaseInsensitiveCompare`. Kills cause #7.
+
+*Expected:* most of the felt typing lag gone on its own. Risk: low — pure data, one view tweak.
+
+### Phase 2 — Cut cost per recompute (model)
+
+- **Precompute per-item, per-dimension value `Set`s** at load (`[FacetDimension: Set<String>]`
+  on the item, plus the flat arrays the facet tally still needs). `matches` then does set ops
+  with no per-call allocation; `Facets.counts` iterates the cached arrays. Kills cause #4.
+  (Memory: a few extra MB at 20k — acceptable per the design point.)
+- **Parallelize the nine facet passes** across cores (`DispatchQueue.concurrentPerform` /
+  `TaskGroup`). They're independent and pure, so wall-clock collapses toward ~1 pass. Kills
+  the 9× in cause #3 — the single biggest lever, and the one the "lots of compute" constraint
+  is asking for. Keep results deterministic (write into a preallocated slot per dimension).
+
+*Expected:* recompute time drops to roughly one filter pass. Risk: medium — concurrency in the
+model; the pure functions make it safe, but add a test that parallel == serial output.
+
+### Phase 3 — Get compute off the main thread (architectural — flag as significant)
+
+Today `visibleItems` is a *synchronous* computed property read during view body. To stop any
+recompute from blocking input, `derived` must move to a background computation with a
+**generation token**: kick off the recompute, keep showing the previous `derived` result, and
+publish the new one when it lands (discarding stale tokens). This changes the memo/observation
+contract (`visibleItems` becomes a published snapshot, not a synchronous derive), so it touches
+the `@Observable` design and every reader — **not a free lunch.** Pair with:
+
+- **Make `load(from:)` async/off-main** and **fix the sync live-reload (#6):** during indexing,
+  *append incrementally* (or coalesce/throttle reloads to ≤1/sec) instead of a full
+  `fetchAllListItems` + recompute per page. This likely removes the worst mid-sync stutter.
+- **Cap sidebar facet rows (#8):** render top-N per dimension and lean on the existing
+  typeahead for the long tail; don't lay out thousands of rows.
+
+*Expected:* UI never blocks on filter/sort/sync; mid-sync stays smooth. Risk: higher — observation
++ concurrency; gate behind the Phase 0 numbers and keep all logic below the SwiftUI line.
+
+### Future (out of M6 scope) — 100k+ ceiling-raiser
+
+**Not in M6's scope; noted only as the next move *if* the library ever grows an order of magnitude
+beyond the 20k design point.** A SQL/FTS5 search/filter fallback that pages results from disk.
+**Caveat:** FTS5 is token/prefix matching, not the current substring-anywhere `contains` — adopting
+it is a *search-semantics change*, not a free perf win, and must be a deliberate, separate decision.
+This supersedes the old M5.5 framing.
+
+### Out of scope / non-goals
+
+Rewriting the storage layer, abandoning in-memory faceting, or trading the tested pure engine for
+SQL at 20k. The plan keeps the engine and the test discipline; it makes the work smaller, rarer,
+and parallel.
