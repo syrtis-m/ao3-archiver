@@ -528,6 +528,17 @@ do {
                  firstMs, medianMs, FacetDimension.allCases.count))
     check("20k full recompute stays under budget (regression guard)", medianMs < 1500)
 
+    // Parallel facet passes must produce byte-identical results to a serial computation
+    // (deterministic: each dimension writes its own slot, reassembled in order) — M6/P2.
+    vm20.cycle(.rating, "Explicit")             // an active filter, so faceting has real work
+    let parallelOK = FacetDimension.allCases.allSatisfy { dim in
+        let serial = Facets.values(for: dim, in: vm20.filter.clearing(dim).apply(to: big20))
+        let parallel = vm20.facets(for: dim)
+        return serial.count == parallel.count
+            && zip(serial, parallel).allSatisfy { $0.name == $1.name && $0.count == $1.count }
+    }
+    check("parallel facets == serial facets (all dimensions)", parallelOK)
+
     print("Store — meta + index resume")
     let metaStore = try Store(inMemory: true)
     check("meta nil initially", try metaStore.getMeta("k") == nil)

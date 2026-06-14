@@ -488,12 +488,15 @@ public struct GalleryFilter: Sendable, Equatable, Codable {
     public func matches(_ item: WorkListItem) -> Bool {
         // Keyed include/exclude over every dimension. Include: item must carry ANY included
         // value. Exclude: item must carry NONE. (`where !$0.isEmpty` keeps a stray empty set
-        // harmless even though the invariant should prevent one.)
+        // harmless even though the invariant should prevent one.) We probe each item value
+        // against the (small) include/exclude set rather than building a Set per item per
+        // dimension — the per-call `Set(item.values(for:))` allocation was a hot-loop cost
+        // at 20k×9 (M6/P2). `values(for:)` returns the item's stored arrays directly.
         for (dim, inc) in include where !inc.isEmpty {
-            if Set(item.values(for: dim)).isDisjoint(with: inc) { return false }
+            if !item.values(for: dim).contains(where: inc.contains) { return false }
         }
         for (dim, exc) in exclude where !exc.isEmpty {
-            if !Set(item.values(for: dim)).isDisjoint(with: exc) { return false }
+            if item.values(for: dim).contains(where: exc.contains) { return false }
         }
         // Numeric / date ranges.
         for (field, bound) in ranges where bound.isActive {
@@ -658,9 +661,19 @@ public final class GalleryViewModel {
         var d = Derived()
         d.visible = sort.sorted(filter.apply(to: allItems))
         // Each dimension counted against the set filtered by all OTHER dims (faceted search).
-        for dim in FacetDimension.allCases {
-            d.facets[dim] = Facets.values(for: dim, in: filter.clearing(dim).apply(to: allItems))
+        // These passes are pure and independent (a full filter + tally each), so at 20k the
+        // nine of them dominate a recompute — run them in parallel across cores so wall-clock
+        // collapses toward one pass (M6/P2). Each iteration writes its own result slot, so the
+        // shared buffer needs no locking; `filter`/`allItems` are only read.
+        let dims = FacetDimension.allCases
+        let f = filter, items = allItems
+        var results = [[(name: String, count: Int)]](repeating: [], count: dims.count)
+        results.withUnsafeMutableBufferPointer { buf in
+            DispatchQueue.concurrentPerform(iterations: dims.count) { i in
+                buf[i] = Facets.values(for: dims[i], in: f.clearing(dims[i]).apply(to: items))
+            }
         }
+        for (i, dim) in dims.enumerated() { d.facets[dim] = results[i] }
         cached = d; cachedKey = key; recomputeCount += 1
         return d
     }

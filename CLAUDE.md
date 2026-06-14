@@ -20,7 +20,7 @@ sort are out of scope: the listing blurb carries only the updated date — no pe
 
 ```sh
 swift build                 # build library + CLI + app
-swift run selftest          # headless parser + Store + gallery-model checks (161 checks)
+swift run selftest          # headless parser + Store + gallery-model checks (162 checks)
 swift test                  # swift-testing suite (needs Xcode; 39 tests, 4 suites)
 swift run ao3archiver        # bounded sync: paginate → ingest → expand series → download
 swift run AO3ArchiverApp     # SwiftUI gallery over the synced DB (reads AO3_ARCHIVE_DIR)
