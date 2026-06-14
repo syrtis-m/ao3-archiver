@@ -246,6 +246,14 @@ Notes:
 - `work_fts` powers the search box; rebuilt incrementally on writes.
 - `download_state = stale` when AO3's `updated_at` > our `epub_updated_at` → re-download
   candidate. `deleted_on_ao3` when a previously-seen work 404s but we keep the local EPUB.
+- **As built in M1:** `work.updated_at` / `epub_updated_at` are stored as the **unix-ts**
+  from the card comment (the download cache key), not ISO — comparison is exact and avoids
+  parsing human dates. "Needs download" is computed by query (`epub_path IS NULL OR
+  updated_at > epub_updated_at`) rather than trusting a stored `stale` flag, so an
+  interrupted sync resumes correctly; `download_state` is a status cache for the UI. The
+  v1 schema implements the columns the parser actually populates today; the remaining §5
+  columns (published_at, is_anon, is_restricted, collections, series_json, cover_path) come
+  in later migrations as the parser learns to fill them.
 
 **On-disk layout**
 ```
@@ -411,8 +419,16 @@ RAM and only fall back to SQL when the result set is huge.
   pinned to real captured HTML; verified end-to-end against live AO3. Selectors were
   derived from real markup — notably the download href carries `?updated_at=`, so the
   EPUB link must be matched on the path before `?`, not an ends-with selector.
-- **M1 — Core sync + store:** full pagination, GRDB schema/migrations, resumable index
-  sync, content-download queue, FileStore with folder bookmark.
+- **M1 — Core sync + store: ✅ done.** `Store` (GRDB schema/migrations + FTS5, idempotent
+  upserts that preserve archive state), `FileStore` (archive folder + EPUB layout),
+  `SyncEngine` (bounded paginated index sync → series expansion → resumable content-download
+  queue, all through the one polite client). Parser extended for bookmark id / bookmark date
+  / rec / private / series `Works:` count + pagination `Next`. Verified offline against
+  fixtures (idempotency, stale-detection, FTS, series expansion) and live end-to-end
+  (pagination, series expansion with member-dedup, resumable downloads of valid EPUBs).
+  Deviations from §5 noted there: `work.updated_at` stored as the unix-ts cache key (not
+  ISO); the security-scoped **folder bookmark** is deferred to M2 (it needs the app sandbox,
+  which a SwiftPM CLI can't hold — M1's `FileStore` is plain directory management).
 - **M2 — Gallery MVP:** card list + cover grid, open/reveal, basic search and a few
   filters; the snappy in-memory pipeline.
 - **M3 — Full filter parity:** every facet from §7, include/exclude, ranges, sorts, live

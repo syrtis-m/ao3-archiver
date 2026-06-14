@@ -81,6 +81,130 @@ do {
         check("first work bookmark workID == 1413325", bmWorks.first?.workID == 1413325)
         check("first work bookmark title", bmWorks.first?.title == "circus girl without a safety net")
         check("all work bookmarks have stats (wordCount)", bmWorks.allSatisfy { $0.wordCount != nil })
+
+        print("BlurbParser — bookmark-specific fields")
+        check("every card has a bookmarkID", bm.allSatisfy { $0.bookmarkID != nil })
+        check("every card has a bookmarkedAt date", bm.allSatisfy { $0.bookmarkedAt != nil })
+        check("first card bookmarkedAt == 30 May 2026", bmWorks.first?.bookmarkedAt == "30 May 2026")
+        check("work date distinct from bookmark date", bmWorks.first?.dateText == "04 Apr 2014")
+        check("all 20 are public (none private)", bm.allSatisfy { !$0.isPrivate })
+        check("none flagged as rec", bm.allSatisfy { !$0.isRec })
+
+        print("BlurbParser — pagination")
+        check("nextPagePath points to page 2",
+              (try BlurbParser.nextPagePath(html: bmHTML))?.contains("page=2") == true)
+        check("nextPagePath nil on a page with no Next",
+              try BlurbParser.nextPagePath(html: "<ol class=\"pagination\"></ol>") == nil)
+    }
+
+    // Series bookmark card (li.bookmark.blurb.group whose heading links to /series/<id>).
+    // Captured live from the user's bookmarks after they bookmarked a series.
+    let seriesCardURL = repoRoot.appendingPathComponent("Tests/AO3KitTests/Fixtures/series_card.html")
+    if let scHTML = try? String(contentsOf: seriesCardURL, encoding: .utf8) {
+        let sc = try BlurbParser.parseListing(html: scHTML)
+        print("BlurbParser — series bookmark card")
+        check("parses 1 series card", sc.count == 1)
+        check("kind == series", sc.first?.kind == .series)
+        check("series id == 2157402", sc.first?.workID == 2157402)
+        check("series title", sc.first?.title == "those who form his fire-side")
+        check("worksCount == 6", sc.first?.worksCount == 6)
+        check("series total wordCount == 39146", sc.first?.wordCount == 39146)
+        check("series bookmarkedAt == 13 Jun 2026", sc.first?.bookmarkedAt == "13 Jun 2026")
+        check("series updated date distinct (27 Mar 2026)", sc.first?.dateText == "27 Mar 2026")
+    }
+
+    // Series page (/series/<id>): lists member work blurbs with the standard work markup,
+    // so the same parser expands a series into its member works.
+    let seriesPageURL = repoRoot.appendingPathComponent("Tests/AO3KitTests/Fixtures/series_page.html")
+    if let spHTML = try? String(contentsOf: seriesPageURL, encoding: .utf8) {
+        let members = try BlurbParser.parseListing(html: spHTML)
+        print("BlurbParser — series page (member expansion)")
+        check("parses 6 member works", members.count == 6)
+        check("all members are AO3 works", members.allSatisfy { $0.kind == .work })
+        check("member ids match", members.map(\.workID) ==
+              [26762044, 29369769, 35035795, 68591376, 70449741, 81922441])
+        check("members carry word counts", members.allSatisfy { $0.wordCount != nil })
+    }
+
+    // ── Store: schema, idempotent upsert, stale detection, FTS (all offline) ──────────
+    // Reuses the parsed bookmarks fixture (19 works + 1 external). The dispatch here mirrors
+    // exactly what SyncEngine's index pass does per card.
+    func ingest(_ store: Store, _ cards: [WorkBlurb]) throws {
+        for b in cards {
+            switch b.kind {
+            case .work, .external:
+                try store.upsertWork(b)
+                try store.upsertBookmark(b, itemKind: b.kind, itemID: b.workID)
+            case .series:
+                try store.upsertSeries(b)
+                try store.upsertBookmark(b, itemKind: .series, itemID: b.workID)
+            }
+        }
+    }
+
+    if let bmHTML = try? String(contentsOf: bookmarksURL, encoding: .utf8) {
+        let cards = try BlurbParser.parseListing(html: bmHTML)
+        let store = try Store(inMemory: true)
+        try ingest(store, cards)
+
+        print("Store — ingest bookmarks fixture")
+        check("20 work rows (19 work + 1 external)", try store.count("work") == 20)
+        check("20 bookmark rows", try store.count("bookmark") == 20)
+        check("tags were normalized", try store.count("tag") > 0)
+        check("19 works need download (external excluded)",
+              try store.worksNeedingDownload().count == 19)
+
+        // Idempotency: a second full ingest must not duplicate anything.
+        try ingest(store, cards)
+        check("re-ingest is idempotent (still 20 works)", try store.count("work") == 20)
+        check("re-ingest is idempotent (still 20 bookmarks)", try store.count("bookmark") == 20)
+        check("re-ingest is idempotent (download queue still 19)",
+              try store.worksNeedingDownload().count == 19)
+
+        // Mark one downloaded → it leaves the queue.
+        let first = try store.worksNeedingDownload().first!
+        try store.markDownloaded(workID: first.id, epubPath: "works/\(first.id).epub",
+                                 updatedAt: first.updatedAt)
+        check("after one download, 18 remain", try store.worksNeedingDownload().count == 18)
+
+        // Stale detection: AO3 shows a newer updated_at → it re-enters the queue.
+        if var staleCard = cards.first(where: { $0.workID == first.id }) {
+            staleCard.updatedAt = (first.updatedAt ?? 0) + 1
+            try store.upsertWork(staleCard)
+            check("a newer updated_at marks the work stale (back to 19)",
+                  try store.worksNeedingDownload().count == 19)
+        }
+
+        // A failed download must be RETRYABLE (anon run → add cookie → re-run picks it up):
+        // marking failed records the error but must NOT remove it from the download queue.
+        let queueBeforeFail = try store.worksNeedingDownload().count
+        let toFail = try store.worksNeedingDownload().first!
+        try store.markFailed(workID: toFail.id, error: "requires login")
+        check("a failed download stays in the queue (retryable across runs)",
+              try store.worksNeedingDownload().count == queueBeforeFail)
+
+        // FTS: a word from a real title is findable.
+        check("FTS finds 'circus' (work 1413325)", try store.searchWorkIDs("circus").contains(1413325))
+    }
+
+    // Store — series expansion wiring (card + member page fixtures).
+    if let scHTML = try? String(contentsOf: seriesCardURL, encoding: .utf8),
+       let spHTML = try? String(contentsOf: seriesPageURL, encoding: .utf8) {
+        let card = try BlurbParser.parseListing(html: scHTML).first!
+        let members = try BlurbParser.parseListing(html: spHTML)
+        let store = try Store(inMemory: true)
+        try store.upsertSeries(card)
+        try store.upsertBookmark(card, itemKind: .series, itemID: card.workID)
+        for (i, m) in members.enumerated() {
+            try store.upsertWork(m)
+            try store.linkSeriesWork(seriesID: card.workID, workID: m.workID, part: i + 1)
+        }
+        print("Store — series expansion")
+        check("1 series row", try store.count("series") == 1)
+        check("6 member works", try store.count("work") == 6)
+        check("6 series_work links", try store.count("series_work") == 6)
+        check("series bookmark recorded", try store.count("bookmark") == 1)
+        check("all 6 members queued for download", try store.worksNeedingDownload().count == 6)
     }
 
     print("WorkDownloader")

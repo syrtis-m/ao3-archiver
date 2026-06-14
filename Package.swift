@@ -14,11 +14,16 @@ let package = Package(
     dependencies: [
         // HTML parsing. We use it as a tool; the parsing *logic* is our own (see BlurbParser).
         .package(url: "https://github.com/scinfu/SwiftSoup.git", from: "2.7.0"),
+        // SQLite metadata store (schema, migrations, FTS5). Links the system libsqlite3.
+        .package(url: "https://github.com/groue/GRDB.swift.git", from: "6.0.0"),
     ],
     targets: [
         .target(
             name: "AO3Kit",
-            dependencies: ["SwiftSoup"]
+            dependencies: [
+                "SwiftSoup",
+                .product(name: "GRDB", package: "GRDB.swift"),
+            ]
         ),
         .executableTarget(
             name: "ao3archiver",

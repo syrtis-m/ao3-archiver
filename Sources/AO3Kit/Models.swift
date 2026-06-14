@@ -52,6 +52,9 @@ public struct WorkBlurb: Sendable, Codable, Equatable {
     public var kudos: Int?
     public var bookmarksCount: Int?
     public var hits: Int?
+    /// Number of works in a series (`dd.works`). Populated only on `.series` cards; nil
+    /// for individual works/external bookmarks.
+    public var worksCount: Int?
 
     /// Human date string shown on the card, e.g. "13 Jun 2026".
     public var dateText: String?
@@ -59,9 +62,20 @@ public struct WorkBlurb: Sendable, Codable, Equatable {
     /// download cache key (the download URL carries the same value).
     public var updatedAt: Int?
 
-    // Bookmarks-page only (best-effort; empty on non-bookmark listings).
+    // Bookmarks-page only (best-effort; empty/nil on non-bookmark listings).
     public var bookmarkTags: [String]
     public var bookmarkerNotes: String?
+    /// AO3 bookmark id (from `li id="bookmark_<id>"`). Orders "date bookmarked" and keys
+    /// the `bookmark` table. nil on non-bookmark listings (tag/works-search pages).
+    public var bookmarkID: Int?
+    /// The date the *bookmark* was made (distinct from the work's updated date), parsed
+    /// from the bookmarker section `div.user.module.group p.datetime`. Drives the
+    /// "sort by date bookmarked" facet.
+    public var bookmarkedAt: String?
+    /// The bookmark is flagged as a recommendation (`p.status span.rec`).
+    public var isRec: Bool
+    /// The bookmark is private (`p.status span.private`); public otherwise.
+    public var isPrivate: Bool
 
     public init(
         kind: BookmarkKind = .work,
@@ -87,10 +101,15 @@ public struct WorkBlurb: Sendable, Codable, Equatable {
         kudos: Int? = nil,
         bookmarksCount: Int? = nil,
         hits: Int? = nil,
+        worksCount: Int? = nil,
         dateText: String? = nil,
         updatedAt: Int? = nil,
         bookmarkTags: [String] = [],
-        bookmarkerNotes: String? = nil
+        bookmarkerNotes: String? = nil,
+        bookmarkID: Int? = nil,
+        bookmarkedAt: String? = nil,
+        isRec: Bool = false,
+        isPrivate: Bool = false
     ) {
         self.kind = kind
         self.sourcePath = sourcePath
@@ -115,9 +134,14 @@ public struct WorkBlurb: Sendable, Codable, Equatable {
         self.kudos = kudos
         self.bookmarksCount = bookmarksCount
         self.hits = hits
+        self.worksCount = worksCount
         self.dateText = dateText
         self.updatedAt = updatedAt
         self.bookmarkTags = bookmarkTags
         self.bookmarkerNotes = bookmarkerNotes
+        self.bookmarkID = bookmarkID
+        self.bookmarkedAt = bookmarkedAt
+        self.isRec = isRec
+        self.isPrivate = isPrivate
     }
 }

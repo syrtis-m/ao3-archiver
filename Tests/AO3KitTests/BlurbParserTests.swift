@@ -65,6 +65,47 @@ import Foundation
         #expect(blurbs.first?.title == "circus girl without a safety net")
     }
 
+    @Test func bookmarkSpecificFieldsAndPagination() throws {
+        let url = try #require(
+            Bundle.module.url(forResource: "bookmarks_page", withExtension: "html", subdirectory: "Fixtures"))
+        let html = try String(contentsOf: url, encoding: .utf8)
+        let blurbs = try BlurbParser.parseListing(html: html)
+        // Every bookmark card carries a bookmark id and the (distinct) bookmark date.
+        #expect(blurbs.allSatisfy { $0.bookmarkID != nil })
+        #expect(blurbs.allSatisfy { $0.bookmarkedAt != nil })
+        let first = try #require(blurbs.first)
+        #expect(first.bookmarkedAt == "30 May 2026")     // bookmark date…
+        #expect(first.dateText == "04 Apr 2014")         // …distinct from the work date
+        #expect(blurbs.allSatisfy { !$0.isPrivate })     // all 20 public in this capture
+        #expect(blurbs.allSatisfy { !$0.isRec })
+        // Pagination: the Next link resolves; absence yields nil.
+        #expect(try BlurbParser.nextPagePath(html: html)?.contains("page=2") == true)
+        #expect(try BlurbParser.nextPagePath(html: "<ol class=\"pagination\"></ol>") == nil)
+    }
+
+    @Test func parsesSeriesBookmarkCard() throws {
+        let url = try #require(
+            Bundle.module.url(forResource: "series_card", withExtension: "html", subdirectory: "Fixtures"))
+        let sc = try BlurbParser.parseListing(html: String(contentsOf: url, encoding: .utf8))
+        let s = try #require(sc.first)
+        #expect(sc.count == 1)
+        #expect(s.kind == .series)
+        #expect(s.workID == 2157402)
+        #expect(s.title == "those who form his fire-side")
+        #expect(s.worksCount == 6)                        // "Works:" stat, not chapters
+        #expect(s.wordCount == 39146)                     // series total
+        #expect(s.bookmarkedAt == "13 Jun 2026")
+    }
+
+    @Test func expandsSeriesPageIntoMemberWorks() throws {
+        let url = try #require(
+            Bundle.module.url(forResource: "series_page", withExtension: "html", subdirectory: "Fixtures"))
+        let members = try BlurbParser.parseListing(html: String(contentsOf: url, encoding: .utf8))
+        #expect(members.count == 6)
+        #expect(members.allSatisfy { $0.kind == .work })
+        #expect(members.map(\.workID) == [26762044, 29369769, 35035795, 68591376, 70449741, 81922441])
+    }
+
     @Test func everyCardHasIDTitleAuthor() throws {
         let blurbs = try BlurbParser.parseListing(html: fixtureHTML())
         for b in blurbs {
@@ -119,5 +160,94 @@ import Foundation
         #expect(WorkDownloader.looksLikeEPUB(Data([0x50, 0x4B, 0x03, 0x04, 0x00])))
         #expect(!WorkDownloader.looksLikeEPUB(Data("<html".utf8)))
         #expect(!WorkDownloader.looksLikeEPUB(Data()))
+    }
+}
+
+/// Store tests run entirely offline against an in-memory DB, ingesting the same captured
+/// fixtures. They mirror Sources/selftest so CLT and CI assert the same behavior.
+@Suite struct StoreTests {
+
+    func fixture(_ name: String) throws -> String {
+        let url = try #require(
+            Bundle.module.url(forResource: name, withExtension: "html", subdirectory: "Fixtures"))
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
+    /// Mirrors SyncEngine's per-card ingest dispatch.
+    func ingest(_ store: Store, _ cards: [WorkBlurb]) throws {
+        for b in cards {
+            switch b.kind {
+            case .work, .external:
+                try store.upsertWork(b)
+                try store.upsertBookmark(b, itemKind: b.kind, itemID: b.workID)
+            case .series:
+                try store.upsertSeries(b)
+                try store.upsertBookmark(b, itemKind: .series, itemID: b.workID)
+            }
+        }
+    }
+
+    @Test func ingestIsIdempotentAndExcludesExternalFromQueue() throws {
+        let cards = try BlurbParser.parseListing(html: fixture("bookmarks_page"))
+        let store = try Store(inMemory: true)
+        try ingest(store, cards)
+
+        #expect(try store.count("work") == 20)          // 19 work + 1 external
+        #expect(try store.count("bookmark") == 20)
+        #expect(try store.worksNeedingDownload().count == 19)   // external excluded
+
+        try ingest(store, cards)                         // second pass
+        #expect(try store.count("work") == 20)
+        #expect(try store.count("bookmark") == 20)
+        #expect(try store.worksNeedingDownload().count == 19)
+    }
+
+    @Test func downloadAndStaleDetection() throws {
+        let cards = try BlurbParser.parseListing(html: fixture("bookmarks_page"))
+        let store = try Store(inMemory: true)
+        try ingest(store, cards)
+
+        let first = try #require(try store.worksNeedingDownload().first)
+        try store.markDownloaded(workID: first.id, epubPath: "works/\(first.id).epub", updatedAt: first.updatedAt)
+        #expect(try store.worksNeedingDownload().count == 18)
+
+        var stale = try #require(cards.first { $0.workID == first.id })
+        stale.updatedAt = (first.updatedAt ?? 0) + 1     // AO3 shows a newer revision
+        try store.upsertWork(stale)
+        #expect(try store.worksNeedingDownload().count == 19)
+    }
+
+    @Test func failedDownloadIsRetryableAcrossRuns() throws {
+        // The run-anonymously-then-add-a-cookie workflow: a .requiresLogin failure must not
+        // be terminal — marking failed records the error but keeps the work in the queue.
+        let cards = try BlurbParser.parseListing(html: fixture("bookmarks_page"))
+        let store = try Store(inMemory: true)
+        try ingest(store, cards)
+        let before = try store.worksNeedingDownload().count
+        let work = try #require(try store.worksNeedingDownload().first)
+        try store.markFailed(workID: work.id, error: "requires login")
+        #expect(try store.worksNeedingDownload().count == before)
+    }
+
+    @Test func fullTextSearchFindsTitle() throws {
+        let store = try Store(inMemory: true)
+        try ingest(store, try BlurbParser.parseListing(html: fixture("bookmarks_page")))
+        #expect(try store.searchWorkIDs("circus").contains(1413325))
+    }
+
+    @Test func seriesExpansionLinksMembers() throws {
+        let card = try #require(try BlurbParser.parseListing(html: fixture("series_card")).first)
+        let members = try BlurbParser.parseListing(html: fixture("series_page"))
+        let store = try Store(inMemory: true)
+        try store.upsertSeries(card)
+        try store.upsertBookmark(card, itemKind: .series, itemID: card.workID)
+        for (i, m) in members.enumerated() {
+            try store.upsertWork(m)
+            try store.linkSeriesWork(seriesID: card.workID, workID: m.workID, part: i + 1)
+        }
+        #expect(try store.count("series") == 1)
+        #expect(try store.count("work") == 6)
+        #expect(try store.count("series_work") == 6)
+        #expect(try store.worksNeedingDownload().count == 6)
     }
 }
