@@ -23,6 +23,38 @@ struct GalleryView: View {
     // full recompute. ~200ms collapses a burst of keystrokes into one. Clearing applies at once.
     @State private var searchDebounce: Task<Void, Never>?
 
+    // Responsive layout. Below `wideMinWidth` only ONE side panel is pinned at a time (opening
+    // the filters closes the details and vice versa) — which both matches "one at a time on a
+    // medium window" and structurally prevents the three-pane squeeze that clipped content.
+    // We drive the sidebar via an explicit columnVisibility (with our own Filters toggle in
+    // place of the default one) so the mutual exclusion is one-directional and can't loop.
+    @State private var availableWidth: CGFloat = 0
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    private static let wideMinWidth: CGFloat = 1100
+    private var isWide: Bool { availableWidth >= Self.wideMinWidth }
+    private var sidebarShown: Bool { columnVisibility != .detailOnly }
+
+    /// Toggle the filter sidebar; below wide, showing it hides the details panel.
+    private func toggleFilters() {
+        if sidebarShown {
+            columnVisibility = .detailOnly
+        } else {
+            columnVisibility = .all
+            if !isWide { showInspector = false }
+        }
+    }
+
+    /// Show the details panel; below wide, hide the filter sidebar (one at a time).
+    private func presentDetails() {
+        showInspector = true
+        if !isWide { columnVisibility = .detailOnly }
+    }
+
+    /// Toggle the details panel (toolbar button).
+    private func toggleDetails() {
+        if showInspector { showInspector = false } else { presentDetails() }
+    }
+
     private var selectedItem: WorkListItem? {
         // Resolve against the full set so the detail survives filter changes (and so we
         // don't trigger another filter+sort pass just to look up the selection).
@@ -30,9 +62,10 @@ struct GalleryView: View {
     }
 
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
             FilterSidebar(vm: vm, store: store)
                 .navigationSplitViewColumnWidth(min: 280, ideal: 300, max: 360)
+                .toolbar(removing: .sidebarToggle)   // replaced by our own Filters toggle
         } detail: {
             gallery
                 .navigationTitle("Bookmarks")
@@ -52,6 +85,11 @@ struct GalleryView: View {
                     SyncSheet(controller: syncController, store: store, archiveRoot: archiveRoot,
                               reload: { vm.load(from: store) })
                 }
+        }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { availableWidth = $0 }
+        .onChange(of: availableWidth) { _, w in
+            // Shrinking below wide with both panels open → keep filters, step the details aside.
+            if w < Self.wideMinWidth, sidebarShown, showInspector { showInspector = false }
         }
     }
 
@@ -96,7 +134,7 @@ struct GalleryView: View {
                                 }
                             }
                             .contentShape(Rectangle())   // make the whole card clickable
-                            .onTapGesture { selectionID = item.id; showInspector = true }
+                            .onTapGesture { selectionID = item.id; presentDetails() }
                     }
                 }
                 .padding(16)
@@ -106,6 +144,11 @@ struct GalleryView: View {
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .navigation) {
+            Button { toggleFilters() } label: {
+                Label("Filters", systemImage: "line.3.horizontal.decrease.circle")
+            }
+        }
         ToolbarItem(placement: .primaryAction) {
             // Menu-style + fixedSize so the control stays a compact pop-up (the default
             // picker chrome stretches and reads as overlapping in a crowded toolbar).
@@ -121,7 +164,7 @@ struct GalleryView: View {
             }
         }
         ToolbarItem(placement: .primaryAction) {
-            Button { showInspector.toggle() } label: { Label("Details", systemImage: "sidebar.right") }
+            Button { toggleDetails() } label: { Label("Details", systemImage: "sidebar.right") }
         }
         ToolbarItem(placement: .primaryAction) {
             Menu {
