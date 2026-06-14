@@ -282,6 +282,20 @@ do {
                   vm.visibleItems.allSatisfy { $0.rating == pick })
             vm.clearFilters()
         }
+
+        print("Gallery — AO3 symbol classification")
+        check("rating level matches rating text for every item", items.allSatisfy { i in
+            let r = (i.rating ?? "").lowercased()
+            switch i.ratingLevel {
+            case .general:  return r.contains("general")
+            case .teen:     return r.contains("teen")
+            case .mature:   return r.contains("mature")
+            case .explicit: return r.contains("explicit")
+            case .notRated: return !["general", "teen", "mature", "explicit"].contains { r.contains($0) }
+            }
+        })
+        check("external bookmark → external warning level",
+              items.first { $0.kind == .external }?.warningLevel == .external)
     }
 
     // Series bookmark shows as one gallery item (members have no bookmark row → not listed).

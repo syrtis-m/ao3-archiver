@@ -11,10 +11,10 @@ struct WorkCardView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: compact ? 6 : 10) {
             header
-            if !item.fandoms.isEmpty { pillRow(item.fandoms, image: "theatermasks") }
+            if !item.fandoms.isEmpty { pillBlock(item.fandoms, image: "theatermasks") }
             if !compact {
                 let tags = item.relationships + item.characters + item.freeforms
-                if !tags.isEmpty { pillRow(Array(tags.prefix(8)), image: "tag") }
+                if !tags.isEmpty { pillBlock(tags, image: "tag") }
             }
             if let line = nonEmpty(item.statsLine) {
                 Text(line).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
@@ -43,25 +43,29 @@ struct WorkCardView: View {
         }
     }
 
+    // AO3-style colour-coded corner symbols: rating (or "Series"), warnings, completion.
     private var badges: some View {
         HStack(spacing: 6) {
-            if let r = item.rating { miniBadge(r, "star.circle") }
-            if item.isComplete == true { miniBadge("Complete", "checkmark.seal") }
-            else if item.isComplete == false { miniBadge("WIP", "ellipsis.circle") }
-            let b = item.kind.badge
-            miniBadge(b.label, b.systemImage)
+            if item.kind == .series {
+                ColorBadge(text: "Series", systemImage: "books.vertical", color: .purple)
+            } else {
+                ColorBadge(text: item.ratingLevel.letter, color: item.ratingLevel.color)
+            }
+            if let w = item.warningLevel.badge {
+                ColorBadge(text: w.label, systemImage: w.systemImage, color: w.color)
+            }
+            if item.isComplete == true {
+                ColorBadge(text: "Complete", systemImage: "checkmark.seal.fill", color: .green)
+            } else if item.isComplete == false {
+                ColorBadge(text: "WIP", systemImage: "stop.fill", color: .orange)
+            }
         }
     }
 
-    private func miniBadge(_ text: String, _ image: String) -> some View {
-        Label(text, systemImage: image)
-            .font(.caption2).foregroundStyle(.secondary)
-            .labelStyle(.titleAndIcon)
-    }
-
-    private func pillRow(_ values: [String], image: String) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) { ForEach(values, id: \.self) { TagPill(text: $0, systemImage: image) } }
+    /// Wrapping block of pills, so all tags are visible at once (not a single scroll row).
+    private func pillBlock(_ values: [String], image: String) -> some View {
+        FlowLayout(spacing: 6) {
+            ForEach(values, id: \.self) { TagPill(text: $0, systemImage: image) }
         }
     }
 
@@ -69,7 +73,7 @@ struct WorkCardView: View {
         VStack(alignment: .leading, spacing: 6) {
             Divider().opacity(0.4)
             if !item.bookmarkTags.isEmpty {
-                pillRow(item.bookmarkTags, image: "bookmark")
+                pillBlock(item.bookmarkTags, image: "bookmark")
             }
             if let notes = nonEmpty(item.bookmarkerNotes) {
                 Text(notes).font(.caption).italic().foregroundStyle(.secondary).lineLimit(2)

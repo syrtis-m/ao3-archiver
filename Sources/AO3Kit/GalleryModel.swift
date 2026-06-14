@@ -157,6 +157,42 @@ extension Store {
     }
 }
 
+// MARK: - AO3 required-tags classification (the colour-coded corner symbols)
+
+/// First square — content rating. Maps the blurb's rating text to AO3's scheme so the UI
+/// can colour it (G green / T yellow / M orange / E red / none grey).
+public enum RatingLevel: String, Sendable { case general, teen, mature, explicit, notRated }
+
+/// Third square — content warnings. AO3 shows a single symbol: "applies" (red, at least one
+/// of graphic violence / major death / rape-noncon / underage), "chose not to warn" (yellow),
+/// "external" (globe), or none.
+public enum WarningLevel: String, Sendable { case none, choseNotToWarn, applies, external }
+
+extension WorkListItem {
+    public var ratingLevel: RatingLevel {
+        guard let r = rating?.lowercased() else { return .notRated }
+        if r.contains("general")  { return .general }
+        if r.contains("teen")     { return .teen }
+        if r.contains("mature")   { return .mature }
+        if r.contains("explicit") { return .explicit }
+        return .notRated
+    }
+
+    public var warningLevel: WarningLevel {
+        if kind == .external { return .external }
+        let lower = warnings.map { $0.lowercased() }
+        if lower.contains(where: { $0.contains("chose not to") || $0.contains("choose not to") }) {
+            return .choseNotToWarn
+        }
+        let serious = ["graphic depictions of violence", "major character death",
+                       "rape/non-con", "underage"]
+        if lower.contains(where: { w in serious.contains(where: { w.contains($0) }) }) {
+            return .applies
+        }
+        return .none
+    }
+}
+
 // MARK: - Filter / sort (pure, tested)
 
 /// Completion facet. `.any` doesn't filter; series (isComplete == nil) pass `.any` only.

@@ -370,4 +370,21 @@ import Foundation
         #expect(shownInFacet.isSuperset(of: allRatings))            // other ratings stay listed
         #expect(vm.visibleItems.allSatisfy { $0.rating == pick })    // but the list narrows
     }
+
+    /// AO3 corner-symbol classification (for the colour coding): rating level tracks the
+    /// rating text, and external bookmarks report the "external" warning level.
+    @Test func symbolClassification() throws {
+        let (_, items) = try loadedItems()
+        for i in items {
+            let r = (i.rating ?? "").lowercased()
+            switch i.ratingLevel {
+            case .general:  #expect(r.contains("general"))
+            case .teen:     #expect(r.contains("teen"))
+            case .mature:   #expect(r.contains("mature"))
+            case .explicit: #expect(r.contains("explicit"))
+            case .notRated: #expect(!["general", "teen", "mature", "explicit"].contains { r.contains($0) })
+            }
+        }
+        #expect(items.first { $0.kind == .external }?.warningLevel == .external)
+    }
 }

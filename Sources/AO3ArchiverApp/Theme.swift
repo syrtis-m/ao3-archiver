@@ -40,6 +40,65 @@ struct StatLabel: View {
     }
 }
 
+// AO3 corner-symbol colour coding (classification lives in AO3Kit; colours map here).
+
+extension RatingLevel {
+    var color: Color {
+        switch self {
+        case .general:  return .green
+        case .teen:     return .yellow
+        case .mature:   return .orange
+        case .explicit: return .red
+        case .notRated: return .gray
+        }
+    }
+    /// Short corner letter (AO3's first square).
+    var letter: String {
+        switch self {
+        case .general: return "G"; case .teen: return "T"; case .mature: return "M"
+        case .explicit: return "E"; case .notRated: return "—"
+        }
+    }
+    var label: String {
+        switch self {
+        case .general: return "General"; case .teen: return "Teen"; case .mature: return "Mature"
+        case .explicit: return "Explicit"; case .notRated: return "Not rated"
+        }
+    }
+}
+
+extension WarningLevel {
+    /// nil → no badge shown (no warnings apply / unknown).
+    var badge: (label: String, systemImage: String, color: Color)? {
+        switch self {
+        case .none:           return nil
+        case .applies:        return ("Warnings", "exclamationmark.triangle.fill", .red)
+        case .choseNotToWarn: return ("Not warned", "exclamationmark.questionmark", .yellow)
+        case .external:       return ("External", "globe", .blue)
+        }
+    }
+}
+
+/// A small AO3-style colour-coded capsule (tinted fill + border + matching text).
+struct ColorBadge: View {
+    let text: String
+    var systemImage: String? = nil
+    let color: Color
+
+    var body: some View {
+        HStack(spacing: 3) {
+            if let systemImage { Image(systemName: systemImage) }
+            Text(text)
+        }
+        .font(.caption2.weight(.semibold))
+        .padding(.horizontal, 7)
+        .padding(.vertical, 3)
+        .foregroundStyle(color)
+        .background(color.opacity(0.22), in: Capsule())
+        .overlay(Capsule().strokeBorder(color.opacity(0.55), lineWidth: 1))
+    }
+}
+
 extension BookmarkKind {
     /// Short badge text + SF Symbol for the card header.
     var badge: (label: String, systemImage: String) {
