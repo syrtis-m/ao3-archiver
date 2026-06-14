@@ -2,10 +2,10 @@ import SwiftUI
 import AO3Kit
 
 /// The glass filter sidebar: facet sections with live counts, mirroring AO3's bookmark
-/// filters. Each multi-value facet row is **tri-state** — click to include (green ✓), again
+/// filters. Every multi-value facet row is **tri-state** — click to include (green ✓), again
 /// to exclude (red ⊘), once more to clear — so include and exclude live in one list instead
 /// of AO3's duplicated filter sets. Completion and download are single-select segmented
-/// controls.
+/// controls. High-cardinality dimensions (characters/relationships/tags) get a typeahead.
 ///
 /// Built on a `ScrollView`, deliberately NOT a `List`: a `List` is NSTableView-backed, and
 /// mutating the filter from a row control recomputes the facet rows, which reloads the table
@@ -14,33 +14,38 @@ import AO3Kit
 struct FilterSidebar: View {
     @Bindable var vm: GalleryViewModel
 
+    /// Per-dimension typeahead text (high-cardinality facets only).
+    @State private var queries: [FacetDimension: String] = [:]
+
+    /// Sidebar ordering — mirrors AO3's filter column, with the bookmark-specific dims last.
+    private let dimensionOrder: [FacetDimension] = [
+        .bookmarkType, .rating, .category, .warning,
+        .language, .fandom, .relationship, .character, .freeform, .bookmarkTag,
+    ]
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 header
 
-                facetGroup("Bookmark type", rows: vm.typeFacets,
-                           state: { vm.typeState(BookmarkKind(rawValue: $0) ?? .work) },
-                           cycle: { if let k = BookmarkKind(rawValue: $0) { vm.cycleType(k) } },
-                           display: { BookmarkKind(rawValue: $0)?.badge.label ?? $0 })
-
-                facetGroup("Rating", rows: vm.ratingFacets,
-                           state: { vm.ratingState($0) }, cycle: { vm.cycleRating($0) })
-
-                facetGroup("Category", rows: vm.categoryFacets,
-                           state: { vm.categoryState($0) }, cycle: { vm.cycleCategory($0) })
+                facetSection(.bookmarkType)
+                facetSection(.rating)
+                facetSection(.category)
+                facetSection(.warning)
 
                 // Single-select segmented controls. Kept to a few short labels so they fit
-                // the sidebar without overflowing (off-site is reachable via Bookmark type →
-                // External).
+                // the sidebar without overflowing.
                 segmentedGroup("Completion", selection: $vm.filter.completion,
                                cases: CompletionFilter.allCases, label: completionLabel)
-
                 segmentedGroup("Download", selection: $vm.filter.download,
                                cases: [.any, .saved, .notDownloaded], label: { $0.label })
 
-                facetGroup("Fandom", rows: vm.fandomFacets,
-                           state: { vm.fandomState($0) }, cycle: { vm.cycleFandom($0) }, limit: 25)
+                facetSection(.language)
+                facetSection(.fandom)
+                facetSection(.relationship)
+                facetSection(.character)
+                facetSection(.freeform)
+                facetSection(.bookmarkTag)
             }
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -62,20 +67,32 @@ struct FilterSidebar: View {
         }
     }
 
+    /// One facet dimension: title, an optional typeahead (high-cardinality only), and the
+    /// tri-state rows. Typeahead filters the *full* list before the render cap, so a rare
+    /// value stays findable instead of being cut by the cap before the search sees it.
     @ViewBuilder
-    private func facetGroup(_ title: String, rows: [(name: String, count: Int)],
-                            state: @escaping (String) -> FacetState,
-                            cycle: @escaping (String) -> Void,
-                            display: @escaping (String) -> String = { $0 },
-                            limit: Int = .max) -> some View {
-        if !rows.isEmpty {
+    private func facetSection(_ dim: FacetDimension) -> some View {
+        let allRows = vm.facets(for: dim)
+        if !allRows.isEmpty {
+            let query = (queries[dim] ?? "").trimmingCharacters(in: .whitespaces).lowercased()
+            let filtered = query.isEmpty ? allRows
+                : allRows.filter { display(dim, $0.name).lowercased().contains(query) }
+            let cap = dim.isHighCardinality ? 30 : Int.max
+
             VStack(alignment: .leading, spacing: 2) {
-                groupTitle(title)
-                ForEach(rows.prefix(limit), id: \.name) { row in
-                    Button { cycle(row.name) } label: {
+                groupTitle(dim.title)
+
+                if dim.isHighCardinality {
+                    TextField("Filter \(dim.title.lowercased())…", text: queryBinding(dim))
+                        .textFieldStyle(.roundedBorder).controlSize(.small)
+                        .padding(.bottom, 2)
+                }
+
+                ForEach(filtered.prefix(cap), id: \.name) { row in
+                    Button { vm.cycle(dim, row.name) } label: {
                         HStack(spacing: 8) {
-                            stateIcon(state(row.name))
-                            Text(display(row.name)).lineLimit(1)
+                            stateIcon(vm.state(dim, row.name))
+                            Text(display(dim, row.name)).lineLimit(1)
                             Spacer(minLength: 4)
                             Text("\(row.count)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                         }
@@ -84,8 +101,24 @@ struct FilterSidebar: View {
                     }
                     .buttonStyle(.plain)
                 }
+
+                if filtered.count > cap {
+                    Text("+\(filtered.count - cap) more — type to narrow")
+                        .font(.caption2).foregroundStyle(.tertiary).padding(.top, 2)
+                } else if filtered.isEmpty {
+                    Text("No matches").font(.caption2).foregroundStyle(.tertiary)
+                }
             }
         }
+    }
+
+    /// Human-facing label for a raw facet value (bookmark types use their badge label).
+    private func display(_ dim: FacetDimension, _ raw: String) -> String {
+        dim == .bookmarkType ? (BookmarkKind(rawValue: raw)?.badge.label ?? raw) : raw
+    }
+
+    private func queryBinding(_ dim: FacetDimension) -> Binding<String> {
+        Binding(get: { queries[dim] ?? "" }, set: { queries[dim] = $0 })
     }
 
     private func segmentedGroup<T: Hashable>(_ title: String, selection: Binding<T>,

@@ -42,6 +42,7 @@ public struct WorkListItem: Sendable, Identifiable, Equatable, Hashable {
     public var updatedAt: Int?
     public var dateText: String?
     public var bookmarkedAt: String?
+    public var bookmarkedDate: Date?  // parsed from bookmarkedAt at load (range filters / nil-safe)
     public var bookmarkTags: [String]
     public var bookmarkerNotes: String?
     public var isRec: Bool
@@ -63,7 +64,8 @@ public struct WorkListItem: Sendable, Identifiable, Equatable, Hashable {
         chaptersHave: Int? = nil, chaptersTotal: Int? = nil, kudos: Int? = nil,
         comments: Int? = nil, bookmarksCount: Int? = nil, hits: Int? = nil,
         summary: String? = nil, updatedAt: Int? = nil, dateText: String? = nil,
-        bookmarkedAt: String? = nil, bookmarkTags: [String] = [], bookmarkerNotes: String? = nil,
+        bookmarkedAt: String? = nil, bookmarkedDate: Date? = nil,
+        bookmarkTags: [String] = [], bookmarkerNotes: String? = nil,
         isRec: Bool = false, isPrivate: Bool = false,
         downloadState: String = "pending", epubPath: String? = nil
     ) {
@@ -76,7 +78,8 @@ public struct WorkListItem: Sendable, Identifiable, Equatable, Hashable {
         self.chaptersHave = chaptersHave; self.chaptersTotal = chaptersTotal; self.kudos = kudos
         self.comments = comments; self.bookmarksCount = bookmarksCount; self.hits = hits
         self.summary = summary; self.updatedAt = updatedAt; self.dateText = dateText
-        self.bookmarkedAt = bookmarkedAt; self.bookmarkTags = bookmarkTags
+        self.bookmarkedAt = bookmarkedAt; self.bookmarkedDate = bookmarkedDate
+        self.bookmarkTags = bookmarkTags
         self.bookmarkerNotes = bookmarkerNotes; self.isRec = isRec; self.isPrivate = isPrivate
         self.downloadState = downloadState; self.epubPath = epubPath
     }
@@ -92,6 +95,77 @@ public struct WorkListItem: Sendable, Identifiable, Equatable, Hashable {
         ([title, author, summary ?? "", bookmarkerNotes ?? ""]
          + fandoms + relationships + characters + freeforms + bookmarkTags)
             .joined(separator: " ").lowercased()
+    }
+
+    /// A crossover = bookmarked across more than one fandom.
+    public var isCrossover: Bool { fandoms.count > 1 }
+
+    /// Shared formatter for AO3's "04 Apr 2014" bookmark dates — built once, not per row
+    /// (a `DateFormatter` per item over thousands of rows is a real stall). POSIX + UTC so
+    /// parsing is locale-stable; `nil` on an odd date (fail-soft, drops out of date ranges).
+    private static let bookmarkDateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone(identifier: "UTC")
+        f.dateFormat = "dd MMM yyyy"
+        return f
+    }()
+    public static func parseBookmarkDate(_ text: String?) -> Date? {
+        guard let text, !text.isEmpty else { return nil }
+        return bookmarkDateFormatter.date(from: text)
+    }
+}
+
+// MARK: - Faceted dimensions (the generic keyed filter mechanism)
+
+/// Every multi-value filter dimension, keyed once. The filter, the facet counts, the view
+/// model, and the sidebar all drive off this single enum instead of a hand-written property
+/// per dimension — so adding a dimension is one `case` + one line in `values(for:)`.
+public enum FacetDimension: String, Sendable, CaseIterable, Hashable, Codable {
+    case bookmarkType, rating, category, language
+    case fandom, warning, relationship, character, freeform, bookmarkTag
+
+    public var title: String {
+        switch self {
+        case .bookmarkType: return "Bookmark type"
+        case .rating:       return "Rating"
+        case .category:     return "Category"
+        case .language:     return "Language"
+        case .fandom:       return "Fandom"
+        case .warning:      return "Warnings"
+        case .relationship: return "Relationships"
+        case .character:    return "Characters"
+        case .freeform:     return "Additional tags"
+        case .bookmarkTag:  return "Your tags"
+        }
+    }
+
+    /// High-cardinality dimensions (thousands of distinct values) get a typeahead field +
+    /// a render cap in the sidebar; the rest are short enough to list in full.
+    public var isHighCardinality: Bool {
+        switch self {
+        case .fandom, .relationship, .character, .freeform, .bookmarkTag: return true
+        default: return false
+        }
+    }
+}
+
+extension WorkListItem {
+    /// The item's values along one dimension (the set a filter matches against, the multiset
+    /// facet counts tally). Empty when the item has no value there.
+    public func values(for dim: FacetDimension) -> [String] {
+        switch dim {
+        case .bookmarkType: return [kind.rawValue]
+        case .rating:       return rating.map { [$0] } ?? []
+        case .category:     return categories
+        case .language:     return language.map { [$0] } ?? []
+        case .fandom:       return fandoms
+        case .warning:      return warnings
+        case .relationship: return relationships
+        case .character:    return characters
+        case .freeform:     return freeforms
+        case .bookmarkTag:  return bookmarkTags
+        }
     }
 }
 
@@ -152,7 +226,8 @@ extension Store {
                     kudos: row["kudos"], comments: row["comments"],
                     bookmarksCount: row["bookmarks_count"], hits: row["hits"],
                     summary: row["summary"], updatedAt: row["updated_at"], dateText: row["date_text"],
-                    bookmarkedAt: row["bat"], bookmarkTags: btagsByBookmark[bid] ?? [],
+                    bookmarkedAt: row["bat"], bookmarkedDate: WorkListItem.parseBookmarkDate(row["bat"]),
+                    bookmarkTags: btagsByBookmark[bid] ?? [],
                     bookmarkerNotes: row["bnotes"],
                     isRec: (row["brec"] as Int? ?? 0) != 0, isPrivate: (row["bpriv"] as Int? ?? 0) != 0,
                     downloadState: row["download_state"], epubPath: row["epub_path"]))
@@ -176,7 +251,8 @@ extension Store {
                     chaptersHave: nil, chaptersTotal: nil,
                     kudos: nil, comments: nil, bookmarksCount: nil, hits: nil,
                     summary: row["summary"], updatedAt: nil, dateText: row["date_text"],
-                    bookmarkedAt: row["bat"], bookmarkTags: btagsByBookmark[bid] ?? [],
+                    bookmarkedAt: row["bat"], bookmarkedDate: WorkListItem.parseBookmarkDate(row["bat"]),
+                    bookmarkTags: btagsByBookmark[bid] ?? [],
                     bookmarkerNotes: row["bnotes"],
                     isRec: (row["brec"] as Int? ?? 0) != 0, isPrivate: (row["bpriv"] as Int? ?? 0) != 0,
                     downloadState: "series", epubPath: nil))
@@ -269,11 +345,11 @@ extension WorkListItem {
 // MARK: - Filter / sort (pure, tested)
 
 /// Completion facet. `.any` doesn't filter; series (isComplete == nil) pass `.any` only.
-public enum CompletionFilter: String, Sendable, CaseIterable { case any, complete, wip }
+public enum CompletionFilter: String, Sendable, CaseIterable, Codable { case any, complete, wip }
 
 /// Download/archive state, single-select (like completion) — tri-state include/exclude over
 /// these is more confusing than useful.
-public enum DownloadFilter: String, Sendable, CaseIterable {
+public enum DownloadFilter: String, Sendable, CaseIterable, Codable {
     case any, saved, notDownloaded, offsite
 
     public var label: String {
@@ -295,48 +371,49 @@ public enum DownloadFilter: String, Sendable, CaseIterable {
     }
 }
 
-/// A combinable set of gallery filters. Each dimension has an **include** set (OR within,
-/// AND across dimensions) and an **exclude** set (an item matching any excluded value is
-/// dropped). Empty sets mean "no constraint". Exclude wins over include.
-public struct GalleryFilter: Sendable, Equatable {
-    public var bookmarkTypes: Set<BookmarkKind> = []
-    public var excludeBookmarkTypes: Set<BookmarkKind> = []
-    public var fandoms: Set<String> = []
-    public var excludeFandoms: Set<String> = []
-    public var ratings: Set<String> = []
-    public var excludeRatings: Set<String> = []
-    public var categories: Set<String> = []
-    public var excludeCategories: Set<String> = []
+/// A combinable set of gallery filters. Every multi-value dimension lives in one keyed pair
+/// of maps: `include[dim]` (OR within a dim, AND across dims) and `exclude[dim]` (an item
+/// matching any excluded value is dropped). **Invariant: a dim key never maps to an empty
+/// set** — emptying a set removes the key (kept by `cycle`/the mutators), so `==` and
+/// `isActive` stay honest. Exclude wins over include. `Codable` for saved presets.
+public struct GalleryFilter: Sendable, Equatable, Codable {
+    public var include: [FacetDimension: Set<String>] = [:]
+    public var exclude: [FacetDimension: Set<String>] = [:]
     public var completion: CompletionFilter = .any
     public var download: DownloadFilter = .any
     public var searchText: String = ""
 
     public init() {}
 
+    public func included(_ dim: FacetDimension) -> Set<String> { include[dim] ?? [] }
+    public func excluded(_ dim: FacetDimension) -> Set<String> { exclude[dim] ?? [] }
+
+    /// Set a dimension's include/exclude set, dropping the key when empty (the invariant).
+    public mutating func setInclude(_ dim: FacetDimension, _ values: Set<String>) {
+        include[dim] = values.isEmpty ? nil : values
+    }
+    public mutating func setExclude(_ dim: FacetDimension, _ values: Set<String>) {
+        exclude[dim] = values.isEmpty ? nil : values
+    }
+
     public var isActive: Bool {
-        !bookmarkTypes.isEmpty || !excludeBookmarkTypes.isEmpty
-            || !fandoms.isEmpty || !excludeFandoms.isEmpty
-            || !ratings.isEmpty || !excludeRatings.isEmpty
-            || !categories.isEmpty || !excludeCategories.isEmpty
+        include.values.contains { !$0.isEmpty } || exclude.values.contains { !$0.isEmpty }
             || completion != .any || download != .any
             || !searchText.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
     public func matches(_ item: WorkListItem) -> Bool {
-        // Bookmark type.
-        if !bookmarkTypes.isEmpty, !bookmarkTypes.contains(item.kind) { return false }
-        if excludeBookmarkTypes.contains(item.kind) { return false }
-        // Rating.
-        if !ratings.isEmpty, !(item.rating.map(ratings.contains) ?? false) { return false }
-        if let r = item.rating, excludeRatings.contains(r) { return false }
+        // Keyed include/exclude over every dimension. Include: item must carry ANY included
+        // value. Exclude: item must carry NONE. (`where !$0.isEmpty` keeps a stray empty set
+        // harmless even though the invariant should prevent one.)
+        for (dim, inc) in include where !inc.isEmpty {
+            if Set(item.values(for: dim)).isDisjoint(with: inc) { return false }
+        }
+        for (dim, exc) in exclude where !exc.isEmpty {
+            if !Set(item.values(for: dim)).isDisjoint(with: exc) { return false }
+        }
         // Download / archive state (single-select).
         if !download.matches(item.downloadState) { return false }
-        // Category (matches against the item's split categories, ANY overlap).
-        if !categories.isEmpty, categories.isDisjoint(with: item.categories) { return false }
-        if !excludeCategories.isEmpty, !excludeCategories.isDisjoint(with: item.categories) { return false }
-        // Fandom (item passes include if it has ANY included fandom; fails if it has ANY excluded).
-        if !fandoms.isEmpty, fandoms.isDisjoint(with: item.fandoms) { return false }
-        if !excludeFandoms.isEmpty, !excludeFandoms.isDisjoint(with: item.fandoms) { return false }
         // Completion.
         switch completion {
         case .any:      break
@@ -352,20 +429,11 @@ public struct GalleryFilter: Sendable, Equatable {
         isActive ? items.filter(matches) : items
     }
 
-    // Copies with one dimension's include+exclude cleared, for true faceted counts: a
-    // dimension's facet list is computed against everything EXCEPT its own selection, so
-    // picking/excluding one value never hides that dimension's other values.
-    public func clearingBookmarkTypes() -> GalleryFilter {
-        var c = self; c.bookmarkTypes = []; c.excludeBookmarkTypes = []; return c
-    }
-    public func clearingRatings() -> GalleryFilter {
-        var c = self; c.ratings = []; c.excludeRatings = []; return c
-    }
-    public func clearingCategories() -> GalleryFilter {
-        var c = self; c.categories = []; c.excludeCategories = []; return c
-    }
-    public func clearingFandoms() -> GalleryFilter {
-        var c = self; c.fandoms = []; c.excludeFandoms = []; return c
+    /// Copy with one dimension's include+exclude cleared, for true faceted counts: a
+    /// dimension's facet list is computed against everything EXCEPT its own selection, so
+    /// picking/excluding one value never hides that dimension's other values.
+    public func clearing(_ dim: FacetDimension) -> GalleryFilter {
+        var c = self; c.include[dim] = nil; c.exclude[dim] = nil; return c
     }
 }
 
@@ -409,20 +477,9 @@ public enum Facets {
             .map { (name: $0.key, count: $0.value) }
     }
 
-    public static func fandoms(_ items: [WorkListItem]) -> [(name: String, count: Int)] {
-        counts({ $0.fandoms }, in: items)
-    }
-    public static func ratings(_ items: [WorkListItem]) -> [(name: String, count: Int)] {
-        counts({ $0.rating.map { [$0] } ?? [] }, in: items)
-    }
-    public static func categories(_ items: [WorkListItem]) -> [(name: String, count: Int)] {
-        counts({ $0.categories }, in: items)
-    }
-    public static func bookmarkTypes(_ items: [WorkListItem]) -> [(name: String, count: Int)] {
-        counts({ [$0.kind.rawValue] }, in: items)
-    }
-    public static func downloadStates(_ items: [WorkListItem]) -> [(name: String, count: Int)] {
-        counts({ [$0.downloadState] }, in: items)
+    /// Facet rows for any dimension — the one entry point now that every dimension is keyed.
+    public static func values(for dim: FacetDimension, in items: [WorkListItem]) -> [(name: String, count: Int)] {
+        counts({ $0.values(for: dim) }, in: items)
     }
 }
 
@@ -456,10 +513,7 @@ public final class GalleryViewModel {
     /// (typing, resizing) would stutter. `recomputeCount` lets tests prove the memo holds.
     private struct Derived {
         var visible: [WorkListItem] = []
-        var typeFacets: [(name: String, count: Int)] = []
-        var ratingFacets: [(name: String, count: Int)] = []
-        var categoryFacets: [(name: String, count: Int)] = []
-        var fandomFacets: [(name: String, count: Int)] = []
+        var facets: [FacetDimension: [(name: String, count: Int)]] = [:]
     }
     private struct MemoKey: Equatable { var filter: GalleryFilter; var sort: GallerySort; var gen: Int }
 
@@ -474,10 +528,10 @@ public final class GalleryViewModel {
         if let cached, cachedKey == key { return cached }
         var d = Derived()
         d.visible = sort.sorted(filter.apply(to: allItems))
-        d.typeFacets = Facets.bookmarkTypes(filter.clearingBookmarkTypes().apply(to: allItems))
-        d.ratingFacets = Facets.ratings(filter.clearingRatings().apply(to: allItems))
-        d.categoryFacets = Facets.categories(filter.clearingCategories().apply(to: allItems))
-        d.fandomFacets = Facets.fandoms(filter.clearingFandoms().apply(to: allItems))
+        // Each dimension counted against the set filtered by all OTHER dims (faceted search).
+        for dim in FacetDimension.allCases {
+            d.facets[dim] = Facets.values(for: dim, in: filter.clearing(dim).apply(to: allItems))
+        }
         cached = d; cachedKey = key; recomputeCount += 1
         return d
     }
@@ -485,52 +539,39 @@ public final class GalleryViewModel {
     /// The currently-visible, filtered + sorted items.
     public var visibleItems: [WorkListItem] { derived.visible }
 
-    /// Facet rows for the sidebar. Each dimension is counted against the set filtered by all
-    /// OTHER dimensions, so selecting a value keeps that dimension's other values visible.
-    public var fandomFacets: [(name: String, count: Int)] { derived.fandomFacets }
-    public var ratingFacets: [(name: String, count: Int)] { derived.ratingFacets }
-    public var categoryFacets: [(name: String, count: Int)] { derived.categoryFacets }
-    public var typeFacets: [(name: String, count: Int)] { derived.typeFacets }
+    /// Facet rows for one dimension. Counted against the set filtered by all OTHER
+    /// dimensions, so selecting a value keeps that dimension's other values visible.
+    public func facets(for dim: FacetDimension) -> [(name: String, count: Int)] {
+        derived.facets[dim] ?? []
+    }
 
     public var totalCount: Int { allItems.count }
     public var visibleCount: Int { derived.visible.count }
 
     public func clearFilters() { filter = GalleryFilter() }
 
-    // Include-only toggles (kept for simple uses / tests).
-    public func toggleType(_ k: BookmarkKind) { toggle(&filter.bookmarkTypes, k) }
-    public func toggleFandom(_ f: String) { toggle(&filter.fandoms, f) }
-    public func toggleRating(_ r: String) { toggle(&filter.ratings, r) }
-
-    // Tri-state: each facet value cycles neutral → include → exclude → neutral. This is the
-    // sidebar's interaction, so include/exclude live in one list instead of AO3's duplicated
-    // "include" and "exclude" filter sets.
-    public func typeState(_ k: BookmarkKind) -> FacetState { state(filter.bookmarkTypes, filter.excludeBookmarkTypes, k) }
-    public func ratingState(_ r: String) -> FacetState { state(filter.ratings, filter.excludeRatings, r) }
-    public func categoryState(_ c: String) -> FacetState { state(filter.categories, filter.excludeCategories, c) }
-    public func fandomState(_ f: String) -> FacetState { state(filter.fandoms, filter.excludeFandoms, f) }
-
-    public func cycleType(_ k: BookmarkKind) { cycle(\.bookmarkTypes, \.excludeBookmarkTypes, k) }
-    public func cycleRating(_ r: String) { cycle(\.ratings, \.excludeRatings, r) }
-    public func cycleCategory(_ c: String) { cycle(\.categories, \.excludeCategories, c) }
-    public func cycleFandom(_ f: String) { cycle(\.fandoms, \.excludeFandoms, f) }
-
-    private func toggle<T: Hashable>(_ set: inout Set<T>, _ v: T) {
-        if set.contains(v) { set.remove(v) } else { set.insert(v) }
+    /// Include-only toggle (simple uses / tests): neutral → include → neutral.
+    public func toggle(_ dim: FacetDimension, _ value: String) {
+        var inc = filter.included(dim)
+        if inc.contains(value) { inc.remove(value) } else { inc.insert(value) }
+        filter.setInclude(dim, inc)
     }
 
-    private func state<T: Hashable>(_ inc: Set<T>, _ exc: Set<T>, _ v: T) -> FacetState {
-        inc.contains(v) ? .include : (exc.contains(v) ? .exclude : .neutral)
+    public func state(_ dim: FacetDimension, _ value: String) -> FacetState {
+        filter.included(dim).contains(value) ? .include
+            : (filter.excluded(dim).contains(value) ? .exclude : .neutral)
     }
 
-    /// Cycle one value through neutral → include → exclude → neutral. Mutates a local copy
-    /// of `filter` (single write-back) to avoid aliasing two inout sub-properties.
-    private func cycle<T: Hashable>(_ inc: WritableKeyPath<GalleryFilter, Set<T>>,
-                                    _ exc: WritableKeyPath<GalleryFilter, Set<T>>, _ v: T) {
+    /// Tri-state cycle: neutral → include (green ✓) → exclude (red ⊘) → neutral. Mutates a
+    /// local copy of `filter` (single write-back) and drops emptied sets to keep the
+    /// no-empty-key invariant — so `isActive`/`==`/preset round-trips stay correct.
+    public func cycle(_ dim: FacetDimension, _ value: String) {
         var f = filter
-        if f[keyPath: inc].contains(v) { f[keyPath: inc].remove(v); f[keyPath: exc].insert(v) }
-        else if f[keyPath: exc].contains(v) { f[keyPath: exc].remove(v) }
-        else { f[keyPath: inc].insert(v) }
+        var inc = f.included(dim), exc = f.excluded(dim)
+        if inc.contains(value) { inc.remove(value); exc.insert(value) }
+        else if exc.contains(value) { exc.remove(value) }
+        else { inc.insert(value) }
+        f.setInclude(dim, inc); f.setExclude(dim, exc)
         filter = f
     }
 }

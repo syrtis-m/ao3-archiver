@@ -304,13 +304,13 @@ import Foundation
     @Test func filtersComposeWithAnd() throws {
         let (_, items) = try loadedItems()
         var f = GalleryFilter()
-        f.bookmarkTypes = [.external]
+        f.setInclude(.bookmarkType, ["external"])
         #expect(f.apply(to: items).count == 1)
 
         f = GalleryFilter(); f.searchText = "circus"
         #expect(f.apply(to: items).map(\.itemID) == [1413325])
 
-        f = GalleryFilter(); f.bookmarkTypes = [.work]; f.completion = .complete
+        f = GalleryFilter(); f.setInclude(.bookmarkType, ["work"]); f.completion = .complete
         let composed = f.apply(to: items)
         #expect(composed.allSatisfy { $0.kind == .work && $0.isComplete == true })
         #expect(composed.count <= items.filter { $0.kind == .work }.count)
@@ -321,7 +321,7 @@ import Foundation
         let byBk = GallerySort.dateBookmarked.sorted(items)
         #expect(byBk.first!.bookmarkID! >= byBk.last!.bookmarkID!)
 
-        let types = Facets.bookmarkTypes(items)
+        let types = Facets.values(for: .bookmarkType, in: items)
         #expect(types.reduce(0) { $0 + $1.count } == 20)
         #expect(types.first?.name == "work")
     }
@@ -349,7 +349,7 @@ import Foundation
         let vm = GalleryViewModel()
         vm.load(from: store)
         #expect(vm.totalCount == 20)
-        vm.toggleType(.external)
+        vm.toggle(.bookmarkType, "external")
         #expect(vm.visibleCount == 1)
         vm.clearFilters()
         #expect(vm.visibleCount == 20)
@@ -364,14 +364,23 @@ import Foundation
         try ingest(store, try BlurbParser.parseListing(html: fixture("bookmarks_page")))
         let vm = GalleryViewModel(); vm.load(from: store)
 
-        let allRatings = Set(Facets.ratings(items).map(\.name))
+        let allRatings = Set(Facets.values(for: .rating, in: items).map(\.name))
         try #require(allRatings.count > 1)
         let pick = try #require(allRatings.first)
-        vm.toggleRating(pick)
+        vm.toggle(.rating, pick)
 
-        let shownInFacet = Set(vm.ratingFacets.map(\.name))
+        let shownInFacet = Set(vm.facets(for: .rating).map(\.name))
         #expect(shownInFacet.isSuperset(of: allRatings))            // other ratings stay listed
         #expect(vm.visibleItems.allSatisfy { $0.rating == pick })    // but the list narrows
+
+        // Same guard on a NEW high-cardinality dimension (the generic-refactor regression risk).
+        vm.clearFilters()
+        let allRels = Set(Facets.values(for: .relationship, in: items).map(\.name))
+        try #require(allRels.count > 1)
+        let rel = try #require(allRels.first)
+        vm.cycle(.relationship, rel)
+        #expect(Set(vm.facets(for: .relationship).map(\.name)).isSuperset(of: allRels))
+        #expect(vm.visibleItems.allSatisfy { $0.relationships.contains(rel) })
     }
 
     /// AO3 corner-symbol classification (for the colour coding): rating level tracks the
@@ -402,22 +411,23 @@ import Foundation
         let store = try Store(inMemory: true)
         try ingest(store, cards)
         let items = try store.fetchAllListItems()
-        let fandom = try #require(Facets.fandoms(items).first?.name)
+        let fandom = try #require(Facets.values(for: .fandom, in: items).first?.name)
 
         // Exclude drops matching items; include + exclude compose.
-        var ex = GalleryFilter(); ex.excludeFandoms = [fandom]
+        var ex = GalleryFilter(); ex.setExclude(.fandom, [fandom])
         #expect(ex.apply(to: items).allSatisfy { !$0.fandoms.contains(fandom) })
         #expect(ex.apply(to: items).count < items.count)
 
         // Tri-state: neutral → include → exclude → neutral.
         let vm = GalleryViewModel(); vm.load(from: store)
-        #expect(vm.fandomState(fandom) == .neutral)
-        vm.cycleFandom(fandom); #expect(vm.fandomState(fandom) == .include)
+        #expect(vm.state(.fandom, fandom) == .neutral)
+        vm.cycle(.fandom, fandom); #expect(vm.state(.fandom, fandom) == .include)
         #expect(vm.visibleCount < vm.totalCount)
-        vm.cycleFandom(fandom); #expect(vm.fandomState(fandom) == .exclude)
+        vm.cycle(.fandom, fandom); #expect(vm.state(.fandom, fandom) == .exclude)
         #expect(vm.visibleItems.allSatisfy { !$0.fandoms.contains(fandom) })
-        vm.cycleFandom(fandom); #expect(vm.fandomState(fandom) == .neutral)
+        vm.cycle(.fandom, fandom); #expect(vm.state(.fandom, fandom) == .neutral)
         #expect(vm.visibleCount == vm.totalCount)
+        #expect(vm.filter == GalleryFilter())   // neutral leaves no empty set behind (invariant)
     }
 
     @Test func derivedSetIsMemoized() throws {
@@ -429,9 +439,9 @@ import Foundation
         }
         _ = vm.visibleItems
         let r0 = vm.recomputeCount
-        for _ in 0..<100 { _ = vm.visibleItems; _ = vm.ratingFacets; _ = vm.fandomFacets }
+        for _ in 0..<100 { _ = vm.visibleItems; _ = vm.facets(for: .rating); _ = vm.facets(for: .fandom) }
         #expect(vm.recomputeCount == r0)             // repeated access is memoized
-        vm.cycleRating("Explicit"); _ = vm.visibleItems
+        vm.cycle(.rating, "Explicit"); _ = vm.visibleItems
         #expect(vm.recomputeCount == r0 + 1)          // exactly one recompute on change
         #expect(vm.visibleItems.allSatisfy { $0.rating == "Explicit" })
         #expect(vm.visibleCount == 250)               // half are Explicit
@@ -439,10 +449,10 @@ import Foundation
 
     @Test func categoryFilterIncludeExclude() throws {
         let (_, items) = try loadedItems()
-        let cat = try #require(Facets.categories(items).first?.name)
-        var f = GalleryFilter(); f.categories = [cat]
+        let cat = try #require(Facets.values(for: .category, in: items).first?.name)
+        var f = GalleryFilter(); f.setInclude(.category, [cat])
         #expect(f.apply(to: items).allSatisfy { $0.categories.contains(cat) })
-        f = GalleryFilter(); f.excludeCategories = [cat]
+        f = GalleryFilter(); f.setExclude(.category, [cat])
         #expect(f.apply(to: items).allSatisfy { !$0.categories.contains(cat) })
     }
 

@@ -233,13 +233,13 @@ do {
 
         print("Gallery — filters compose")
         var f = GalleryFilter()
-        f.bookmarkTypes = [.external]
+        f.setInclude(.bookmarkType, ["external"])
         check("type=external → 1 item", f.apply(to: items).count == 1)
         f = GalleryFilter(); f.searchText = "circus"
         check("search 'circus' → the circus work", f.apply(to: items).map(\.itemID) == [1413325])
         // Combined: a fandom AND a search term must AND together, not OR.
         f = GalleryFilter()
-        f.bookmarkTypes = [.work]; f.completion = .complete
+        f.setInclude(.bookmarkType, ["work"]); f.completion = .complete
         let composed = f.apply(to: items)
         check("type=work AND completion=complete composes",
               composed.allSatisfy { $0.kind == .work && $0.isComplete == true })
@@ -255,18 +255,22 @@ do {
               byTitle == byTitle.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending })
 
         print("Gallery — facets")
-        let types = Facets.bookmarkTypes(items)
+        let types = Facets.values(for: .bookmarkType, in: items)
         check("type facet counts sum to item count", types.reduce(0) { $0 + $1.count } == 20)
         check("work is the largest type facet", types.first?.name == "work")
-        let fandomFacets = Facets.fandoms(items)
+        let fandomFacets = Facets.values(for: .fandom, in: items)
         let resorted = fandomFacets.sorted { $0.count != $1.count ? $0.count > $1.count : $0.name < $1.name }
         check("fandom facets are count-desc", fandomFacets.map(\.name) == resorted.map(\.name))
+        // New keyed dimensions (relationships/characters/freeforms/your-tags) come for free.
+        check("relationship facets exist", !Facets.values(for: .relationship, in: items).isEmpty)
+        check("character facets exist", !Facets.values(for: .character, in: items).isEmpty)
+        check("freeform (additional tag) facets exist", !Facets.values(for: .freeform, in: items).isEmpty)
 
         print("Gallery — view model")
         let vm = GalleryViewModel()
         vm.load(from: store)
         check("VM loads all items", vm.totalCount == 20)
-        vm.toggleType(.external)
+        vm.toggle(.bookmarkType, "external")
         check("VM toggle filters visible set", vm.visibleCount == 1)
         vm.clearFilters()
         check("VM clear restores full set", vm.visibleCount == 20)
@@ -274,15 +278,29 @@ do {
         // Faceted-search invariant: selecting one value in a dimension must NOT collapse
         // that dimension's facet list — other values stay visible so multi-select (OR) is
         // reachable from the sidebar. (Counts are over the set filtered by all OTHER dims.)
-        let allRatings = Set(Facets.ratings(items).map(\.name))
+        let allRatings = Set(Facets.values(for: .rating, in: items).map(\.name))
         if allRatings.count > 1, let pick = allRatings.first {
             vm.clearFilters()
-            vm.toggleRating(pick)
-            let shown = Set(vm.ratingFacets.map(\.name))
+            vm.toggle(.rating, pick)
+            let shown = Set(vm.facets(for: .rating).map(\.name))
             check("selecting a rating keeps other ratings visible in the facet",
                   shown.count > 1 && shown.isSuperset(of: allRatings))
             check("but the visible list IS narrowed to that rating",
                   vm.visibleItems.allSatisfy { $0.rating == pick })
+            vm.clearFilters()
+        }
+
+        // Same self-collapse guard, but on a NEW high-cardinality dimension — the regression
+        // most likely to slip through the generic refactor (relationships have many values).
+        let allRels = Set(Facets.values(for: .relationship, in: items).map(\.name))
+        if allRels.count > 1, let pick = allRels.first {
+            vm.clearFilters()
+            vm.cycle(.relationship, pick)   // → include
+            let shown = Set(vm.facets(for: .relationship).map(\.name))
+            check("selecting a relationship keeps other relationships visible",
+                  shown.isSuperset(of: allRels))
+            check("relationship include narrows the visible list",
+                  vm.visibleItems.allSatisfy { $0.relationships.contains(pick) })
             vm.clearFilters()
         }
 
@@ -304,37 +322,39 @@ do {
               items.allSatisfy { !$0.categories.contains("No category") })
 
         print("Gallery — include / exclude")
-        let aFandom = Facets.fandoms(items).first!.name
-        var ex = GalleryFilter(); ex.excludeFandoms = [aFandom]
+        let aFandom = Facets.values(for: .fandom, in: items).first!.name
+        var ex = GalleryFilter(); ex.setExclude(.fandom, [aFandom])
         let afterExclude = ex.apply(to: items)
         check("exclude fandom drops those items",
               afterExclude.allSatisfy { !$0.fandoms.contains(aFandom) })
         check("exclude yields a strict subset", afterExclude.count < items.count)
-        // include + exclude compose: include fandom A but exclude tag-set is independent.
-        var both = GalleryFilter(); both.ratings = ["Explicit"]; both.excludeFandoms = [aFandom]
+        // include + exclude compose: include rating but exclude fandom is independent.
+        var both = GalleryFilter(); both.setInclude(.rating, ["Explicit"]); both.setExclude(.fandom, [aFandom])
         check("include AND exclude compose",
               both.apply(to: items).allSatisfy { $0.rating == "Explicit" && !$0.fandoms.contains(aFandom) })
 
         print("Gallery — tri-state cycle")
         let vm2 = GalleryViewModel(); vm2.load(from: store)
-        check("starts neutral", vm2.fandomState(aFandom) == .neutral)
-        vm2.cycleFandom(aFandom)
-        check("cycle 1 → include", vm2.fandomState(aFandom) == .include)
+        check("starts neutral", vm2.state(.fandom, aFandom) == .neutral)
+        vm2.cycle(.fandom, aFandom)
+        check("cycle 1 → include", vm2.state(.fandom, aFandom) == .include)
         check("include narrows the set", vm2.visibleCount < vm2.totalCount)
-        vm2.cycleFandom(aFandom)
-        check("cycle 2 → exclude", vm2.fandomState(aFandom) == .exclude)
+        vm2.cycle(.fandom, aFandom)
+        check("cycle 2 → exclude", vm2.state(.fandom, aFandom) == .exclude)
         check("exclude removes those items",
               vm2.visibleItems.allSatisfy { !$0.fandoms.contains(aFandom) })
-        vm2.cycleFandom(aFandom)
-        check("cycle 3 → neutral (full set)", vm2.fandomState(aFandom) == .neutral && vm2.visibleCount == 20)
+        vm2.cycle(.fandom, aFandom)
+        check("cycle 3 → neutral (full set)", vm2.state(.fandom, aFandom) == .neutral && vm2.visibleCount == 20)
+        // Cycling back to neutral must leave NO empty set behind (the invariant): filter == fresh.
+        check("neutral cycle clears the dimension key (no empty set)", vm2.filter == GalleryFilter())
 
         print("Gallery — category filter")
-        if let aCat = Facets.categories(items).first?.name {
-            var cf = GalleryFilter(); cf.categories = [aCat]
+        if let aCat = Facets.values(for: .category, in: items).first?.name {
+            var cf = GalleryFilter(); cf.setInclude(.category, [aCat])
             check("include category keeps only items with it",
                   cf.apply(to: items).allSatisfy { $0.categories.contains(aCat) })
-            check("category facets exist", !Facets.categories(items).isEmpty)
-            cf = GalleryFilter(); cf.excludeCategories = [aCat]
+            check("category facets exist", !Facets.values(for: .category, in: items).isEmpty)
+            cf = GalleryFilter(); cf.setExclude(.category, [aCat])
             check("exclude category drops items with it",
                   cf.apply(to: items).allSatisfy { !$0.categories.contains(aCat) })
         }
@@ -399,18 +419,18 @@ do {
     _ = vmBig.visibleItems                              // first access computes once
     let r0 = vmBig.recomputeCount
     check("first compute happened", r0 >= 1)
-    for _ in 0..<200 { _ = vmBig.visibleItems; _ = vmBig.fandomFacets; _ = vmBig.ratingFacets; _ = vmBig.typeFacets }
+    for _ in 0..<200 { _ = vmBig.visibleItems; _ = vmBig.facets(for: .fandom); _ = vmBig.facets(for: .rating); _ = vmBig.facets(for: .bookmarkType) }
     check("200 repeated accesses → no extra recompute (memoized)", vmBig.recomputeCount == r0)
-    vmBig.cycleRating("Explicit")
+    vmBig.cycle(.rating, "Explicit")
     _ = vmBig.visibleItems
     check("a filter change triggers exactly one recompute", vmBig.recomputeCount == r0 + 1)
     let r1 = vmBig.recomputeCount
-    for _ in 0..<200 { _ = vmBig.visibleItems; _ = vmBig.ratingFacets }
+    for _ in 0..<200 { _ = vmBig.visibleItems; _ = vmBig.facets(for: .rating) }
     check("memoized again after the change", vmBig.recomputeCount == r1)
     check("correct at scale: only Explicit visible", vmBig.visibleItems.allSatisfy { $0.rating == "Explicit" })
     check("Explicit count == 400 (2000/5)", vmBig.visibleCount == 400)
     check("rating facet doesn't collapse at scale (all 5 listed)",
-          Set(vmBig.ratingFacets.map(\.name)).count == 5)
+          Set(vmBig.facets(for: .rating).map(\.name)).count == 5)
 
     print("Store — meta + index resume")
     let metaStore = try Store(inMemory: true)
