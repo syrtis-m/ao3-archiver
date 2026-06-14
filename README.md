@@ -109,7 +109,7 @@ Tip: click a filter once to **include** it, again to **exclude** it, once more t
 - **Your login never leaves your machine** except to talk to AO3 itself.
 - **It's polite to AO3 by design** — slow, one request at a time, and it backs off the moment AO3
   asks. This is a personal backup tool for **your own bookmarks**, in the spirit of AO3's own
-  "fans backing up works" guidance — not a bulk scraper. Additionally, it identifies itself to AO3 (via user-agent string) as "ao3-archiver/0.1 (personal bookmark backup; AO3 user:\[your username is added here]; contact syrtis@sysd.info)."
+  "fans backing up works" guidance — not a bulk scraper. Additionally, it identifies itself to AO3 (via user-agent string) as "`ao3-archiver/0.1 (personal bookmark backup; AO3 user:\[your username is added here]; contact syrtis@sysd.info)`"
 
 ---
 
