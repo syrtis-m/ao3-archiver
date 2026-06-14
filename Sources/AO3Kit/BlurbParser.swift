@@ -150,6 +150,21 @@ public enum BlurbParser {
         return href.isEmpty ? nil : href
     }
 
+    /// The highest page number in the pagination control (the total page count), for a
+    /// progress readout like "page 15 of 130". nil when there's no pagination (single page).
+    public static func lastPageNumber(html: String) throws -> Int? {
+        let doc = try SwiftSoup.parse(html)
+        var maxPage = 0
+        for a in try doc.select("ol.pagination a[href]").array() {
+            let href = try a.attr("href")
+            if let range = href.range(of: #"page=(\d+)"#, options: .regularExpression),
+               let n = Int(href[range].dropFirst("page=".count)) {
+                maxPage = max(maxPage, n)
+            }
+        }
+        return maxPage > 0 ? maxPage : nil
+    }
+
     // MARK: - Helpers
 
     /// Classify a heading href into a bookmark kind + numeric id within its namespace.

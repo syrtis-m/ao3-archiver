@@ -47,9 +47,9 @@ public final class SyncEngine: @unchecked Sendable {
         public var downloadsFailed = 0
     }
 
-    /// Structured progress for a CLI log now and the sync-status UI later.
+    /// Structured progress for the CLI log and the sync-status UI.
     public enum Event: Sendable {
-        case page(Int, cards: Int)
+        case page(Int, total: Int?, cards: Int)
         case expandingSeries(id: Int, members: Int)
         case downloaded(workID: Int, bytes: Int, title: String)
         case downloadFailed(workID: Int, reason: String)
@@ -92,8 +92,10 @@ public final class SyncEngine: @unchecked Sendable {
         var result = Result()
         var nextPath: String? = listPath
         var page = 0
+        var total: Int?
         while let path = nextPath, page < options.maxPages {
             let html = try await client.getHTML(path: path)
+            if page == 0 { total = try BlurbParser.lastPageNumber(html: html) }   // "page N of T"
             let cards = try BlurbParser.parseListing(html: html)
             for card in cards { try ingest(card) }
             page += 1
@@ -102,7 +104,7 @@ public final class SyncEngine: @unchecked Sendable {
             result.works += cards.filter { $0.kind == .work }.count
             result.external += cards.filter { $0.kind == .external }.count
             result.series += cards.filter { $0.kind == .series }.count
-            onEvent(.page(page, cards: cards.count))
+            onEvent(.page(page, total: total, cards: cards.count))
             nextPath = try BlurbParser.nextPagePath(html: html)
         }
         return result

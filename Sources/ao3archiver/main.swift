@@ -69,8 +69,8 @@ do {
     stderr("→ syncing…")
     let result = try await engine.run(listPath: listPath, options: options) { event in
         switch event {
-        case let .page(n, cards):
-            stderr("  • page \(n): \(cards) cards")
+        case let .page(n, total, cards):
+            stderr("  • page \(n)\(total.map { " of \($0)" } ?? ""): \(cards) cards")
         case let .expandingSeries(id, members):
             stderr("  • series \(id): \(members) member works")
         case let .downloaded(workID, bytes, title):

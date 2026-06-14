@@ -79,11 +79,16 @@ public final class AO3Client: @unchecked Sendable {
     public let config: AO3Config
     private let limiter: RateLimiter
     private let session: URLSession
-    /// Diagnostics sink (defaults to stderr). Replaceable so the eventual GUI can route
+    /// Diagnostics sink (defaults to stderr). Replaceable so the GUI can route
     /// "AO3 asked us to slow down" into the sync status UI.
     public var log: @Sendable (String) -> Void = { msg in
         FileHandle.standardError.write(Data(("[AO3Client] " + msg + "\n").utf8))
     }
+
+    /// Called when AO3 throttles us (429/5xx) and we're about to sleep `seconds` before retry
+    /// `attempt`/`max`. Lets the UI show a live "rate limited — waiting Ns" instead of looking
+    /// stalled. (seconds, attempt, max)
+    public var onRateLimit: @Sendable (TimeInterval, Int, Int) -> Void = { _, _, _ in }
 
     public init(config: AO3Config) {
         self.config = config
@@ -147,6 +152,7 @@ public final class AO3Client: @unchecked Sendable {
                     throw AO3Error.rateLimited(retryAfter: wait)
                 }
                 log("429 from AO3 — backing off \(Int(wait))s (attempt \(attempt + 1)/\(config.maxRetries))")
+                onRateLimit(wait, attempt + 1, config.maxRetries)
                 try await sleep(wait)
                 return try await perform(request, attempt: attempt + 1)
 
@@ -154,6 +160,7 @@ public final class AO3Client: @unchecked Sendable {
                 guard attempt < config.maxRetries else { throw AO3Error.http(http.statusCode) }
                 let wait = Self.backoff(attempt)
                 log("HTTP \(http.statusCode) — retrying in \(Int(wait))s (attempt \(attempt + 1)/\(config.maxRetries))")
+                onRateLimit(wait, attempt + 1, config.maxRetries)
                 try await sleep(wait)
                 return try await perform(request, attempt: attempt + 1)
 

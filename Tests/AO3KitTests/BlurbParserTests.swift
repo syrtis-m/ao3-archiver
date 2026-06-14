@@ -81,6 +81,9 @@ import Foundation
         // Pagination: the Next link resolves; absence yields nil.
         #expect(try BlurbParser.nextPagePath(html: html)?.contains("page=2") == true)
         #expect(try BlurbParser.nextPagePath(html: "<ol class=\"pagination\"></ol>") == nil)
+        // Total page count (for "page N of T" progress).
+        #expect(try BlurbParser.lastPageNumber(html: html) == 91)
+        #expect(try BlurbParser.lastPageNumber(html: "<p>one page</p>") == nil)
     }
 
     @Test func parsesSeriesBookmarkCard() throws {

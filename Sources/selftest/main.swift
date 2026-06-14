@@ -95,6 +95,9 @@ do {
               (try BlurbParser.nextPagePath(html: bmHTML))?.contains("page=2") == true)
         check("nextPagePath nil on a page with no Next",
               try BlurbParser.nextPagePath(html: "<ol class=\"pagination\"></ol>") == nil)
+        check("lastPageNumber reads the total (91)", try BlurbParser.lastPageNumber(html: bmHTML) == 91)
+        check("lastPageNumber nil when no pagination",
+              try BlurbParser.lastPageNumber(html: "<p>one page</p>") == nil)
     }
 
     // Series bookmark card (li.bookmark.blurb.group whose heading links to /series/<id>).
