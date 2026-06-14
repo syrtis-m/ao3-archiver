@@ -2,10 +2,22 @@ import SwiftUI
 import AppKit
 import AO3Kit
 
-/// Forces the host `NSWindow` to be resizable/zoomable. When the app runs as a bare SwiftPM
-/// executable (`swift run`, no .app bundle/Info.plist), the window is created without the
-/// `.resizable` style mask, so SwiftUI's `.windowResizability` has nothing to act on. A
-/// proper bundled app won't need this. (Harmless when the mask is already set.)
+/// Makes a bare SwiftPM executable behave as a proper foreground GUI app. Launched via
+/// `swift run` (no .app bundle), the process defaults to an accessory/prohibited activation
+/// policy, so it can't become the active app or key window — and keystrokes go to the
+/// launching terminal instead of the search field. Promoting to `.regular` and activating
+/// fixes keyboard focus. A bundled .app gets this for free.
+private final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.regular)
+    }
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.activate(ignoringOtherApps: true)
+    }
+}
+
+/// Forces the host `NSWindow` to be resizable/zoomable and key (same bare-executable reason
+/// as above — the window is otherwise created without `.resizable` and isn't made key).
 private struct WindowConfigurator: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
@@ -13,6 +25,7 @@ private struct WindowConfigurator: NSViewRepresentable {
             if let window = view.window {
                 window.styleMask.insert([.resizable, .miniaturizable])
                 window.collectionBehavior.insert(.fullScreenPrimary)
+                window.makeKeyAndOrderFront(nil)
             }
         }
         return view
@@ -27,6 +40,7 @@ private struct WindowConfigurator: NSViewRepresentable {
 // is a read-only browser in M2; syncing stays in the `ao3archiver` CLI for now.
 @main
 struct AO3ArchiverApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var vm = GalleryViewModel()
 
     private let archiveRoot: URL = {
