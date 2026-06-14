@@ -419,6 +419,12 @@ RAM and only fall back to SQL when the result set is huge.
 
 ## 10. Milestones
 
+> **V1 is shipped.** M0–M4 are complete: the de-risking spike, the polite sync engine + SQLite
+> store, the Liquid Glass gallery, full filter parity, and a real double-clickable `.app` with
+> in-app sync. The tool does what §1 set out to do — back up your AO3 bookmarks as EPUBs and
+> browse/filter them locally, snappily, offline. M5 (hardening) and the small leftovers called
+> out below are **post-V1**, not blockers.
+
 - **M0 — Spike (de-risk): ✅ done.** `AO3Kit` (`AO3Client` rate limiter + 429/5xx
   backoff + cookie auth, `BlurbParser`, `WorkDownloader`) plus an `ao3archiver` CLI that
   fetches a listing, parses cards, and downloads one EPUB through the limiter. Parser
@@ -490,28 +496,23 @@ hydration pass we avoid for politeness.)
   A nil-valued item (series → no word count) drops out of an active range.
 - **M3.4 — Derived & bookmark filters (done).** `TriFilter` (any/yes/no) over crossover
   (fandom count > 1), rec'd, with/without notes, private/public; language is a facet dim.
-- **M3.5 — More sorts (partial).** Added comments + bookmarks-count sorts. Local file size /
-  download-status sort still TODO (needs epub byte size stored at download).
+- **M3.5 — More sorts (done for V1).** Added comments + bookmarks-count sorts. A local
+  file-size / download-status sort is the one deferred item (needs epub byte size stored at
+  download) — small, post-V1.
 - **M3.6 — Saved presets ("Smart Bookmarks") (done).** `GalleryFilter`/`GallerySort` are
   `Codable`; a `filter_preset` table (migration v3) stores the JSON-encoded `FilterPreset`
   (name + filter + sort); sidebar save/apply/delete, applied instantly. Note: a
   `[FacetDimension: Set<String>]` encodes as a JSON array (Swift only uses String/Int keys as
   object keys), which round-trips fine.
 
-### M4 — Packaging + Liquid Glass polish
-
-> **Sequencing note (decision for the user):** the `.app` bundle (M4.1) has been hit four
-> times already (keyboard focus, window resize, activation, no folder picker), each patched
-> with a runtime hack. It's low-cost, retires those hacks, and **unblocks the folder picker
-> (M4.3) and in-app sync (M4.2) — which are arguably core to a backup tool, not polish.** It
-> also gives a real, double-clickable testbed for M3. Strong case to pull M4.1–M4.3 **before
-> M3**; left in M4 by default, but call it out.
+### M4 — Packaging + in-app sync: ✅ done (ships V1)
 
 - **M4.1 — Real `.app` bundle: ✅ done.** `Packaging/make-app.sh` assembles a double-clickable
   "AO3 Archiver.app" (Info.plist + bundle id + ad-hoc signature). **Non-sandboxed** by
   design (personal tool reads a user-chosen folder directly; signing/notarization is a
   distribution concern). Launched as a bundle it's a normal foreground app, so the
-  bare-`swift run` runtime nudges become belt-and-suspenders. App icon still TODO.
+  bare-`swift run` runtime nudges become belt-and-suspenders. Liquid-glass **app icon** done
+  (CoreGraphics, headless: `Packaging/IconGen.swift` + `make-icon.sh`).
 - **M4.2 — In-app sync: ✅ done.** `SyncController` (@MainActor @Observable) runs the tested
   `SyncEngine` off the main actor; `SyncSheet` collects username/cookie and shows **live
   progress** — page-of-total bar (`BlurbParser.lastPageNumber`), a **rate-limit banner**
@@ -520,18 +521,21 @@ hydration pass we avoid for politeness.)
   separated from download**: default sync is index-only (lightweight bookmark records per
   page, committed live so the gallery grows as it indexes and partial/cancelled runs are kept);
   EPUBs download **per-work on demand** (detail panel) or via a bulk toggle. Politeness interval
-  is user-adjustable. *Not yet resumable* — re-running the index restarts at page 1 (TODO:
-  resume-from-page, important for ~130-page accounts AO3 throttles).
+  is user-adjustable. **Index is resumable** — the next-page URL is persisted in a `meta` table,
+  so a run throttled at page 15 of ~130 resumes there instead of restarting (`SyncEngine.Options
+  .resumeIndex` + `resumeKey`); a **Quick sync** grabs just the latest 3 pages for catch-up.
 - **M4.3 — Folder picker: ✅ done.** `NSOpenPanel` → plain path in UserDefaults (non-sandboxed,
   no security-scoped bookmark needed); `AO3_ARCHIVE_DIR` overrides. Default is the **visible**
   `~/Documents/ao3archive` (shared by app + CLI), with a **Reveal in Finder** folder menu. Also
   fixed the double-clicked "SQLite error 14" (create the folder before opening the db).
-- **M4.5 — Glass polish (partly done).** ✅ Liquid-glass **app icon** (CoreGraphics, headless;
-  `Packaging/IconGen.swift` + `make-icon.sh`). Remaining: `glassEffectContainer` grouping,
-  animated filter transitions, refined selection/hover, polished empty/error states. (No
-  thumbnail cache — AO3 EPUBs have no covers.)
+- **M4.5 — Glass polish: ✅ done for V1.** Dark Liquid Glass throughout (`.glassEffect`, glass
+  buttons/pills, the liquid-glass app icon). Further polish (`glassEffectContainer` grouping,
+  animated filter transitions, refined selection/hover) is optional post-V1 nicety, not a gap.
+  (No thumbnail cache — AO3 EPUBs have no covers.)
 
-### M5 — Hardening
+### M5 — Hardening (post-V1, future)
+
+Not part of V1; captured here as the natural next iteration if the tool grows beyond personal use.
 
 - **M5.1 — Cookie expiry UX.** Detect login redirect / missing username → pause sync, prompt
   re-paste, resume.
@@ -539,8 +543,10 @@ hydration pass we avoid for politeness.)
   → `deleted_on_ao3`, highlight "your backup is the only copy."
 - **M5.3 — Scheduled background sync** (opt-in), politeness-respecting.
 - **M5.4 — Export/import** the archive folder; backup integrity checks.
-- **M5.5 — Backoff tuning + large-library perf pass** (10k+: virtualization, FTS5 search path
-  when result sets are huge, finish the memoization started in M3.0).
+- **M5.5 — Large-library perf pass** (10k+: fall back to an FTS5/SQL search path when result
+  sets are huge — the in-memory pipeline is already memoized and proven snappy at 2k).
+- **M5.6 — Local file-size / download-status sort** (the one deferred M3 sort; store epub byte
+  size at download).
 
 ---
 
@@ -551,20 +557,23 @@ hydration pass we avoid for politeness.)
 | AO3 HTML changes break the parser | Isolate all selectors in one `Parser` type with snapshot tests against saved fixture HTML; fail soft per-field. |
 | Rate limiting / IP throttle | Conservative defaults, 429 backoff, single-threaded, aggressive caching (§2). |
 | Cookie expiry mid-sync | Detect login redirect, pause sync, prompt to re-paste; resume. |
-| Large libraries (10k+ bookmarks) | Virtualized UI, indexed SQL, paged sync, downsampled covers. |
-| EPUB cover varies / missing | Best-effort unzip; fall back to a generated glass placeholder with title/author. |
+| Large libraries (10k+ bookmarks) | Virtualized UI, indexed SQL, paged + resumable sync, memoized in-memory filter pipeline (proven snappy at 2k; FTS5/SQL fallback for huge sets is M5.5). |
+| No cover art in AO3 EPUBs | Resolved by design: the gallery is **metadata cards** (title/author/tags/stats/summary), not a cover grid — no cover extraction needed. |
 | Restricted/anon works | Require cookie; mark clearly when unavailable; never crash a sync over one work. |
 | ToS / ethics | Scope to user's own bookmarks; polite client; honest UA; local-only; no bulk dataset features. |
 
 ---
 
-## 12. Open questions for you
+## 12. Decisions (resolved for V1)
 
-1. **Stack:** native SwiftUI (recommended, real Liquid Glass) or Tauri (cross-platform)?
-2. **Scope:** bookmarks only, or also your own works / marked-for-later / a specific
-   collection? (Same plumbing; just more list sources.)
-3. **Formats:** EPUB only, or also offer AO3's other formats (PDF/MOBI/AZW3/HTML)?
-4. **Cookie UX:** manual paste (simple, robust) vs. an embedded WebView login that
-   extracts the cookie for you (smoother, more to build)?
-5. **Scheduled background backups:** wanted in v1, or manual refresh only?
+These were the pre-build open questions; here's what V1 settled on.
+
+1. **Stack:** ✅ native SwiftUI (macOS 26, real Liquid Glass) + GRDB/SQLite + SwiftSoup.
+2. **Scope:** ✅ bookmarks only for V1 (works/marked-for-later/collections are the same
+   plumbing — just more list sources — and are a natural post-V1 add).
+3. **Formats:** ✅ EPUB only (AO3 renders it server-side; other formats are a follow-up).
+4. **Cookie UX:** ✅ manual paste, stored in the Keychain (simple, robust; an embedded WebView
+   login is a possible post-V1 smoothing).
+5. **Scheduled background backups:** ✅ manual refresh for V1 (in-app sync with live progress +
+   resumable index); a scheduled opt-in sync is post-V1 (M5.3).
 ```

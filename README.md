@@ -1,20 +1,20 @@
 # AO3 Archiver
 
-A native macOS app (in progress) that backs up your AO3 bookmarks as `.epub` files with
-a fast, dark, liquid-glass gallery and full local filtering. See [PLAN.md](PLAN.md) for
-the full design and roadmap.
+A native macOS app that backs up your AO3 bookmarks as `.epub` files with a fast, dark,
+liquid-glass gallery and full local filtering. See [PLAN.md](PLAN.md) for the full design.
 
-## Status: M3 full filter parity + M4 packaging (in progress)
+## Status: V1 shipped
 
-M0 de-risked the core mechanics; M1 built the backup engine; **M2** added the dark Liquid
-Glass gallery; **M3** delivered full filter parity (every facet the bookmarks listing
-exposes, plus tri-state include/exclude, ranges, derived/bookmark filters, and saved presets
-— memoized and proven snappy at scale); **M4 (packaging)** turned it into a real,
-double-clickable `.app` you can
-**sync and browse entirely from the GUI** — no terminal. You can run it as a CLI (sync)
-and/or the SwiftUI app (sync + browse):
+The build is complete. M0 de-risked the core mechanics; M1 built the backup engine; **M2**
+added the dark Liquid Glass gallery; **M3** delivered full filter parity (every facet the
+bookmarks listing exposes, plus tri-state include/exclude, numeric + date ranges,
+derived/bookmark filters, and saved presets — memoized and proven snappy at scale); **M4**
+packaged it into a real, double-clickable `.app` with **in-app resumable sync** — so you
+**sync and browse entirely from the GUI**, no terminal. (Future hardening — cookie-expiry UX,
+deleted-work reconciliation, scheduled sync — is post-V1; see PLAN §10.) Run it as a CLI
+(sync) and/or the SwiftUI app (sync + browse):
 
-- **`AO3Kit`** — the reusable core the SwiftUI app will sit on:
+- **`AO3Kit`** — the reusable core the SwiftUI app sits on:
   - `AO3Client` — the only networked component. Polite single-flight **rate limiter**,
     **429 / Retry-After backoff**, 5xx + timeout retries, explicit session-cookie
     injection, honest User-Agent. Follows AO3's download redirect automatically.

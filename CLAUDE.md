@@ -5,7 +5,7 @@ Guidance for working in this repo. See `PLAN.md` for the full design/roadmap and
 
 ## What this is
 
-A native macOS app (in progress) that backs up the user's AO3 bookmarks as `.epub` files
+A native macOS app (**V1 shipped**) that backs up the user's AO3 bookmarks as `.epub` files
 with a dark, liquid-glass, snappy gallery and full local filtering. **M0** (core spike),
 **M1** (core sync + store), **M2** (gallery MVP), and **M3** (full filter parity) are done: a
 Swift package that pages through bookmarks, ingests every card (work / external / series)
@@ -46,8 +46,10 @@ EPUBs); EPUBs download per-work on demand (detail panel) or via a bulk toggle. T
 **reloads live as pages index and on any end** (incl. cancel/fail) so a rate-limited partial
 index is shown, not lost. A long index *will* hit AO3's throttle — `AO3Client.onRateLimit`
 surfaces the backoff (banner + activity feed) so it doesn't look stalled; `BlurbParser.lastPageNumber`
-gives "page N of T". Politeness interval is user-adjustable. **Index is not yet resumable**
-(re-running restarts at page 1 — idempotent but re-fetches; a resume-from-page is a TODO).
+gives "page N of T". Politeness interval is user-adjustable. **Index is resumable** — the
+next-page URL is persisted in the `meta` table (`SyncEngine.resumeKey`), so a run throttled at
+page 15 of ~130 resumes there, not at page 1; the sync sheet shows "resumes near page N" with a
+**Start over**. A **Quick sync** grabs just the latest 3 pages (catch-up; index-only, no resume).
 
 > **Headless caveat:** the SwiftUI gallery **compiles** here but can't be *run/rendered*
 > without a window server, so the view layer is compile-verified only — the user runs it and
@@ -80,7 +82,7 @@ fixtures in `Tests/AO3KitTests/Fixtures/`.
 ## Layout
 
 ```
-Sources/AO3Kit/        reusable core the SwiftUI app will sit on
+Sources/AO3Kit/        reusable core the SwiftUI app sits on
   AO3Client.swift      ONLY networked component: rate limiter, 429/5xx backoff, cookie, UA
   RateLimiter.swift    single-flight token-slot limiter
   BlurbParser.swift    listing HTML → [WorkBlurb]; classifies work/external/series;
@@ -209,8 +211,12 @@ Tests/AO3KitTests/     swift-testing suite + Fixtures/ (real captured AO3 HTML):
 
 ## Roadmap pointer
 
-M0–M3 are done (core spike, sync+store, gallery MVP, full filter parity). Next is **M4 —
-packaging + Liquid Glass polish** (the `.app` bundle exists via `make-app.sh`; remaining is
-glass polish and retiring the bare-executable runtime hacks), then **M5 — hardening**. The
-one M3 leftover: a **local-file-size / download-status sort** (needs epub byte size stored at
-download). See `PLAN.md` §10.
+**V1 is shipped — M0–M4 are done** (core spike, sync+store, gallery MVP, full filter parity,
+and the packaged `.app` with in-app resumable sync). The tool meets its goal: back up your AO3
+bookmarks as EPUBs and browse/filter them locally, offline, snappily.
+
+Everything beyond V1 is optional next-iteration work, captured in `PLAN.md` §10 as **M5
+(hardening)**: cookie-expiry UX, deleted-work reconciliation, scheduled background sync,
+export/import, a 10k+ FTS5/SQL search fallback, and the one deferred M3 sort (local file size /
+download status — needs epub byte size stored at download). None are blockers; V1 stands on its
+own.
