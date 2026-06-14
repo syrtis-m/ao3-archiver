@@ -5,3 +5,5 @@ archive/
 build/
 DerivedData/
 .DS_Store
+Packaging/icon_1024.png
+Packaging/AppIcon.iconset/

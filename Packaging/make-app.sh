@@ -28,10 +28,12 @@ mkdir -p "${CONTENTS}/MacOS" "${CONTENTS}/Resources"
 cp "${BIN}" "${CONTENTS}/MacOS/AO3ArchiverApp"
 cp "${ROOT}/Packaging/Info.plist" "${CONTENTS}/Info.plist"
 
-# App icon (optional): drop an AppIcon.icns in Packaging/ and it gets bundled.
+# App icon (Info.plist already references AppIcon via CFBundleIconFile). Regenerate it with
+# ./Packaging/make-icon.sh; bundled here if present.
 if [ -f "${ROOT}/Packaging/AppIcon.icns" ]; then
     cp "${ROOT}/Packaging/AppIcon.icns" "${CONTENTS}/Resources/AppIcon.icns"
-    /usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string AppIcon" "${CONTENTS}/Info.plist" 2>/dev/null || true
+else
+    echo "  (no AppIcon.icns — run ./Packaging/make-icon.sh to generate it)"
 fi
 
 # Ad-hoc sign so Gatekeeper/TCC treat it as a stable identity (no Developer ID needed).
