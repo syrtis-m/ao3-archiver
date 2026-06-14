@@ -51,6 +51,36 @@ public struct WorkListItem: Sendable, Identifiable, Equatable, Hashable {
     public var downloadState: String
     public var epubPath: String?
 
+    /// Public initializer with defaults for the long tail of fields, so the app and tests
+    /// can construct items without spelling out all ~33 parameters.
+    public init(
+        itemID: Int, bookmarkID: Int? = nil, kind: BookmarkKind, sourcePath: String,
+        title: String, author: String, authorURL: String? = nil,
+        fandoms: [String] = [], relationships: [String] = [], characters: [String] = [],
+        freeforms: [String] = [], warnings: [String] = [],
+        rating: String? = nil, category: String? = nil, isComplete: Bool? = nil,
+        language: String? = nil, wordCount: Int? = nil, worksCount: Int? = nil,
+        chaptersHave: Int? = nil, chaptersTotal: Int? = nil, kudos: Int? = nil,
+        comments: Int? = nil, bookmarksCount: Int? = nil, hits: Int? = nil,
+        summary: String? = nil, updatedAt: Int? = nil, dateText: String? = nil,
+        bookmarkedAt: String? = nil, bookmarkTags: [String] = [], bookmarkerNotes: String? = nil,
+        isRec: Bool = false, isPrivate: Bool = false,
+        downloadState: String = "pending", epubPath: String? = nil
+    ) {
+        self.itemID = itemID; self.bookmarkID = bookmarkID; self.kind = kind
+        self.sourcePath = sourcePath; self.title = title; self.author = author
+        self.authorURL = authorURL; self.fandoms = fandoms; self.relationships = relationships
+        self.characters = characters; self.freeforms = freeforms; self.warnings = warnings
+        self.rating = rating; self.category = category; self.isComplete = isComplete
+        self.language = language; self.wordCount = wordCount; self.worksCount = worksCount
+        self.chaptersHave = chaptersHave; self.chaptersTotal = chaptersTotal; self.kudos = kudos
+        self.comments = comments; self.bookmarksCount = bookmarksCount; self.hits = hits
+        self.summary = summary; self.updatedAt = updatedAt; self.dateText = dateText
+        self.bookmarkedAt = bookmarkedAt; self.bookmarkTags = bookmarkTags
+        self.bookmarkerNotes = bookmarkerNotes; self.isRec = isRec; self.isPrivate = isPrivate
+        self.downloadState = downloadState; self.epubPath = epubPath
+    }
+
     /// Stable, list-unique id (bookmark ids are unique; fall back for safety).
     public var id: String { bookmarkID.map(String.init) ?? "\(kind.rawValue)-\(itemID)" }
 
@@ -403,10 +433,12 @@ public enum Facets {
 /// `filter`/`sort`/`allItems`; `visibleItems` recomputes when they change.
 @Observable
 public final class GalleryViewModel {
-    public var allItems: [WorkListItem] = []
+    public var allItems: [WorkListItem] = [] { didSet { loadGeneration &+= 1 } }
     public var filter = GalleryFilter()
     public var sort: GallerySort = .dateBookmarked
     public var loadError: String?
+    /// Bumped whenever `allItems` changes; part of the memo key (cheaper than diffing arrays).
+    public private(set) var loadGeneration = 0
 
     public init() {}
 
@@ -416,26 +448,52 @@ public final class GalleryViewModel {
         catch { loadError = String(describing: error) }
     }
 
+    // MARK: - Memoized derived working set
+
+    /// The visible list + all facet counts, computed together and cached per (filter, sort,
+    /// items) change — NOT per render/access. Without this, every render recomputes ~5 full
+    /// `O(n)` filter+count passes; at ~1800 bookmarks and many facets, repeated renders
+    /// (typing, resizing) would stutter. `recomputeCount` lets tests prove the memo holds.
+    private struct Derived {
+        var visible: [WorkListItem] = []
+        var typeFacets: [(name: String, count: Int)] = []
+        var ratingFacets: [(name: String, count: Int)] = []
+        var categoryFacets: [(name: String, count: Int)] = []
+        var fandomFacets: [(name: String, count: Int)] = []
+    }
+    private struct MemoKey: Equatable { var filter: GalleryFilter; var sort: GallerySort; var gen: Int }
+
+    @ObservationIgnored private var cached: Derived?
+    @ObservationIgnored private var cachedKey: MemoKey?
+    @ObservationIgnored public private(set) var recomputeCount = 0
+
+    private var derived: Derived {
+        // Read the observed inputs up front so SwiftUI still registers dependencies on a
+        // cache hit (else views wouldn't re-render when the filter changes).
+        let key = MemoKey(filter: filter, sort: sort, gen: loadGeneration)
+        if let cached, cachedKey == key { return cached }
+        var d = Derived()
+        d.visible = sort.sorted(filter.apply(to: allItems))
+        d.typeFacets = Facets.bookmarkTypes(filter.clearingBookmarkTypes().apply(to: allItems))
+        d.ratingFacets = Facets.ratings(filter.clearingRatings().apply(to: allItems))
+        d.categoryFacets = Facets.categories(filter.clearingCategories().apply(to: allItems))
+        d.fandomFacets = Facets.fandoms(filter.clearingFandoms().apply(to: allItems))
+        cached = d; cachedKey = key; recomputeCount += 1
+        return d
+    }
+
     /// The currently-visible, filtered + sorted items.
-    public var visibleItems: [WorkListItem] { sort.sorted(filter.apply(to: allItems)) }
+    public var visibleItems: [WorkListItem] { derived.visible }
 
     /// Facet rows for the sidebar. Each dimension is counted against the set filtered by all
     /// OTHER dimensions, so selecting a value keeps that dimension's other values visible.
-    public var fandomFacets: [(name: String, count: Int)] {
-        Facets.fandoms(filter.clearingFandoms().apply(to: allItems))
-    }
-    public var ratingFacets: [(name: String, count: Int)] {
-        Facets.ratings(filter.clearingRatings().apply(to: allItems))
-    }
-    public var categoryFacets: [(name: String, count: Int)] {
-        Facets.categories(filter.clearingCategories().apply(to: allItems))
-    }
-    public var typeFacets: [(name: String, count: Int)] {
-        Facets.bookmarkTypes(filter.clearingBookmarkTypes().apply(to: allItems))
-    }
+    public var fandomFacets: [(name: String, count: Int)] { derived.fandomFacets }
+    public var ratingFacets: [(name: String, count: Int)] { derived.ratingFacets }
+    public var categoryFacets: [(name: String, count: Int)] { derived.categoryFacets }
+    public var typeFacets: [(name: String, count: Int)] { derived.typeFacets }
 
     public var totalCount: Int { allItems.count }
-    public var visibleCount: Int { visibleItems.count }
+    public var visibleCount: Int { derived.visible.count }
 
     public func clearFilters() { filter = GalleryFilter() }
 

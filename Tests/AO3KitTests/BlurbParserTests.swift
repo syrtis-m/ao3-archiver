@@ -417,6 +417,23 @@ import Foundation
         #expect(vm.visibleCount == vm.totalCount)
     }
 
+    @Test func derivedSetIsMemoized() throws {
+        let vm = GalleryViewModel()
+        vm.allItems = (0..<500).map { i in
+            WorkListItem(itemID: i, kind: .work, sourcePath: "/works/\(i)", title: "W\(i)",
+                         author: "a", fandoms: ["F\(i % 5)"],
+                         rating: ["General Audiences", "Explicit"][i % 2])
+        }
+        _ = vm.visibleItems
+        let r0 = vm.recomputeCount
+        for _ in 0..<100 { _ = vm.visibleItems; _ = vm.ratingFacets; _ = vm.fandomFacets }
+        #expect(vm.recomputeCount == r0)             // repeated access is memoized
+        vm.cycleRating("Explicit"); _ = vm.visibleItems
+        #expect(vm.recomputeCount == r0 + 1)          // exactly one recompute on change
+        #expect(vm.visibleItems.allSatisfy { $0.rating == "Explicit" })
+        #expect(vm.visibleCount == 250)               // half are Explicit
+    }
+
     @Test func categoryFilterIncludeExclude() throws {
         let (_, items) = try loadedItems()
         let cat = try #require(Facets.categories(items).first?.name)

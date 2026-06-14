@@ -369,6 +369,46 @@ do {
               fetchedMembers.map(\.itemID) == [26762044, 29369769, 35035795, 68591376, 70449741, 81922441])
     }
 
+    // ── Scale + memoization: ~2000 synthetic items (real libraries are ~1800) ─────────
+    func synthItems(_ n: Int) -> [WorkListItem] {
+        let fandoms = ["Good Omens (TV)", "Star Wars", "MDZS", "Naruto", "BNHA"]
+        let ratings = ["General Audiences", "Teen And Up Audiences", "Mature", "Explicit", "Not Rated"]
+        let cats = ["Gen", "F/F", "F/M", "M/M", "Multi"]
+        return (0..<n).map { i -> WorkListItem in
+            let fandom: [String] = [fandoms[i % fandoms.count]]
+            let freeform: [String] = ["tag\(i % 100)"]
+            let rating: String = ratings[i % ratings.count]
+            let category: String = cats[i % cats.count]
+            return WorkListItem(
+                itemID: i, bookmarkID: i, kind: .work,
+                sourcePath: "/works/\(i)", title: "Work \(i)", author: "author\(i % 50)",
+                fandoms: fandom, freeforms: freeform,
+                rating: rating, category: category,
+                isComplete: i % 2 == 0, wordCount: i * 10, kudos: i, hits: i * 5,
+                updatedAt: 1_700_000_000 + i, downloadState: "pending")
+        }
+    }
+
+    print("Gallery — scale + memoization (2000 items)")
+    let vmBig = GalleryViewModel()
+    vmBig.allItems = synthItems(2000)
+    check("loads 2000 items", vmBig.totalCount == 2000)
+    _ = vmBig.visibleItems                              // first access computes once
+    let r0 = vmBig.recomputeCount
+    check("first compute happened", r0 >= 1)
+    for _ in 0..<200 { _ = vmBig.visibleItems; _ = vmBig.fandomFacets; _ = vmBig.ratingFacets; _ = vmBig.typeFacets }
+    check("200 repeated accesses → no extra recompute (memoized)", vmBig.recomputeCount == r0)
+    vmBig.cycleRating("Explicit")
+    _ = vmBig.visibleItems
+    check("a filter change triggers exactly one recompute", vmBig.recomputeCount == r0 + 1)
+    let r1 = vmBig.recomputeCount
+    for _ in 0..<200 { _ = vmBig.visibleItems; _ = vmBig.ratingFacets }
+    check("memoized again after the change", vmBig.recomputeCount == r1)
+    check("correct at scale: only Explicit visible", vmBig.visibleItems.allSatisfy { $0.rating == "Explicit" })
+    check("Explicit count == 400 (2000/5)", vmBig.visibleCount == 400)
+    check("rating facet doesn't collapse at scale (all 5 listed)",
+          Set(vmBig.ratingFacets.map(\.name)).count == 5)
+
     print("WorkDownloader")
     let menu = """
     <li class="download"><ul>
