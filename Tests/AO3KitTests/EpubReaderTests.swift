@@ -236,8 +236,19 @@ import Foundation
         #expect(css.contains("#f4ecd8"))            // sepia background
         #expect(css.contains("section.ao3-chapter"))
 
+        #expect(css.contains("\"Palatino\", Georgia"))   // named serif face gets serif fallback
+        #expect(css.contains("serif;"))
+
         s.fontScale = 1.0; s.normalize()
         #expect(s.injectedCSS.contains("100%"))
+    }
+
+    @Test func ao3FontEmitsArchiveSansStack() {
+        #expect(ReaderSettings.availableFonts.contains(ReaderSettings.ao3FontName))
+        let css = ReaderSettings(fontFamily: ReaderSettings.ao3FontName).injectedCSS
+        #expect(css.contains("'Lucida Grande'"))
+        #expect(css.contains("sans-serif;"))
+        #expect(!css.contains("\"AO3\""))                 // never emit the placeholder name as a face
     }
 
     @Test func settingsRoundTripCodable() throws {

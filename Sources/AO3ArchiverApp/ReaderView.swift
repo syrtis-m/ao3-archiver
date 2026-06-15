@@ -139,7 +139,7 @@ struct ReaderView: View {
                     in: ReaderSettings.lineSpacingRange, step: 0.1)
 
             Picker("Font", selection: fontBinding(model)) {
-                ForEach(["Georgia", "Iowan Old Style", "Palatino", "Helvetica Neue", "Menlo"], id: \.self) {
+                ForEach(ReaderSettings.availableFonts, id: \.self) {
                     Text($0).tag($0)
                 }
             }

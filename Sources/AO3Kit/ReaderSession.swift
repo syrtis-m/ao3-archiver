@@ -34,6 +34,14 @@ public struct ReaderSettings: Sendable, Equatable, Codable {
     public static let fontScaleRange = 0.7...2.0
     public static let lineSpacingRange = 1.2...2.2
 
+    /// The Archive's own default work font — a sans-serif stack rather than a single face,
+    /// so it can't be expressed as a plain `fontFamily` name with a serif fallback.
+    public static let ao3FontName = "AO3"
+
+    /// Faces offered by the reader's font picker (the AO3 default first).
+    public static let availableFonts = [ao3FontName, "Georgia", "Iowan Old Style",
+                                         "Palatino", "Helvetica Neue", "Menlo"]
+
     public init(theme: Theme = .darkGlass, fontScale: Double = 1.0, lineSpacing: Double = 1.6,
                 fontFamily: String = "Georgia", layout: Layout = .scroll) {
         self.theme = theme
@@ -58,6 +66,16 @@ public struct ReaderSettings: Sendable, Equatable, Codable {
         }
     }
 
+    /// Full CSS `font-family` value for the selected face. The AO3 option maps to the Archive's
+    /// own default work-text stack (sans-serif); every other face is treated as a serif and gets a
+    /// serif fallback chain.
+    public var cssFontStack: String {
+        if fontFamily == Self.ao3FontName {
+            return "'Lucida Grande', 'Lucida Sans Unicode', 'GNU Unifont', Verdana, Helvetica, sans-serif"
+        }
+        return "\"\(fontFamily)\", Georgia, \"Times New Roman\", serif"
+    }
+
     /// The reader stylesheet, inlined into the generated document's `<head>`. Numeric values
     /// are emitted verbatim so tests can pin them.
     public var injectedCSS: String {
@@ -68,7 +86,7 @@ public struct ReaderSettings: Sendable, Equatable, Codable {
         :root { color-scheme: \(theme == .sepia ? "light" : "dark"); }
         html, body { background: \(p.bg); color: \(p.fg); margin: 0; }
         body {
-          font-family: "\(fontFamily)", Georgia, "Times New Roman", serif;
+          font-family: \(cssFontStack);
           font-size: \(pct)%;
           line-height: \(lineSpacing);
         }

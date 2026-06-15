@@ -797,6 +797,10 @@ check("fontScale clamps high", clamped.fontScale == ReaderSettings.fontScaleRang
 check("lineSpacing clamps low", clamped.lineSpacing == ReaderSettings.lineSpacingRange.lowerBound)
 check("CSS encodes theme + font %", clamped.injectedCSS.contains("theme: sepia") && clamped.injectedCSS.contains("200%"))
 check("CSS styles reader sections", clamped.injectedCSS.contains("section.ao3-chapter"))
+check("CSS quotes named serif face", clamped.injectedCSS.contains("\"Palatino\", Georgia") && clamped.injectedCSS.contains("serif;"))
+let ao3Font = ReaderSettings(fontFamily: ReaderSettings.ao3FontName)
+check("CSS emits AO3 sans stack", ao3Font.injectedCSS.contains("'Lucida Grande'") && ao3Font.injectedCSS.contains("sans-serif;") && !ao3Font.injectedCSS.contains("\"AO3\""))
+check("AO3 is offered in font catalog", ReaderSettings.availableFonts.contains(ReaderSettings.ao3FontName))
 check("CSS round-trips Codable", (try? JSONDecoder().decode(ReaderSettings.self, from: JSONEncoder().encode(clamped))) == clamped)
 
 print("Store — reading position")
