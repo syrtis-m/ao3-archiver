@@ -33,6 +33,7 @@ computer. Your login is stored in the Mac's Keychain and is only ever sent to AO
 > AO3 doesn't host their files — but they're still listed so you have the record.
 
 <img width="1408" height="881" alt="image" src="https://github.com/user-attachments/assets/83c3d664-75ac-46ab-82a9-c1a4d80e9052" />
+<img width="2306" height="1566" alt="image" src="https://github.com/user-attachments/assets/d1f05963-65eb-4354-ba29-dbfac3be36ac" />
 
 
 ---
