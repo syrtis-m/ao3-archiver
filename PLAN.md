@@ -38,15 +38,7 @@ offline, snappily. You **sync, browse, and read entirely from the GUI**, no term
   remote refs / scripts stripped by `EpubSanitizer`; whole-work sanitize runs **off the main
   thread** with a spinner and caches results. See [ARCHITECTURE.md §10](ARCHITECTURE.md#10-the-in-app-reader-v12).
 
-**V1 (the foundation):**
-- Polite, resumable sync engine + SQLite/FTS5 store (idempotent, archive-state-preserving).
-- The dark Liquid Glass gallery with full filter parity — every facet the bookmarks listing
-  exposes, tri-state include/exclude, numeric + date ranges, derived/bookmark filters, saved
-  presets — all in-memory and memoized.
-- A real, double-clickable `.app` with in-app resumable sync (live progress, rate-limit banner,
-  index-only by default with per-work download on demand).
-
-**V1.1 (this release) — performance & polish:**
+**V1.1 — performance & polish:**
 - **Scaled to 20k bookmarks.** Stored search haystack, debounced search, precomputed sort keys,
   allocation-free matching, and **parallelized facet passes** cut a full recompute ~2.6×
   (349ms → 135ms debug at 20k), guarded by a regression budget in the scale test. See
@@ -55,6 +47,14 @@ offline, snappily. You **sync, browse, and read entirely from the GUI**, no term
   collapses, instead of panes clipping; tag pills truncate inside their card.
 - **Coalesced live sync reloads** so a long sync doesn't hitch the UI on every page.
 - **Bug fix:** a work re-bookmarked on AO3 (new bookmark id, same item) no longer aborts a sync.
+
+**V1 - the foundation:**
+- Polite, resumable sync engine + SQLite/FTS5 store (idempotent, archive-state-preserving).
+- The dark Liquid Glass gallery with full filter parity — every facet the bookmarks listing
+  exposes, tri-state include/exclude, numeric + date ranges, derived/bookmark filters, saved
+  presets — all in-memory and memoized.
+- A real, double-clickable `.app` with in-app resumable sync (live progress, rate-limit banner,
+  index-only by default with per-work download on demand).
 
 ---
 
