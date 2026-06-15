@@ -129,7 +129,8 @@ swift run selftest             # fast headless checks (no Xcode needed)
 swift test                     # full test suite (needs Xcode)
 
 ./Packaging/make-icon.sh       # once: render the app icon
-./Packaging/make-app.sh && open "build/AO3 Archiver.app" # final build & launch
+./Packaging/make-app.sh 
+open "build/AO3 Archiver.app" # final build & launch
 ```
 
 There's also a command-line backup tool (`swift run ao3archiver`) for headless/scripted syncs,
