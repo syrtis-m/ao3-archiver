@@ -37,6 +37,15 @@ public struct AO3Config: Sendable {
         let who = (user?.isEmpty == false) ? "AO3 user: \(user!); " : ""
         return "ao3-archiver/0.1 (personal bookmark backup; \(who)contact \(contact))"
     }
+
+    /// Percent-encode a value (e.g. an AO3 username) for safe interpolation into a URL path.
+    /// Encodes everything outside AO3's handle charset — `/ ? # &` and whitespace included —
+    /// so a stray character can't alter the route or inject a query parameter.
+    public static func encodePathComponent(_ s: String) -> String {
+        var allowed = CharacterSet.alphanumerics
+        allowed.insert(charactersIn: "_-")
+        return s.addingPercentEncoding(withAllowedCharacters: allowed) ?? ""
+    }
 }
 
 public enum AO3Error: Error, CustomStringConvertible {
@@ -44,6 +53,7 @@ public enum AO3Error: Error, CustomStringConvertible {
     case rateLimited(retryAfter: TimeInterval)
     case requiresLogin
     case badURL(String)
+    case disallowedHost(String)
     case network(String)
 
     public var description: String {
@@ -52,6 +62,7 @@ public enum AO3Error: Error, CustomStringConvertible {
         case .rateLimited(let s):       return "rate limited (retry after \(Int(s))s, exhausted retries)"
         case .requiresLogin:            return "this content requires a logged-in session cookie"
         case .badURL(let u):            return "bad URL: \(u)"
+        case .disallowedHost(let h):    return "refused request to non-AO3 host: \(h)"
         case .network(let m):           return "network error: \(m)"
         }
     }
@@ -62,6 +73,10 @@ public enum AO3Error: Error, CustomStringConvertible {
 /// URLSession strips a manually-set `Cookie` header on cross-host redirects — which would
 /// silently break downloads of *restricted* works (the public ones don't need the cookie,
 /// so the failure would hide until a logged-in user hit a locked work).
+///
+/// It also **refuses any redirect that leaves AO3** — a hostile work page could otherwise
+/// 30x us (or supply an off-site download href) toward an attacker host and we'd hand over
+/// the session cookie / honest User-Agent. Only AO3's own hosts are followed.
 final class RedirectCookieReattacher: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     let cookie: String?
     init(cookie: String?) { self.cookie = cookie }
@@ -73,9 +88,12 @@ final class RedirectCookieReattacher: NSObject, URLSessionTaskDelegate, @uncheck
         newRequest request: URLRequest,
         completionHandler: @escaping (URLRequest?) -> Void
     ) {
+        guard AO3Client.isAO3Host(request.url?.host) else {
+            completionHandler(nil)   // cancel the redirect: it points off AO3
+            return
+        }
         guard let cookie, !cookie.isEmpty,
-              request.value(forHTTPHeaderField: "Cookie") == nil,
-              request.url?.host?.hasSuffix("archiveofourown.org") == true
+              request.value(forHTTPHeaderField: "Cookie") == nil
         else { completionHandler(request); return }
         var req = request
         req.setValue("_otwarchive_session=\(cookie)", forHTTPHeaderField: "Cookie")
@@ -115,6 +133,16 @@ public final class AO3Client: @unchecked Sendable {
             delegateQueue: nil)
     }
 
+    /// True only for AO3's own hosts — the apex and its subdomains (e.g.
+    /// `download.archiveofourown.org`). Used to gate cookie/User-Agent attachment and to
+    /// reject SSRF: a bare `hasSuffix("archiveofourown.org")` would also match a lookalike
+    /// like `evil-archiveofourown.org`, so the apex is matched exactly and subdomains require
+    /// the leading dot.
+    public static func isAO3Host(_ host: String?) -> Bool {
+        guard let host = host?.lowercased() else { return false }
+        return host == "archiveofourown.org" || host.hasSuffix(".archiveofourown.org")
+    }
+
     // MARK: - Public API
 
     /// GET a path (e.g. "/users/foo/bookmarks?page=1") and return decoded HTML.
@@ -138,6 +166,13 @@ public final class AO3Client: @unchecked Sendable {
     // MARK: - Request engine (retry + backoff)
 
     private func perform(_ request: URLRequest, attempt: Int = 0) async throws -> (Data, HTTPURLResponse) {
+        // Never let the session cookie (or the username-bearing User-Agent) leave AO3, and
+        // never fetch off-site: an absolute href resolves against no base, so a hostile work
+        // page could otherwise point us at an attacker host. Refuse anything not on AO3.
+        guard Self.isAO3Host(request.url?.host) else {
+            throw AO3Error.disallowedHost(request.url?.host ?? request.url?.absoluteString ?? "?")
+        }
+
         await limiter.waitTurn()
 
         var req = request

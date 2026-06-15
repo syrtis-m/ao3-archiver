@@ -164,6 +164,43 @@ import Foundation
         #expect(!WorkDownloader.looksLikeEPUB(Data("<html".utf8)))
         #expect(!WorkDownloader.looksLikeEPUB(Data()))
     }
+
+    @Test func ignoresAbsoluteOffSiteDownloadLink() throws {
+        // No legit `li.download` menu; the anchored `^=/downloads/` fallback must skip an
+        // attacker-supplied absolute href so we never form an off-AO3 request.
+        let html = #"<p>locked</p><a href="https://evil.example/downloads/x.epub">grab</a>"#
+        #expect(try WorkDownloader.epubHref(fromWorkHTML: html) == nil)
+    }
+}
+
+/// Security regression tests: the cookie/SSRF host gate, username path encoding, the
+/// table-name allowlist, and canonical (non-raw-href) source paths.
+@Suite struct SecurityTests {
+    @Test func ao3HostAllowlist() {
+        #expect(AO3Client.isAO3Host("archiveofourown.org"))
+        #expect(AO3Client.isAO3Host("download.archiveofourown.org"))
+        #expect(!AO3Client.isAO3Host("evil-archiveofourown.org"))   // lookalike suffix
+        #expect(!AO3Client.isAO3Host("evil.example"))
+        #expect(!AO3Client.isAO3Host(nil))
+    }
+
+    @Test func usernamePathEncoding() {
+        #expect(AO3Config.encodePathComponent("Some_User-1") == "Some_User-1")
+        #expect(AO3Config.encodePathComponent("a/b") == "a%2Fb")
+        #expect(!AO3Config.encodePathComponent("u?page=9").contains("?"))
+    }
+
+    @Test func countRejectsUnknownTable() throws {
+        let store = try Store(inMemory: true)
+        #expect(throws: (any Error).self) { try store.count("work; DROP TABLE work") }
+        #expect(try store.count("work") == 0)
+    }
+
+    @Test func sourcePathIsCanonical() throws {
+        let html = #"<li class="work blurb group" id="work_42"><h4 class="heading"><a href="https://evil.example/works/42/chapters/9">T</a></h4></li>"#
+        let blurb = try BlurbParser.parseListing(html: html).first
+        #expect(blurb?.sourcePath == "/works/42")
+    }
 }
 
 /// Store tests run entirely offline against an in-memory DB, ingesting the same captured

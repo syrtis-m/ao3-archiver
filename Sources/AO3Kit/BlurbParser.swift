@@ -36,6 +36,17 @@ public enum BlurbParser {
         guard let (kind, itemID) = classify(href: href) else {
             return nil
         }
+        // Store a canonical, host-less path built from the validated id — never the raw href,
+        // which (from author-controlled content) could be an absolute or off-site URL that
+        // later gets concatenated onto the AO3 base and opened by the OS. `classify` only
+        // *validated* the href contained a known id; this pins what we persist/open.
+        let canonicalPath: String = {
+            switch kind {
+            case .work:     return "/works/\(itemID)"
+            case .external: return "/external_works/\(itemID)"
+            case .series:   return "/series/\(itemID)"
+            }
+        }()
 
         let title = try titleLink.text()
 
@@ -107,7 +118,7 @@ public enum BlurbParser {
 
         return WorkBlurb(
             kind: kind,
-            sourcePath: href,
+            sourcePath: canonicalPath,
             workID: workID,
             title: title,
             author: author,

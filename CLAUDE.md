@@ -33,8 +33,9 @@ fixtures) and also works under Command-Line-Tools-only toolchains, where `swift 
 
 Config is via environment variables (see README's developer section): `AO3_USERNAME`,
 `AO3_SESSION_COOKIE`, `AO3_ARCHIVE_DIR`, `AO3_MIN_INTERVAL`, `AO3_USER_AGENT`, `AO3_LIST_PATH`,
-and sync bounds `AO3_MAX_PAGES`, `AO3_MAX_DOWNLOADS`, `AO3_EXPAND_SERIES`. **Bounds default low**
-(2 pages / 3 downloads) — never crawl all pages by accident; politeness is a hard requirement.
+and sync bounds `AO3_MAX_PAGES`, `AO3_MAX_DOWNLOADS`, `AO3_EXPAND_SERIES`, `AO3_MAX_SERIES`.
+**Bounds default low** (2 pages / 3 downloads / 50 series) — never crawl all pages by accident;
+politeness is a hard requirement.
 
 ## Layout
 
@@ -69,6 +70,10 @@ Packaging/             make-app.sh, Info.plist, IconGen.swift + make-icon.sh
   the fixture + expectations together. One bad card must never abort a whole page.
 - **Honest User-Agent** (`AO3Config.defaultUserAgent`): the requester's AO3 username when known +
   contact `syrtis@sysd.info`; no forged browser UA.
+- **The cookie/UA never leave AO3.** `AO3Client.perform` refuses any request whose host isn't AO3
+  (`isAO3Host`: exact apex or `.`-prefixed subdomain — *not* a bare suffix) before forming it, the
+  redirect delegate cancels off-AO3 hops, and the EPUB-link selector is anchored to
+  `a[href^=/downloads/]`. A hostile work page must never be able to exfiltrate the session cookie.
 
 ## Invariants you must not break (full rationale in ARCHITECTURE.md)
 

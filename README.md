@@ -129,7 +129,7 @@ open "build/AO3 Archiver.app"
 
 There's also a command-line backup tool (`swift run ao3archiver`) for headless/scripted syncs,
 configured by environment variables (`AO3_USERNAME`, `AO3_SESSION_COOKIE`, `AO3_ARCHIVE_DIR`,
-`AO3_MIN_INTERVAL`, `AO3_MAX_PAGES`, `AO3_MAX_DOWNLOADS`, …). Syncs are **bounded by default** so a
+`AO3_MIN_INTERVAL`, `AO3_MAX_PAGES`, `AO3_MAX_DOWNLOADS`, `AO3_MAX_SERIES`, …). Syncs are **bounded by default** so a
 casual run never crawls a whole account by accident.
 
 If you fork this tool, please update the user-agent string logic in Sources/AO3Kit/AO3Client.swift to use your own contact information.

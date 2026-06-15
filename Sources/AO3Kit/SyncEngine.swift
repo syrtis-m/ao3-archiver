@@ -32,12 +32,18 @@ public final class SyncEngine: @unchecked Sendable {
         /// Continue the index from where the last run left off (resume-from-page) instead of
         /// restarting at page 1 — for large accounts AO3 throttles mid-index.
         public var resumeIndex: Bool
+        /// Hard cap on the number of bookmarked series fetched in one expansion pass — each
+        /// series is its own request, so without this an account with many series could issue
+        /// an unbounded number of requests in a single run (the rate limiter keeps them polite
+        /// but bounded-by-default is the contract).
+        public var maxSeries: Int
         public init(maxPages: Int = 5, maxDownloads: Int? = nil, expandSeries: Bool = true,
-                    resumeIndex: Bool = false) {
+                    resumeIndex: Bool = false, maxSeries: Int = 50) {
             self.maxPages = maxPages
             self.maxDownloads = maxDownloads
             self.expandSeries = expandSeries
             self.resumeIndex = resumeIndex
+            self.maxSeries = maxSeries
         }
     }
 
@@ -80,7 +86,7 @@ public final class SyncEngine: @unchecked Sendable {
         do {
             result = try await indexSync(listPath: listPath, options: options, onEvent: onEvent)
             if options.expandSeries {
-                result = try await expandSeries(into: result, onEvent: onEvent)
+                result = try await expandSeries(into: result, maxSeries: options.maxSeries, onEvent: onEvent)
             }
             let (downloaded, failed) = try await contentSync(limit: options.maxDownloads, onEvent: onEvent)
             result.epubsDownloaded = downloaded
@@ -264,11 +270,12 @@ public final class SyncEngine: @unchecked Sendable {
 
     // MARK: - Series expansion
 
-    /// For each bookmarked series, fetch its page, ingest the member works, and link them.
-    public func expandSeries(into base: Result,
+    /// For each bookmarked series (capped at `maxSeries`), fetch its page, ingest the member
+    /// works, and link them.
+    public func expandSeries(into base: Result, maxSeries: Int = .max,
                              onEvent: @Sendable (Event) -> Void = { _ in }) async throws -> Result {
         var result = base
-        for seriesID in try store.bookmarkedSeriesIDs() {
+        for seriesID in try store.bookmarkedSeriesIDs().prefix(maxSeries) {
             let html = try await client.getHTML(path: "/series/\(seriesID)?view_adult=true")
             let members = try BlurbParser.parseListing(html: html)
             for (i, member) in members.enumerated() where member.kind == .work {

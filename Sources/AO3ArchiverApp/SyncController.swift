@@ -73,8 +73,9 @@ final class SyncController {
         lastError = nil; rateLimit = nil; activity = []
 
         let userAgent = AO3Config.defaultUserAgent(ao3User: username)
-        let listPath = username.flatMap { $0.isEmpty ? nil : "/users/\($0)/bookmarks?page=1" }
-            ?? "/tags/Good%20Omens%20(TV)/works"   // anonymous demo when no username
+        let listPath = username.flatMap {
+            $0.isEmpty ? nil : "/users/\(AO3Config.encodePathComponent($0))/bookmarks?page=1"
+        } ?? "/tags/Good%20Omens%20(TV)/works"   // anonymous demo when no username
 
         task = Task { [weak self] in
             do {

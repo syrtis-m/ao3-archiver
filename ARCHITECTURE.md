@@ -126,6 +126,13 @@ username when known + contact `syrtis@sysd.info`, built by `AO3Config.defaultUse
 automatic following of the EPUB download redirect. It exposes
 `onRateLimit` so the UI can surface a backoff instead of looking stalled.
 
+**Host allowlist (security).** The cookie and the username-bearing User-Agent must never reach a
+non-AO3 host, and the client must never be steered off-site (SSRF). So `perform` refuses any
+request whose host isn't AO3 *before* issuing it, the redirect delegate cancels any hop that leaves
+AO3, and the EPUB-link parser is anchored to site-relative `/downloads/` paths. The host test
+(`isAO3Host`) matches the apex exactly or a `.`-prefixed subdomain — a bare
+`hasSuffix("archiveofourown.org")` would also match a lookalike like `evil-archiveofourown.org`.
+
 **`SyncEngine`** orchestrates a bounded, resumable run (each step committed immediately):
 
 1. **Index** — page through bookmarks, classify each card (`work`/`external` → `work`, `series`

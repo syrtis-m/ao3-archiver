@@ -23,6 +23,9 @@ enum CredentialStore {
         guard let trimmed, !trimmed.isEmpty, let data = trimmed.data(using: .utf8) else { return }
         var add = base
         add[kSecValueData as String] = data
+        // Local to this device, readable only after first unlock — never synced to iCloud
+        // Keychain and never available while the device is locked.
+        add[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
         SecItemAdd(add as CFDictionary, nil)
     }
 

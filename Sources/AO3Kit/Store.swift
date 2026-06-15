@@ -9,6 +9,15 @@ import GRDB
 /// `download_state`, …) across re-syncs: re-reading a bookmark page must never clobber a
 /// file we've already downloaded. "Needs download" is computed by query, not trusted from
 /// a stored flag, so it stays correct even if a sync is interrupted.
+public enum StoreError: Error, CustomStringConvertible {
+    case unknownTable(String)
+    public var description: String {
+        switch self {
+        case .unknownTable(let t): return "unknown table: \(t)"
+        }
+    }
+}
+
 public final class Store: @unchecked Sendable {
     let dbQueue: DatabaseQueue
 
@@ -456,8 +465,19 @@ public final class Store: @unchecked Sendable {
 
     // MARK: - Counts (reporting / tests)
 
+    /// Tables `count(_:)` will query. SQLite can't bind an identifier, so the name is
+    /// interpolated — restrict it to a known set so this can never become an injection sink,
+    /// even if a future caller passes a non-literal.
+    static let countableTables: Set<String> = [
+        "work", "series", "series_work", "bookmark", "bookmark_tag",
+        "tag", "work_tag", "work_fts", "filter_preset", "meta", "sync_run",
+    ]
+
     public func count(_ table: String) throws -> Int {
-        try dbQueue.read { db in try Int.fetchOne(db, sql: "SELECT count(*) FROM \(table)") ?? 0 }
+        guard Self.countableTables.contains(table) else {
+            throw StoreError.unknownTable(table)
+        }
+        return try dbQueue.read { db in try Int.fetchOne(db, sql: "SELECT count(*) FROM \(table)") ?? 0 }
     }
 
     /// Full-text search over title/author/summary/tags/notes; returns matching work ids.

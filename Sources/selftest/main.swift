@@ -622,9 +622,37 @@ do {
     check("nil when no menu", try WorkDownloader.epubHref(fromWorkHTML: "<p>locked</p>") == nil)
     check("epub magic true", WorkDownloader.looksLikeEPUB(Data([0x50, 0x4B, 0x03, 0x04])))
     check("epub magic false", !WorkDownloader.looksLikeEPUB(Data("<htm".utf8)))
+    // Security: a hostile work page with no real download menu must NOT yield an off-site
+    // absolute href — the anchored `^=/downloads/` selector skips it.
+    let evilMenu = #"<p>locked</p><a href="https://evil.example/downloads/x.epub">grab</a>"#
+    check("ignores absolute off-site /downloads/ link", try WorkDownloader.epubHref(fromWorkHTML: evilMenu) == nil)
 } catch {
     FileHandle.standardError.write(Data("threw: \(error)\n".utf8))
     exit(1)
+}
+
+// Security: host allowlist (cookie / User-Agent / SSRF gate).
+check("isAO3Host accepts apex", AO3Client.isAO3Host("archiveofourown.org"))
+check("isAO3Host accepts subdomain", AO3Client.isAO3Host("download.archiveofourown.org"))
+check("isAO3Host rejects lookalike suffix", !AO3Client.isAO3Host("evil-archiveofourown.org"))
+check("isAO3Host rejects foreign host", !AO3Client.isAO3Host("evil.example"))
+check("isAO3Host rejects nil", !AO3Client.isAO3Host(nil))
+
+// Security: username path-component encoding (no route/query injection).
+check("encodePathComponent passes a clean handle", AO3Config.encodePathComponent("Some_User-1") == "Some_User-1")
+check("encodePathComponent escapes a slash", AO3Config.encodePathComponent("a/b") == "a%2Fb")
+check("encodePathComponent escapes a query injection", !AO3Config.encodePathComponent("u?page=9").contains("?"))
+
+// Security: count(_:) rejects an unknown table name (interpolated identifier).
+if let secStore = try? Store(inMemory: true) {
+    check("count rejects an unknown table", (try? secStore.count("work; DROP TABLE work")) == nil)
+    check("count still works for a known table", (try? secStore.count("work")) == 0)
+}
+
+// Security: parsed sourcePath is canonical (built from the validated id, not the raw href).
+let canonHTML = #"<li class="work blurb group" id="work_42"><h4 class="heading"><a href="https://evil.example/works/42/chapters/9">T</a></h4></li>"#
+if let canon = try? BlurbParser.parseListing(html: canonHTML).first {
+    check("sourcePath is canonical /works/<id>", canon.sourcePath == "/works/42")
 }
 
 print("")

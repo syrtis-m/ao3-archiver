@@ -35,12 +35,13 @@ let interval   = env("AO3_MIN_INTERVAL").flatMap(Double.init) ?? 4
 let maxPages   = env("AO3_MAX_PAGES").flatMap(Int.init) ?? 2
 let maxDownloads = env("AO3_MAX_DOWNLOADS").flatMap(Int.init) ?? 3
 let expandSeries = (env("AO3_EXPAND_SERIES") ?? "1") != "0"
+let maxSeries  = env("AO3_MAX_SERIES").flatMap(Int.init) ?? 50
 
 // List source: explicit override > the user's bookmarks > a public demo listing.
 let demoPath = "/tags/Good%20Omens%20(TV)/works"
 let listPath: String = {
     if let override = env("AO3_LIST_PATH") { return override }
-    if let username { return "/users/\(username)/bookmarks?page=1" }
+    if let username { return "/users/\(AO3Config.encodePathComponent(username))/bookmarks?page=1" }
     return demoPath
 }()
 
@@ -68,7 +69,7 @@ do {
     let store = try Store(path: files.databaseURL.path)
     let engine = SyncEngine(client: client, store: store, files: files)
     let options = SyncEngine.Options(maxPages: maxPages, maxDownloads: maxDownloads,
-                                     expandSeries: expandSeries)
+                                     expandSeries: expandSeries, maxSeries: maxSeries)
 
     stderr("→ syncing…")
     let result = try await engine.run(listPath: listPath, options: options) { event in
