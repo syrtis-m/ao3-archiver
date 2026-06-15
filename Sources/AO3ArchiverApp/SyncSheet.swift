@@ -62,6 +62,15 @@ struct SyncSheet: View {
                 .font(.caption).foregroundStyle(.secondary)
             }
 
+            if !controller.isRunning {
+                Text("""
+                    Quick sync catches up incrementally: it adds new bookmarks and re-downloads \
+                    already-saved works that gained chapters since your last sync — a few pages \
+                    at most, so it stays gentle on AO3. Full sync walks your entire account.
+                    """)
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+
             HStack {
                 Button("Close") { dismiss() }
                 Spacer()
@@ -69,7 +78,7 @@ struct SyncSheet: View {
                     Button("Cancel", role: .cancel) { controller.cancel() }
                 } else {
                     Button("Quick sync") { startSync(quick: true) }
-                        .help("Grab the latest 3 pages of bookmarks (fast catch-up).")
+                        .help("Add new bookmarks and re-download saved works that gained chapters.")
                     Button("Full sync") { startSync(quick: false) }.keyboardShortcut(.defaultAction)
                 }
             }
@@ -154,7 +163,8 @@ struct SyncSheet: View {
         }
     }
 
-    /// Quick = latest 3 pages, index-only, no resume (fast catch-up for new bookmarks).
+    /// Quick = bounded incremental catch-up: index new bookmarks AND re-download already-saved
+    /// works whose chapters changed, within a small page/query budget (gentle on AO3).
     /// Full = the whole account, resumable, with the download toggle.
     private func startSync(quick: Bool) {
         CredentialStore.set(username, account: CredentialStore.usernameAccount)
@@ -165,8 +175,9 @@ struct SyncSheet: View {
                          archiveRoot: archiveRoot,
                          interval: interval,
                          downloadEPUBs: quick ? false : downloadEPUBs,
-                         maxPages: quick ? 3 : 999,
+                         maxPages: quick ? 5 : 999,
                          resumeIndex: quick ? false : true,
+                         incremental: quick,
                          reload: reload)
     }
 }

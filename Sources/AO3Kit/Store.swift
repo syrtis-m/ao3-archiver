@@ -376,6 +376,39 @@ public final class Store: @unchecked Sendable {
         }
     }
 
+    /// Works we've **already downloaded** whose `updated_at` has since advanced past the
+    /// EPUB we hold (a new chapter / revision). The incremental ("Quick") sync re-downloads
+    /// exactly these — deliberately narrower than `worksNeedingDownload`, which also includes
+    /// the never-downloaded backlog. Keeping the two separate is what lets a Quick sync stay
+    /// cheap: it refreshes stale files without dragging the whole un-downloaded library in.
+    public func worksNeedingRedownload(limit: Int? = nil) throws -> [PendingWork] {
+        try dbQueue.read { db in
+            let lim = limit.map { " LIMIT \($0)" } ?? ""
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT id, title, updated_at FROM work
+                WHERE kind = 'work'
+                  AND epub_path IS NOT NULL
+                  AND updated_at IS NOT NULL
+                  AND (epub_updated_at IS NULL OR updated_at > epub_updated_at)
+                ORDER BY id\(lim)
+                """)
+            return rows.map { PendingWork(id: $0["id"], title: $0["title"], updatedAt: $0["updated_at"]) }
+        }
+    }
+
+    /// Of the given AO3 bookmark ids, the subset already recorded — so the incremental index
+    /// can tell which cards on a listing page are new. Empty input → empty set (no query).
+    public func knownBookmarkIDs(among ids: [Int]) throws -> Set<Int> {
+        guard !ids.isEmpty else { return [] }
+        return try dbQueue.read { db in
+            let qs = databaseQuestionMarks(count: ids.count)
+            let rows = try Int.fetchAll(db,
+                sql: "SELECT bookmark_id FROM bookmark WHERE bookmark_id IN (\(qs))",
+                arguments: StatementArguments(ids))
+            return Set(rows)
+        }
+    }
+
     /// IDs of all bookmarked series — the work list for series expansion.
     public func bookmarkedSeriesIDs() throws -> [Int] {
         try dbQueue.read { db in

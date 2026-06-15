@@ -170,13 +170,29 @@ do {
                                  updatedAt: first.updatedAt)
         check("after one download, 18 remain", try store.worksNeedingDownload().count == 18)
 
+        // Before any update advances, nothing we hold needs RE-downloading.
+        check("re-download queue empty until an update lands",
+              try store.worksNeedingRedownload().isEmpty)
+
         // Stale detection: AO3 shows a newer updated_at → it re-enters the queue.
         if var staleCard = cards.first(where: { $0.workID == first.id }) {
             staleCard.updatedAt = (first.updatedAt ?? 0) + 1
             try store.upsertWork(staleCard)
             check("a newer updated_at marks the work stale (back to 19)",
                   try store.worksNeedingDownload().count == 19)
+            // The same advance is exactly what the incremental sync re-downloads: this work
+            // (already saved, now newer) appears; the 18 never-downloaded works do NOT.
+            check("re-download queue is the one updated-and-saved work",
+                  try store.worksNeedingRedownload().map(\.id) == [first.id])
         }
+
+        // knownBookmarkIDs distinguishes recorded bookmarks from new ones.
+        let someBID = cards.compactMap { $0.bookmarkID }.first!
+        check("knownBookmarkIDs finds a recorded bookmark",
+              try store.knownBookmarkIDs(among: [someBID]).contains(someBID))
+        check("knownBookmarkIDs excludes an unseen id",
+              try !store.knownBookmarkIDs(among: [someBID + 999_999]).contains(someBID + 999_999))
+        check("knownBookmarkIDs on empty input does no query", try store.knownBookmarkIDs(among: []).isEmpty)
 
         // A failed download must be RETRYABLE (anon run → add cookie → re-run picks it up):
         // marking failed records the error but must NOT remove it from the download queue.
@@ -570,6 +586,30 @@ do {
     check("pageNumber parses page=16",
           SyncEngine.pageNumber(inPath: "/users/x/bookmarks?view_adult=true&page=16") == 16)
     check("pageNumber nil without page", SyncEngine.pageNumber(inPath: "/users/x/bookmarks") == nil)
+
+    print("SyncEngine — incremental stop conditions")
+    // New-bookmarks pass: stop once every bookmark on the page is already known.
+    check("noNewBookmarks: all known → stop",
+          SyncEngine.noNewBookmarks(pageIDs: [1, 2, 3], known: [1, 2, 3, 4]))
+    check("noNewBookmarks: one new → keep going",
+          !SyncEngine.noNewBookmarks(pageIDs: [1, 2, 9], known: [1, 2]))
+    check("noNewBookmarks: empty page → stop", SyncEngine.noNewBookmarks(pageIDs: [], known: []))
+    // Updated-works pass frontier (cards in date-updated order).
+    let recent = WorkBlurb(kind: .work, sourcePath: "/works/1", workID: 1, title: "t", author: "a", updatedAt: 200)
+    let old = WorkBlurb(kind: .work, sourcePath: "/works/2", workID: 2, title: "t", author: "a", updatedAt: 50)
+    check("reachedUpdateFrontier: no watermark → never stop (page cap only)",
+          !SyncEngine.reachedUpdateFrontier(pageCards: [old], since: nil))
+    check("reachedUpdateFrontier: a card newer than the watermark → keep going",
+          !SyncEngine.reachedUpdateFrontier(pageCards: [recent, old], since: 100))
+    check("reachedUpdateFrontier: whole page predates the watermark → stop",
+          SyncEngine.reachedUpdateFrontier(pageCards: [old], since: 100))
+    // Date-updated sort is injected into the listing path (brackets percent-encoded).
+    check("sortedByDateUpdated appends to an existing query",
+          SyncEngine.sortedByDateUpdated("/users/x/bookmarks?page=1")
+            == "/users/x/bookmarks?page=1&bookmark_search%5Bsort_column%5D=bookmarkable_date")
+    check("sortedByDateUpdated starts a query when none",
+          SyncEngine.sortedByDateUpdated("/users/x/bookmarks")
+            == "/users/x/bookmarks?bookmark_search%5Bsort_column%5D=bookmarkable_date")
 
     print("WorkDownloader")
     let menu = """

@@ -96,6 +96,121 @@ public final class SyncEngine: @unchecked Sendable {
         }
     }
 
+    // MARK: - Incremental ("Quick") sync
+
+    /// Meta key: unix ts of the last *successful* incremental sync — the frontier the
+    /// updated-works pass walks back to.
+    public static let lastIncrementalSyncKey = "last_incremental_sync_at"
+
+    /// AO3 bookmark sort column for "Date Updated" (newest revision first), vs. the default
+    /// "Date Bookmarked". Brackets are percent-encoded so `URL(string:)` accepts the path.
+    static let dateUpdatedSortQuery = "bookmark_search%5Bsort_column%5D=bookmarkable_date"
+
+    /// Append the date-updated sort to a bookmarks listing path.
+    public static func sortedByDateUpdated(_ path: String) -> String {
+        path + (path.contains("?") ? "&" : "?") + dateUpdatedSortQuery
+    }
+
+    /// A bounded, two-pass catch-up that stays cheap on AO3:
+    ///   1. **New bookmarks** — page the default (date-bookmarked) listing, stopping the moment
+    ///      a page introduces no bookmark we haven't already recorded.
+    ///   2. **Updated works** — page the *date-updated* listing, stopping once a page is entirely
+    ///      older than our last successful run; re-ingesting bumps `updated_at`, which re-arms the
+    ///      download for anything whose chapters changed.
+    ///   3. **Re-download** — fetch fresh EPUBs for the already-downloaded works that just went
+    ///      stale (only those; the never-downloaded backlog is left for a Full sync).
+    /// Both index passes are hard-capped by `options.maxPages`. The frontier watermark is the
+    /// run's *start* time, persisted only on success, so a work updated mid-run isn't skipped.
+    @discardableResult
+    public func incrementalSync(listPath: String, options: Options = Options(),
+                                onEvent: @Sendable (Event) -> Void = { _ in }) async throws -> Result {
+        let runID = try store.beginSyncRun()
+        let runStart = Int(Date().timeIntervalSince1970)
+        let watermark = (try? store.getMeta(Self.lastIncrementalSyncKey)).flatMap { $0 }.flatMap { Int($0) }
+        var result = Result()
+        do {
+            result = try await indexNewBookmarks(listPath: listPath, options: options,
+                                                 into: result, onEvent: onEvent)
+            result = try await indexUpdatedWorks(listPath: listPath, since: watermark,
+                                                 options: options, into: result, onEvent: onEvent)
+            let (downloaded, failed) = try await redownloadUpdated(limit: options.maxDownloads, onEvent: onEvent)
+            result.epubsDownloaded = downloaded
+            result.downloadsFailed = failed
+            try store.setMeta(Self.lastIncrementalSyncKey, String(runStart))   // persist frontier on success
+            try store.finishSyncRun(id: runID, pages: result.pagesScanned, worksSeen: result.works,
+                                    downloaded: downloaded, status: "ok", message: nil)
+            return result
+        } catch {
+            try? store.finishSyncRun(id: runID, pages: result.pagesScanned, worksSeen: result.works,
+                                     downloaded: result.epubsDownloaded, status: "error",
+                                     message: String(describing: error))
+            throw error
+        }
+    }
+
+    /// Pass 1: page the default (date-bookmarked) listing, stopping once a page adds nothing new.
+    public func indexNewBookmarks(listPath: String, options: Options, into base: Result,
+                                  onEvent: @Sendable (Event) -> Void = { _ in }) async throws -> Result {
+        var result = base
+        var nextPath: String? = listPath
+        var total: Int?
+        var pages = 0
+        while let path = nextPath, pages < options.maxPages {
+            let html = try await client.getHTML(path: path)
+            if total == nil { total = try BlurbParser.lastPageNumber(html: html) }
+            let cards = try BlurbParser.parseListing(html: html)
+            let ids = cards.compactMap { $0.bookmarkID }
+            let known = try store.knownBookmarkIDs(among: ids)
+            for card in cards { try ingest(card) }
+            pages += 1
+            let absPage = Self.pageNumber(inPath: path) ?? pages
+            result.pagesScanned = max(result.pagesScanned, absPage)
+            result.cardsSeen += cards.count
+            result.works += cards.filter { $0.kind == .work }.count
+            result.external += cards.filter { $0.kind == .external }.count
+            result.series += cards.filter { $0.kind == .series }.count
+            onEvent(.page(absPage, total: total, cards: cards.count))
+            if Self.noNewBookmarks(pageIDs: ids, known: known) { break }   // reached known territory
+            nextPath = try BlurbParser.nextPagePath(html: html)
+        }
+        return result
+    }
+
+    /// Pass 2: page the date-updated listing, ingesting cards (which re-arms downloads for any
+    /// whose `updated_at` advanced), stopping once a whole page predates the last run.
+    public func indexUpdatedWorks(listPath: String, since watermark: Int?, options: Options,
+                                  into base: Result,
+                                  onEvent: @Sendable (Event) -> Void = { _ in }) async throws -> Result {
+        var result = base
+        var nextPath: String? = Self.sortedByDateUpdated(listPath)
+        var pages = 0
+        while let path = nextPath, pages < options.maxPages {
+            let html = try await client.getHTML(path: path)
+            let cards = try BlurbParser.parseListing(html: html)
+            for card in cards { try ingest(card) }
+            pages += 1
+            let absPage = Self.pageNumber(inPath: path) ?? pages
+            result.pagesScanned = max(result.pagesScanned, absPage)
+            onEvent(.message("Checked \(cards.count) recently-updated bookmarks"))
+            if Self.reachedUpdateFrontier(pageCards: cards, since: watermark) { break }
+            nextPath = try BlurbParser.nextPagePath(html: html)
+        }
+        return result
+    }
+
+    /// Stop the new-bookmarks pass when every bookmark on the page is already recorded (in
+    /// date-bookmarked order, new bookmarks cluster at the top, so this means we've caught up).
+    public static func noNewBookmarks(pageIDs: [Int], known: Set<Int>) -> Bool {
+        pageIDs.allSatisfy { known.contains($0) }
+    }
+
+    /// Stop the updated-works pass when the whole page predates our last successful run. With no
+    /// watermark (first ever run) we never stop early — the page cap is the only bound.
+    public static func reachedUpdateFrontier(pageCards: [WorkBlurb], since watermark: Int?) -> Bool {
+        guard let watermark else { return false }
+        return pageCards.allSatisfy { ($0.updatedAt ?? 0) < watermark }
+    }
+
     // MARK: - Index sync (paginated)
 
     /// Page through the listing, ingesting cards, until the "Next" link disappears or
@@ -170,11 +285,24 @@ public final class SyncEngine: @unchecked Sendable {
 
     // MARK: - Content sync (download queue)
 
-    /// Download EPUBs for every work that needs one, committing each immediately.
-    /// Returns (downloaded, failed).
+    /// Download EPUBs for every work that needs one (the full backlog), committing each
+    /// immediately. Returns (downloaded, failed).
     public func contentSync(limit: Int?,
                             onEvent: @Sendable (Event) -> Void = { _ in }) async throws -> (Int, Int) {
-        let pending = try store.worksNeedingDownload(limit: limit)
+        try await download(store.worksNeedingDownload(limit: limit), onEvent: onEvent)
+    }
+
+    /// Re-download only works we already hold whose `updated_at` advanced (a new chapter /
+    /// revision). The download cap applies *here* — it never gets eaten by the never-downloaded
+    /// backlog, so a Quick sync reliably refreshes stale files within its query budget.
+    public func redownloadUpdated(limit: Int?,
+                                  onEvent: @Sendable (Event) -> Void = { _ in }) async throws -> (Int, Int) {
+        try await download(store.worksNeedingRedownload(limit: limit), onEvent: onEvent)
+    }
+
+    /// Shared download loop for a pre-computed pending list.
+    private func download(_ pending: [Store.PendingWork],
+                          onEvent: @Sendable (Event) -> Void) async throws -> (Int, Int) {
         var downloaded = 0, failed = 0
         for work in pending {
             do {

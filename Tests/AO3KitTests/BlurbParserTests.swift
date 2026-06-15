@@ -213,11 +213,45 @@ import Foundation
         let first = try #require(try store.worksNeedingDownload().first)
         try store.markDownloaded(workID: first.id, epubPath: "works/\(first.id).epub", updatedAt: first.updatedAt)
         #expect(try store.worksNeedingDownload().count == 18)
+        #expect(try store.worksNeedingRedownload().isEmpty)   // nothing we hold is stale yet
 
         var stale = try #require(cards.first { $0.workID == first.id })
         stale.updatedAt = (first.updatedAt ?? 0) + 1     // AO3 shows a newer revision
         try store.upsertWork(stale)
         #expect(try store.worksNeedingDownload().count == 19)
+        // The incremental sync re-downloads exactly the saved-but-now-stale work — not the
+        // 18 never-downloaded works in the backlog.
+        #expect(try store.worksNeedingRedownload().map(\.id) == [first.id])
+    }
+
+    @Test func knownBookmarkIDsDistinguishesNew() throws {
+        let cards = try BlurbParser.parseListing(html: fixture("bookmarks_page"))
+        let store = try Store(inMemory: true)
+        try ingest(store, cards)
+        let bid = try #require(cards.compactMap { $0.bookmarkID }.first)
+        #expect(try store.knownBookmarkIDs(among: [bid]).contains(bid))
+        #expect(try !store.knownBookmarkIDs(among: [bid + 999_999]).contains(bid + 999_999))
+        #expect(try store.knownBookmarkIDs(among: []).isEmpty)
+    }
+
+    @Test func incrementalStopConditions() {
+        // New-bookmarks pass: stop once the page adds nothing we don't already have.
+        #expect(SyncEngine.noNewBookmarks(pageIDs: [1, 2, 3], known: [1, 2, 3, 4]))
+        #expect(!SyncEngine.noNewBookmarks(pageIDs: [1, 2, 9], known: [1, 2]))
+        #expect(SyncEngine.noNewBookmarks(pageIDs: [], known: []))
+
+        // Updated-works pass frontier (cards arrive in date-updated order).
+        let recent = WorkBlurb(kind: .work, sourcePath: "/works/1", workID: 1, title: "t", author: "a", updatedAt: 200)
+        let old = WorkBlurb(kind: .work, sourcePath: "/works/2", workID: 2, title: "t", author: "a", updatedAt: 50)
+        #expect(!SyncEngine.reachedUpdateFrontier(pageCards: [old], since: nil))        // no watermark → page cap only
+        #expect(!SyncEngine.reachedUpdateFrontier(pageCards: [recent, old], since: 100)) // a fresh card → keep going
+        #expect(SyncEngine.reachedUpdateFrontier(pageCards: [old], since: 100))          // all stale → stop
+
+        // Date-updated sort injected into the listing path (brackets percent-encoded).
+        #expect(SyncEngine.sortedByDateUpdated("/users/x/bookmarks?page=1")
+                == "/users/x/bookmarks?page=1&bookmark_search%5Bsort_column%5D=bookmarkable_date")
+        #expect(SyncEngine.sortedByDateUpdated("/users/x/bookmarks")
+                == "/users/x/bookmarks?bookmark_search%5Bsort_column%5D=bookmarkable_date")
     }
 
     @Test func failedDownloadIsRetryableAcrossRuns() throws {

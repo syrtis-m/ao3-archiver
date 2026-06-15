@@ -64,7 +64,8 @@ final class SyncController {
     /// the seconds between requests (politeness; raise it if AO3 throttles you).
     func start(store: Store, username: String?, cookie: String?, archiveRoot: URL,
                interval: TimeInterval, downloadEPUBs: Bool, maxPages: Int = 999,
-               resumeIndex: Bool = true, reload: @escaping () -> Void) {
+               resumeIndex: Bool = true, incremental: Bool = false,
+               reload: @escaping () -> Void) {
         guard phase != .running else { return }
         self.reload = reload
         phase = .running; statusLine = downloadEPUBs ? "Starting…" : "Building bookmark list…"
@@ -88,12 +89,23 @@ final class SyncController {
                 let files = FileStore(root: archiveRoot)
                 try files.ensureDirectories()
                 let engine = SyncEngine(client: client, store: store, files: files)
-                let options = SyncEngine.Options(maxPages: maxPages,
-                                                 maxDownloads: downloadEPUBs ? 50 : 0,
-                                                 expandSeries: downloadEPUBs,
-                                                 resumeIndex: resumeIndex)
-                let result = try await engine.run(listPath: listPath, options: options) { event in
+                let onEvent: @Sendable (SyncEngine.Event) -> Void = { event in
                     Task { @MainActor in self?.apply(event) }
+                }
+                let result: SyncEngine.Result
+                if incremental {
+                    // Quick sync: bounded two-pass catch-up. expandSeries OFF (one query per
+                    // series defeats "limited queries"); downloads are re-downloads only, capped
+                    // to keep the run cheap — any overflow drains on the next quick sync.
+                    let options = SyncEngine.Options(maxPages: maxPages, maxDownloads: 25,
+                                                     expandSeries: false, resumeIndex: false)
+                    result = try await engine.incrementalSync(listPath: listPath, options: options, onEvent: onEvent)
+                } else {
+                    let options = SyncEngine.Options(maxPages: maxPages,
+                                                     maxDownloads: downloadEPUBs ? 50 : 0,
+                                                     expandSeries: downloadEPUBs,
+                                                     resumeIndex: resumeIndex)
+                    result = try await engine.run(listPath: listPath, options: options, onEvent: onEvent)
                 }
                 self?.finish(result: result)
             } catch is CancellationError {
