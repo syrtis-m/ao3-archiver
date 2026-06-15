@@ -38,6 +38,22 @@ public struct AO3Config: Sendable {
         return "ao3-archiver/0.1 (personal bookmark backup; \(who)contact \(contact))"
     }
 
+    /// Normalize a pasted `_otwarchive_session` cookie down to the bare value the `Cookie`
+    /// header expects. People paste the whole `name=value` pair, trailing `; other=cookie`
+    /// junk, or stray whitespace/newlines from copying — any of which would be sent as a
+    /// malformed header and silently treated as anonymous (→ `requiresLogin` on locked works).
+    /// Returns nil for empty/whitespace-only input (i.e. "anonymous").
+    public static func sanitizeCookie(_ raw: String?) -> String? {
+        guard var s = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !s.isEmpty else {
+            return nil
+        }
+        let prefix = "_otwarchive_session="
+        if s.hasPrefix(prefix) { s.removeFirst(prefix.count) }   // pasted the whole pair
+        if let semi = s.firstIndex(of: ";") { s = String(s[..<semi]) }  // trailing cookies
+        s = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        return s.isEmpty ? nil : s
+    }
+
     /// Percent-encode a value (e.g. an AO3 username) for safe interpolation into a URL path.
     /// Encodes everything outside AO3's handle charset — `/ ? # &` and whitespace included —
     /// so a stray character can't alter the route or inject a query parameter.
@@ -129,7 +145,7 @@ public final class AO3Client: @unchecked Sendable {
         // re-attaches the cookie across that cross-host hop (see RedirectCookieReattacher).
         self.session = URLSession(
             configuration: cfg,
-            delegate: RedirectCookieReattacher(cookie: config.sessionCookie),
+            delegate: RedirectCookieReattacher(cookie: AO3Config.sanitizeCookie(config.sessionCookie)),
             delegateQueue: nil)
     }
 
@@ -176,7 +192,7 @@ public final class AO3Client: @unchecked Sendable {
         await limiter.waitTurn()
 
         var req = request
-        if let cookie = config.sessionCookie, !cookie.isEmpty {
+        if let cookie = AO3Config.sanitizeCookie(config.sessionCookie) {
             req.setValue("_otwarchive_session=\(cookie)", forHTTPHeaderField: "Cookie")
         }
 

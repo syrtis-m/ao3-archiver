@@ -167,11 +167,13 @@ struct SyncSheet: View {
     /// works whose chapters changed, within a small page/query budget (gentle on AO3).
     /// Full = the whole account, resumable, with the download toggle.
     private func startSync(quick: Bool) {
+        let cleanCookie = AO3Config.sanitizeCookie(cookie)
+        cookie = cleanCookie ?? ""          // reflect the normalized value back into the field
         CredentialStore.set(username, account: CredentialStore.usernameAccount)
         CredentialStore.set(cookie, account: CredentialStore.cookieAccount)
         controller.start(store: store,
                          username: username.isEmpty ? nil : username,
-                         cookie: cookie.isEmpty ? nil : cookie,
+                         cookie: cleanCookie,
                          archiveRoot: archiveRoot,
                          interval: interval,
                          downloadEPUBs: quick ? false : downloadEPUBs,

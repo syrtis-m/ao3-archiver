@@ -190,6 +190,16 @@ import Foundation
         #expect(!AO3Config.encodePathComponent("u?page=9").contains("?"))
     }
 
+    @Test func cookieSanitization() {
+        #expect(AO3Config.sanitizeCookie("abc123") == "abc123")
+        #expect(AO3Config.sanitizeCookie("  abc123\n") == "abc123")
+        #expect(AO3Config.sanitizeCookie("_otwarchive_session=abc123") == "abc123")
+        #expect(AO3Config.sanitizeCookie("abc123; other=x") == "abc123")
+        #expect(AO3Config.sanitizeCookie(" _otwarchive_session=abc123; other=x ") == "abc123")
+        #expect(AO3Config.sanitizeCookie("   ") == nil)
+        #expect(AO3Config.sanitizeCookie(nil) == nil)
+    }
+
     @Test func countRejectsUnknownTable() throws {
         let store = try Store(inMemory: true)
         #expect(throws: (any Error).self) { try store.count("work; DROP TABLE work") }

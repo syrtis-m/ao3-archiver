@@ -644,6 +644,16 @@ check("encodePathComponent passes a clean handle", AO3Config.encodePathComponent
 check("encodePathComponent escapes a slash", AO3Config.encodePathComponent("a/b") == "a%2Fb")
 check("encodePathComponent escapes a query injection", !AO3Config.encodePathComponent("u?page=9").contains("?"))
 
+// Cookie normalization: bare value passes; pasted pair/whitespace/extra cookies get stripped.
+check("sanitizeCookie keeps a bare value", AO3Config.sanitizeCookie("abc123") == "abc123")
+check("sanitizeCookie trims whitespace/newlines", AO3Config.sanitizeCookie("  abc123\n") == "abc123")
+check("sanitizeCookie strips the name= prefix", AO3Config.sanitizeCookie("_otwarchive_session=abc123") == "abc123")
+check("sanitizeCookie drops trailing cookies", AO3Config.sanitizeCookie("abc123; other=x") == "abc123")
+check("sanitizeCookie strips prefix and trailing junk together",
+      AO3Config.sanitizeCookie(" _otwarchive_session=abc123; other=x ") == "abc123")
+check("sanitizeCookie nil for empty/whitespace", AO3Config.sanitizeCookie("   ") == nil)
+check("sanitizeCookie nil for nil", AO3Config.sanitizeCookie(nil) == nil)
+
 // Security: count(_:) rejects an unknown table name (interpolated identifier).
 if let secStore = try? Store(inMemory: true) {
     check("count rejects an unknown table", (try? secStore.count("work; DROP TABLE work")) == nil)
