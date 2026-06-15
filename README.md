@@ -24,6 +24,9 @@ computer. Your login is stored in the Mac's Keychain and is only ever sent to AO
   rating, tags, length, kudos, date — and combine as many filters as you want. It stays fast even
   with tens of thousands of bookmarks. 
 - **Save your favourite filter combinations** ("Presets") and reapply them in one click.
+- **Read right in the app.** A dark, glassy built-in reader opens any saved story in its own
+  window — chapter-by-chapter or continuous scroll, with your choice of theme, font, and size, and
+  it remembers where you left off. Open as many reader windows as you like.
 - **Read offline.** Once saved, your works don't need AO3 or an internet connection.
 
 > Works you bookmarked that live on *other* sites (external works) can't be saved as ebooks —
@@ -41,7 +44,7 @@ computer. Your login is stored in the Mac's Keychain and is only ever sent to AO
 You'll need an **Apple Silicon Mac** running **macOS 26 (Tahoe)**.
 
 1. Go to the [**latest release**](https://github.com/syrtis-m/ao3-archiver/releases/latest) and
-   download **`AO3-Archiver-v1.1.1.zip`** (under *Assets*).
+   download **`AO3-Archiver-v1.2.0.zip`** (under *Assets*).
 2. Double-click the downloaded zip to unzip it, then drag **AO3 Archiver.app** into your
    **Applications** folder.
 3. The first time you open it, **right-click (or Control-click) the app → Open → Open**. macOS
@@ -93,7 +96,9 @@ The app saves it securely in your Mac's Keychain and only ever sends it to AO3.
 
 Use the sidebar on the left to filter, the search box up top to find words, and the sort menu to
 order things (newest bookmark, most kudos, title, and so on). Click any story to see its full
-details, open the saved ebook in Books, or jump to it on AO3.
+details, then **Read** to open it in the built-in reader (or open it in Books, or jump to it on
+AO3). The reader opens in its own window — use the **list** button for the table of contents and
+**Aa** to switch between chapter and scroll modes and adjust theme, font, and size.
 
 Tip: click a filter once to **include** it, again to **exclude** it, once more to clear it.
 
@@ -123,8 +128,7 @@ swift run selftest             # fast headless checks (no Xcode needed)
 swift test                     # full test suite (needs Xcode)
 
 ./Packaging/make-icon.sh       # once: render the app icon
-./Packaging/make-app.sh        # assemble "build/AO3 Archiver.app"
-open "build/AO3 Archiver.app"
+./Packaging/make-app.sh && open "build/AO3 Archiver.app" # final build & launch
 ```
 
 There's also a command-line backup tool (`swift run ao3archiver`) for headless/scripted syncs,
@@ -137,8 +141,9 @@ If you fork this tool, please update the user-agent string logic in Sources/AO3K
 - **How it's built:** [ARCHITECTURE.md](ARCHITECTURE.md)
 
 **Requirements:** macOS 26 (Tahoe) + Xcode 26 to build the app (it uses Apple's Liquid Glass).
-Dependencies: [SwiftSoup](https://github.com/scinfu/SwiftSoup) (HTML parsing) and
-[GRDB](https://github.com/groue/GRDB.swift) (SQLite/FTS5).
+Dependencies: [SwiftSoup](https://github.com/scinfu/SwiftSoup) (HTML parsing),
+[GRDB](https://github.com/groue/GRDB.swift) (SQLite/FTS5), and
+[ZIPFoundation](https://github.com/weichsel/ZIPFoundation) (reading EPUB archives for the reader).
 
 ---
 

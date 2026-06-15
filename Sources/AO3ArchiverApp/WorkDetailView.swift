@@ -12,6 +12,7 @@ struct WorkDetailView: View {
     /// Called after a single-work download so the gallery (and this item) refresh.
     var onChanged: () -> Void = {}
 
+    @Environment(\.openWindow) private var openWindow
     @State private var seriesMembers: [WorkListItem] = []
     @State private var downloading = false
     @State private var downloadError: String?
@@ -51,6 +52,16 @@ struct WorkDetailView: View {
         }
     }
 
+    /// Open the in-app reader for a downloaded item (a work, or a series member row) in its
+    /// own independent window — open as many as you like, resize/fullscreen each freely.
+    private func read(_ work: WorkListItem) {
+        guard work.downloadState == "downloaded", let rel = work.epubPath else { return }
+        openWindow(id: "reader", value: ReaderWindowValue(
+            workID: work.itemID, title: work.title,
+            epubPath: archiveRoot.appendingPathComponent(rel).path,
+            archiveRootPath: archiveRoot.path))
+    }
+
     // The works inside a bookmarked series, in series order.
     private var seriesSection: some View {
         labeled("Works in this series") {
@@ -66,6 +77,8 @@ struct WorkDetailView: View {
                         }
                         Spacer(minLength: 4)
                         if work.downloadState == "downloaded" {
+                            Button { read(work) } label: { Label("Read", systemImage: "book.pages") }
+                                .buttonStyle(.glass).controlSize(.small)
                             Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
                         }
                     }
@@ -81,6 +94,9 @@ struct WorkDetailView: View {
         FlowLayout(spacing: 10) {
             if item.downloadState == "downloaded", let rel = item.epubPath {
                 let url = archiveRoot.appendingPathComponent(rel)
+                // Primary action: read in-app. Open-in-Books/Reveal demote to secondary.
+                Button { read(item) } label: { Label("Read", systemImage: "book.pages") }
+                    .buttonStyle(.glassProminent)
                 Button { NSWorkspace.shared.open(url) } label: { Label("Open in Books", systemImage: "book") }
                 Button { NSWorkspace.shared.activateFileViewerSelecting([url]) } label: {
                     Label("Reveal in Finder", systemImage: "folder")

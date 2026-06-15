@@ -22,10 +22,21 @@ For **how to use it**, see [README.md](README.md).
 
 ---
 
-## Status: V1.1 shipped
+## Status: V1.2 shipped
 
 The tool meets its goal — back up your AO3 bookmarks as EPUBs and browse/filter them locally,
-offline, snappily. You **sync and browse entirely from the GUI**, no terminal required.
+offline, snappily. You **sync, browse, and read entirely from the GUI**, no terminal required.
+
+**V1.2 (this release) — the in-app reader:**
+- A dark, Liquid-Glass **EPUB reader** that opens any saved work in its **own window** (resizable,
+  fullscreen, many at once) instead of handing off to Apple Books — purely local, no new network
+  or ToS surface.
+- Navigates **TOC sections, not raw spine** (AO3's front matter / title page fold into "Preface",
+  so no more "Chapter 3 of 27"); **chapter** and **continuous-scroll** modes; theme / font / size;
+  **section-granular resume**.
+- Renders a **generated `text/html`** doc (fixes the `&nbsp;`-truncates-the-chapter XML bug);
+  remote refs / scripts stripped by `EpubSanitizer`; whole-work sanitize runs **off the main
+  thread** with a spinner and caches results. See [ARCHITECTURE.md §10](ARCHITECTURE.md#10-the-in-app-reader-v12).
 
 **V1 (the foundation):**
 - Polite, resumable sync engine + SQLite/FTS5 store (idempotent, archive-state-preserving).

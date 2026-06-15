@@ -8,19 +8,21 @@ gotchas that bite.
 
 ## What this is
 
-A native macOS app (**V1.1 shipped**) that backs up your AO3 bookmarks as `.epub` files with a
-dark, liquid-glass gallery and full local filtering — synced and browsed entirely from the GUI.
-The core (parser, store, sync engine, gallery model) is a tested Swift package; the SwiftUI app
-is a thin skin over it. V1.1 added the performance pass (scaled to ~20k bookmarks: stored
-haystack, debounced search, parallel facet passes, coalesced sync reloads) and a responsive
-layout. See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design.
+A native macOS app (**V1.2 shipped**) that backs up your AO3 bookmarks as `.epub` files with a
+dark, liquid-glass gallery and full local filtering — synced, browsed, and **read** entirely from
+the GUI. The core (parser, store, sync engine, gallery model, EPUB reader) is a tested Swift
+package; the SwiftUI app is a thin skin over it. V1.1 added the performance pass (scaled to ~20k
+bookmarks: stored haystack, debounced search, parallel facet passes, coalesced sync reloads) and a
+responsive layout. **V1.2 added the in-app Liquid-Glass EPUB reader** (TOC-section navigation,
+chapter/scroll modes, off-main prep, independent windows). See [ARCHITECTURE.md](ARCHITECTURE.md)
+§10 for the reader's design.
 
 ## Build / test / run
 
 ```sh
 swift build                 # build library + CLI + app
-swift run selftest          # headless parser + Store + gallery-model checks (162 checks)
-swift test                  # swift-testing suite (needs Xcode; 39 tests, 4 suites)
+swift run selftest          # headless parser + Store + gallery + reader checks (243 checks)
+swift test                  # swift-testing suite (needs Xcode; 67 tests, 6 suites)
 swift run ao3archiver       # bounded CLI sync: paginate → ingest → expand series → download
 swift run AO3ArchiverApp    # SwiftUI gallery over the synced DB (reads AO3_ARCHIVE_DIR)
 ./Packaging/make-icon.sh    # render the liquid-glass app icon → Packaging/AppIcon.icns
@@ -49,10 +51,15 @@ Sources/AO3Kit/        reusable, tested core the app sits on
   FileStore.swift      archive folder + works/<id> - title.epub layout
   SyncEngine.swift     orchestration: bounded paginate → ingest → expand series → download
   GalleryModel.swift   read/filter/sort/facet engine + @Observable view model (below the SwiftUI line)
+  EpubDocument.swift   .epub (ZIPFoundation) → spine + TOC sections + generated reader text/html
+  EpubSanitizer.swift  strip remote refs / scripts / handlers from chapter bodies (no-network)
+  ReaderSession.swift  pure reader state: section nav + bounds + progress; ReaderSettings + CSS
+  ReaderModel.swift    @Observable reader coordinator: document + session + resume + off-main prep
   Models.swift         WorkBlurb, BookmarkKind
   ArchivePaths.swift   on-disk epub filename/sanitization
 Sources/ao3archiver/   CLI driver (bounded SyncEngine pass; top-level code, not @main)
-Sources/AO3ArchiverApp/  SwiftUI gallery + in-app sync (thin Views over the tested model)
+Sources/AO3ArchiverApp/  SwiftUI gallery + in-app sync + reader (thin Views over the tested model)
+                         ReaderView.swift = WKWebView reader skin + independent reader windows
 Sources/selftest/      headless assertions (parser + Store + gallery model) without XCTest
 Tests/AO3KitTests/     swift-testing suite + Fixtures/ (real captured AO3 HTML)
 Packaging/             make-app.sh, Info.plist, IconGen.swift + make-icon.sh
@@ -93,6 +100,14 @@ Packaging/             make-app.sh, Info.plist, IconGen.swift + make-icon.sh
   via `concurrentPerform` writing per-dimension slots; keep them deterministic (a test asserts
   parallel == serial). The memo (`MemoKey(filter, sort, gen)`) must stay correct — don't re-add
   per-dimension stored properties.
+- **Reader invariants (V1.2):** the reader navigates **TOC sections, not raw spine** (front
+  matter / title page fold into the first unit). It renders a **generated `text/html`** doc, never
+  the EPUB's own `.xhtml` (lenient parser → `&nbsp;` doesn't truncate the chapter). The
+  no-remote-requests guarantee is enforced by **`EpubSanitizer` in the DOM**, not the WebView nav
+  delegate (which can't see subresource loads). Resume is **section-granular** (a pixel fraction
+  drifts). The reader reloads on a content **version**, not the file path (the path is reused). The
+  `WKScriptMessageHandler` must be removed in `dismantleNSView`. Don't reintroduce
+  `content-visibility` — it makes WebKit jump scroll position when scrolling up.
 
 ## Gotchas
 

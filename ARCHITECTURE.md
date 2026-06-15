@@ -44,6 +44,7 @@ These are not preferences; getting them wrong gets the tool (or the user's IP) t
 │ AO3ArchiverApp (SwiftUI, macOS 26) — a thin skin over the model      │
 │   GalleryView · FilterSidebar · WorkCardView · WorkDetailView         │
 │   SyncController / SyncSheet · CredentialStore · Theme                │
+│   ReaderView · EpubWebView   (in-app EPUB reader, own windows)        │
 └───────────────┬─────────────────────────────────────────────────────┘
                 │ reads/observes (everything with an `if` lives below this line)
 ┌───────────────▼─────────────────────────────────────────────────────┐
@@ -56,6 +57,9 @@ These are not preferences; getting them wrong gets the tool (or the user's IP) t
 │  WorkDownloader resolve + fetch the server-rendered EPUB              │
 │  FileStore      archive folder + works/<id> - title.epub layout       │
 │  AO3Client      THE ONLY networked component (rate limit, backoff)    │
+│  EpubDocument   .epub → spine + TOC sections + generated reader HTML   │
+│  EpubSanitizer  strip remote refs / scripts from chapter bodies        │
+│  ReaderModel · ReaderSession · ReaderSettings  (reader logic + state)  │
 │  RateLimiter · Models · ArchivePaths                                  │
 └──────────────────────────────────────────────────────────────────────┘
                 ▲                              ▲
@@ -88,6 +92,7 @@ updates, and never lives in `/tmp`. The canonical schema is the migration list i
 | `bookmark_tag` | the user's *own* bookmark tags | distinct from work tags |
 | `work_fts` | FTS5 full-text index | title/author/summary/tags/notes |
 | `filter_preset` | saved "Smart Bookmarks" | JSON-encoded filter + sort |
+| `reading_position` | reader resume point per work | `(work_id PK → work, spine_index, locator, progress)`; section-granular |
 | `meta` | key/value | resume cursor for a throttled index |
 | `sync_run` | sync bookkeeping | per-run counts/status |
 
@@ -303,3 +308,65 @@ Keep the two **in lockstep** when changing the parser, store, or model.
 - **Parser fails soft per-field;** selectors pinned to fixtures.
 - **Honest User-Agent** with contact `syrtis@sysd.info` — no forged browser UA.
 - **Politeness is non-negotiable:** bounded defaults, single-flight, respect 429.
+
+---
+
+## 10. The in-app reader (V1.2)
+
+Read archived works **inside** the app (dark, Liquid-Glass) instead of handing off to Apple
+Books. It's purely local — it renders EPUBs already downloaded, so there's **no new network or
+ToS surface**. The logic lives in `AO3Kit` (tested headlessly against synthetic + real captured
+EPUBs); the view is a thin `WKWebView` skin. New dependency: **ZIPFoundation** (MIT) to read the
+EPUB ZIP — `WorkDownloader` only validated the magic bytes before.
+
+**AO3 EPUB facts that shape the design** (verified against real files):
+- An EPUB is a ZIP described by an **OPF** (`META-INF/container.xml` → package → `manifest` +
+  ordered `spine`); the TOC is an EPUB2 **`toc.ncx`** or EPUB3 **`nav`**.
+- AO3/calibre split a work into per-chapter spine files **plus a Preface and a title page** — and
+  the **title page is absent from the NCX**. Navigating the raw spine therefore mislabels front
+  matter as chapters ("Chapter 3 of 27").
+
+**`EpubDocument`** (`EpubDocument.swift`) opens the ZIP, parses container/OPF/spine/metadata and
+the nav-or-ncx TOC (fail-soft to spine order), and derives **reading sections** — the unit the
+reader navigates. `buildSections` folds the spine files between one TOC anchor and the next into a
+single titled unit, so the title page lands inside "Preface" (a 5-spine work → 4 sections; a
+248-spine work → 247). All paths are keyed by full zip path so spine⇄TOC matching and extraction
+need no relative-path gymnastics; a zip-slip guard refuses entries escaping the extraction dir.
+
+**Rendering — a *generated* `text/html` doc, not the EPUB's own `.xhtml`.** AO3 XHTML carries
+named entities (`&nbsp;`) with no entity DTD; loaded as `.xhtml`, WebKit's strict XML parser
+**bails at the first undefined entity and renders only a partial chapter**. So the reader builds a
+fresh `text/html` document from the sanitized `<body>` of each section, inlines the reader
+stylesheet, and loads it with `loadFileURL` — the lenient HTML parser renders the whole chapter.
+
+**Security (the no-remote-requests invariant).** A `WKWebView` navigation delegate only sees
+navigations, not subresource loads — a hotlinked remote `<img>` (common in AO3 works) would
+phone home. So enforcement is **upstream in the DOM**: **`EpubSanitizer`** strips remote
+`src`/`href`/`srcset`, `<script>`/`<iframe>`, and inline `on*` handlers from each body before it's
+concatenated. The nav delegate cancelling non-`file:` navigations is belt-and-suspenders.
+
+**Two modes + the big-work path.** **Chapters** (one section; ←/→) and **Scroll** (the whole work
+concatenated; a TOC jump scrolls to the section anchor). The cost is SwiftSoup-sanitizing every
+chapter (~2.6s for a 247-chapter work), so scroll mode does it **off the main thread** behind a
+"Preparing…" spinner (only ~60–300ms of zip reads touch main) and **caches** the sanitized bodies
+(`EpubDocument.bodyCache`), so later mode/font changes rebuild in ~2ms. Chapters mode parses a
+single section on open — instant regardless of work size, the path for enormous works.
+`content-visibility` was tried for lazy off-screen rendering and **removed**: it makes WebKit jump
+scroll position when scrolling up into a virtualized chapter. Scroll mode renders the full DOM.
+
+**Resume** is **section-granular** (robust across font changes). In scroll mode a one-way,
+debounced scroll reporter posts the topmost-visible section index to the native side
+(`recordVisibleSection`), so resume lands where you actually read, not the last TOC selection; the
+position persists to `reading_position` (additive migration `v4`). The `WKScriptMessageHandler` is
+removed in `dismantleNSView` to avoid a retain cycle.
+
+**Windows.** Each work opens in its **own** value-based `WindowGroup(for: ReaderWindowValue.self)`
+window (resizable/fullscreen/many at once, portrait default), independent of the gallery; the
+window's own `Store` handle serves resume. Reading state (`ReaderSession` = section index +
+bounds + progress; `ReaderSettings` = theme/font/mode + the generated CSS) is pure and tested; the
+`@Observable` `ReaderModel` coordinates document + session + persistence; the view only binds.
+
+**Verification ceiling** is unchanged: `EpubDocument`/`EpubSanitizer`/`ReaderSession`/
+`ReaderSettings` are unit-tested (synthetic EPUBs in both TOC flavours, an AO3-shaped fixture for
+folding + entity-safety + no-remote, the body cache); the `WKWebView`/SwiftUI layer is
+compile-verified only — rendering, windows, and scroll-resume are run-to-confirm.

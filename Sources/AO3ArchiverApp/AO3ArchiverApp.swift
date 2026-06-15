@@ -53,6 +53,55 @@ struct AO3ArchiverApp: App {
         .windowStyle(.titleBar)
         .windowToolbarStyle(.unified)
         .windowResizability(.contentMinSize)   // resize freely above the content's minimum
+
+        // Each opened work gets its own independent reader window (resize / fullscreen / many
+        // at once), decoupled from the gallery window. Value-based, so distinct works open
+        // distinct windows; reopening the same work refocuses its existing one.
+        WindowGroup(id: "reader", for: ReaderWindowValue.self) { $value in
+            if let value {
+                ReaderWindowRoot(value: value)
+                    .preferredColorScheme(.dark)
+                    .frame(minWidth: 380, minHeight: 420)
+                    .background(WindowConfigurator())
+            }
+        }
+        .windowStyle(.titleBar)
+        .windowResizability(.contentMinSize)
+        .defaultSize(width: 620, height: 940)   // a book-like portrait page, resizable
+    }
+}
+
+/// Identifies a work to open in its own reader window. `Codable`/`Hashable` for value-based
+/// `WindowGroup`. Carries the archive root so the window can open its own `Store` for resume.
+struct ReaderWindowValue: Codable, Hashable {
+    let workID: Int
+    let title: String
+    let epubPath: String          // absolute path to the .epub
+    let archiveRootPath: String
+}
+
+/// Hosts a `ReaderView` in an independent window, opening its own `Store` handle (a second
+/// SQLite connection on the same file — fine for tiny, `try?`-guarded resume reads/writes).
+struct ReaderWindowRoot: View {
+    let value: ReaderWindowValue
+    @State private var store: Store?
+    @State private var ready = false
+
+    var body: some View {
+        Group {
+            if ready {
+                ReaderView(epubURL: URL(fileURLWithPath: value.epubPath),
+                           workID: value.workID, workTitle: value.title, store: store)
+            } else {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .navigationTitle(value.title)
+        .task {
+            store = try? Store(path: URL(fileURLWithPath: value.archiveRootPath)
+                .appendingPathComponent("archive.sqlite").path)
+            ready = true
+        }
     }
 }
 

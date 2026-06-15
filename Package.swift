@@ -21,6 +21,10 @@ let package = Package(
         .package(url: "https://github.com/scinfu/SwiftSoup.git", from: "2.7.0"),
         // SQLite metadata store (schema, migrations, FTS5). Links the system libsqlite3.
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "6.0.0"),
+        // ZIP reader/writer (an EPUB is a ZIP). Powers the in-app reader: read the
+        // container/OPF/content entries and extract them for WKWebView; also writes the
+        // synthetic EPUB the reader tests parse. MIT, like SwiftSoup/GRDB.
+        .package(url: "https://github.com/weichsel/ZIPFoundation.git", from: "0.9.0"),
     ],
     targets: [
         .target(
@@ -28,6 +32,7 @@ let package = Package(
             dependencies: [
                 "SwiftSoup",
                 .product(name: "GRDB", package: "GRDB.swift"),
+                .product(name: "ZIPFoundation", package: "ZIPFoundation"),
             ]
         ),
         .executableTarget(
@@ -46,11 +51,17 @@ let package = Package(
         // runs the richer suite in Tests/AO3KitTests instead.
         .executableTarget(
             name: "selftest",
-            dependencies: ["AO3Kit"]
+            dependencies: [
+                "AO3Kit",
+                .product(name: "ZIPFoundation", package: "ZIPFoundation"),
+            ]
         ),
         .testTarget(
             name: "AO3KitTests",
-            dependencies: ["AO3Kit"],
+            dependencies: [
+                "AO3Kit",
+                .product(name: "ZIPFoundation", package: "ZIPFoundation"),
+            ],
             resources: [.copy("Fixtures")]
         ),
     ]

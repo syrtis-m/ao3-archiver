@@ -1,5 +1,6 @@
 import Foundation
 import AO3Kit
+import ZIPFoundation
 
 // Headless verification of BlurbParser / WorkDownloader against the real captured
 // fixture. Runs anywhere Swift builds (no XCTest/Testing dependency). Exits non-zero on
@@ -653,6 +654,159 @@ if let secStore = try? Store(inMemory: true) {
 let canonHTML = #"<li class="work blurb group" id="work_42"><h4 class="heading"><a href="https://evil.example/works/42/chapters/9">T</a></h4></li>"#
 if let canon = try? BlurbParser.parseListing(html: canonHTML).first {
     check("sourcePath is canonical /works/<id>", canon.sourcePath == "/works/42")
+}
+
+// EPUB reader (kept in lockstep with EpubReaderTests). Builds a synthetic EPUB in both
+// TOC flavours and parses it; exercises the pure ReaderSession/Settings + reading-position
+// persistence. Real-AO3-EPUB validation is a manual fixture step (PLAN-READER.md §9).
+func makeSyntheticEpub(useNCX: Bool) throws -> URL {
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("selftest-epub-\(useNCX ? "ncx" : "nav")-\(UUID().uuidString).epub")
+    let archive = try Archive(url: url, accessMode: .create)
+    func add(_ path: String, _ s: String) throws {
+        let data = Data(s.utf8)
+        try archive.addEntry(with: path, type: .file, uncompressedSize: Int64(data.count)) { pos, size in
+            data.subdata(in: Int(pos)..<Int(pos) + size)
+        }
+    }
+    try add("mimetype", "application/epub+zip")
+    try add("META-INF/container.xml", """
+        <?xml version="1.0"?>
+        <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+          <rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+        </container>
+        """)
+    for (i, n) in ["One", "Two", "Three"].enumerated() {
+        try add("OEBPS/ch\(i + 1).xhtml", "<html xmlns=\"http://www.w3.org/1999/xhtml\"><body><h1>Chapter \(n)</h1></body></html>")
+    }
+    let meta = "<metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\"><dc:title>Synthetic Work</dc:title><dc:creator>Test Author</dc:creator><dc:language>en</dc:language></metadata>"
+    let manifestItems = "<item id=\"c1\" href=\"ch1.xhtml\" media-type=\"application/xhtml+xml\"/><item id=\"c2\" href=\"ch2.xhtml\" media-type=\"application/xhtml+xml\"/><item id=\"c3\" href=\"ch3.xhtml\" media-type=\"application/xhtml+xml\"/>"
+    let spineItems = "<itemref idref=\"c1\"/><itemref idref=\"c2\"/><itemref idref=\"c3\"/>"
+    if useNCX {
+        try add("OEBPS/content.opf", "<?xml version=\"1.0\"?><package xmlns=\"http://www.idpf.org/2007/opf\" version=\"2.0\" unique-identifier=\"b\">\(meta)<manifest><item id=\"ncx\" href=\"toc.ncx\" media-type=\"application/x-dtbncx+xml\"/>\(manifestItems)</manifest><spine toc=\"ncx\">\(spineItems)</spine></package>")
+        try add("OEBPS/toc.ncx", "<?xml version=\"1.0\"?><ncx xmlns=\"http://www.daisy.org/z3986/2005/ncx/\" version=\"2005-1\"><navMap><navPoint id=\"n1\"><navLabel><text>Chapter One</text></navLabel><content src=\"ch1.xhtml\"/></navPoint><navPoint id=\"n2\"><navLabel><text>Chapter Two</text></navLabel><content src=\"ch2.xhtml\"/></navPoint><navPoint id=\"n3\"><navLabel><text>Chapter Three</text></navLabel><content src=\"ch3.xhtml\"/></navPoint></navMap></ncx>")
+    } else {
+        try add("OEBPS/content.opf", "<?xml version=\"1.0\"?><package xmlns=\"http://www.idpf.org/2007/opf\" version=\"3.0\" unique-identifier=\"b\">\(meta)<manifest><item id=\"nav\" href=\"nav.xhtml\" media-type=\"application/xhtml+xml\" properties=\"nav\"/>\(manifestItems)</manifest><spine>\(spineItems)</spine></package>")
+        try add("OEBPS/nav.xhtml", "<html xmlns=\"http://www.w3.org/1999/xhtml\" xmlns:epub=\"http://www.idpf.org/2007/ops\"><body><nav epub:type=\"toc\"><ol><li><a href=\"ch1.xhtml\">Chapter One</a></li><li><a href=\"ch2.xhtml\">Chapter Two</a></li><li><a href=\"ch3.xhtml\">Chapter Three</a></li></ol></nav></body></html>")
+    }
+    return url
+}
+
+// Mirrors a real AO3/calibre EPUB: 5 spine docs [preface, titlePage, ch1, ch2, afterword]
+// where the NCX lists Preface/Ch1/Ch2/Afterword but NOT the title page. Chapter 1 carries a
+// `&nbsp;` entity and a remote image, to exercise entity-safe rendering + sanitization.
+func makeAO3LikeEpub() throws -> URL {
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent("ao3like-\(UUID().uuidString).epub")
+    let archive = try Archive(url: url, accessMode: .create)
+    func add(_ path: String, _ s: String) throws {
+        let data = Data(s.utf8)
+        try archive.addEntry(with: path, type: .file, uncompressedSize: Int64(data.count)) { pos, size in
+            data.subdata(in: Int(pos)..<Int(pos) + size)
+        }
+    }
+    func page(_ body: String) -> String {
+        "<?xml version='1.0' encoding='utf-8'?><html xmlns=\"http://www.w3.org/1999/xhtml\"><head><title>t</title></head><body>\(body)</body></html>"
+    }
+    try add("mimetype", "application/epub+zip")
+    try add("META-INF/container.xml", "<?xml version=\"1.0\"?><container version=\"1.0\" xmlns=\"urn:oasis:names:tc:opendocument:xmlns:container\"><rootfiles><rootfile full-path=\"content.opf\" media-type=\"application/oebps-package+xml\"/></rootfiles></container>")
+    try add("split_000.xhtml", page("<h2>Preface</h2><p>tags and summary</p>"))
+    try add("split_001.xhtml", page("<h1>The Work Title</h1>"))   // title page, absent from NCX
+    try add("split_002.xhtml", page("<h2>Chapter 1</h2><p>Before&nbsp;<span>AFTER the entity</span></p><img src=\"https://evil.example/t.png\"/>"))
+    try add("split_003.xhtml", page("<h2>Chapter 2</h2><p>more</p>"))
+    try add("split_004.xhtml", page("<h2>Afterword</h2><p>end notes</p>"))
+    let items = (0...4).map { "<item id=\"h\($0)\" href=\"split_00\($0).xhtml\" media-type=\"application/xhtml+xml\"/>" }.joined()
+    let spine = (0...4).map { "<itemref idref=\"h\($0)\"/>" }.joined()
+    try add("content.opf", "<?xml version='1.0'?><package xmlns=\"http://www.idpf.org/2007/opf\" version=\"2.0\" unique-identifier=\"b\"><metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\"><dc:title>The Work Title</dc:title><dc:creator>Auth</dc:creator></metadata><manifest>\(items)<item id=\"ncx\" href=\"toc.ncx\" media-type=\"application/x-dtbncx+xml\"/></manifest><spine toc=\"ncx\">\(spine)</spine></package>")
+    try add("toc.ncx", "<?xml version='1.0'?><ncx xmlns=\"http://www.daisy.org/z3986/2005/ncx/\" version=\"2005-1\"><navMap><navPoint id=\"a\"><navLabel><text>Preface</text></navLabel><content src=\"split_000.xhtml\"/></navPoint><navPoint id=\"b\"><navLabel><text>Chapter 1</text></navLabel><content src=\"split_002.xhtml\"/></navPoint><navPoint id=\"c\"><navLabel><text>Chapter 2</text></navLabel><content src=\"split_003.xhtml\"/></navPoint><navPoint id=\"d\"><navLabel><text>Afterword</text></navLabel><content src=\"split_004.xhtml\"/></navPoint></navMap></ncx>")
+    return url
+}
+
+print("EpubDocument — synthetic EPUB (nav + ncx)")
+for useNCX in [false, true] {
+    if let url = try? makeSyntheticEpub(useNCX: useNCX), let doc = try? EpubDocument(url: url) {
+        let flavour = useNCX ? "ncx" : "nav"
+        check("[\(flavour)] title parsed", doc.metadata.title == "Synthetic Work")
+        check("[\(flavour)] author parsed", doc.metadata.author == "Test Author")
+        check("[\(flavour)] opfDirectory == OEBPS", doc.opfDirectory == "OEBPS")
+        check("[\(flavour)] spine has 3 docs", doc.spine.count == 3)
+        check("[\(flavour)] spine paths", doc.spine.map(\.path) == ["OEBPS/ch1.xhtml", "OEBPS/ch2.xhtml", "OEBPS/ch3.xhtml"])
+        check("[\(flavour)] 3 reading sections", doc.sectionCount == 3)
+        check("[\(flavour)] section titles", doc.sectionTitles == ["Chapter One", "Chapter Two", "Chapter Three"])
+        check("[\(flavour)] chapter body readable", (try? doc.bodyHTML(forSpineIndex: 0).contains("Chapter One")) == true)
+        let whole = doc.wholeWorkHTML(css: "x{}")
+        check("[\(flavour)] whole-work doc has all sections", whole.contains("ao3-sec-0") && whole.contains("ao3-sec-2"))
+        try? FileManager.default.removeItem(at: url)
+    } else {
+        check("synthetic EPUB (\(useNCX ? "ncx" : "nav")) builds + parses", false)
+    }
+}
+
+print("EpubSanitizer — no-remote-requests invariant")
+let dirty = "<html><body><img src=\"https://evil.example/t.png\"/><img src=\"local.png\"/><script>fetch('https://evil.example')</script><a href=\"https://evil.example\">x</a><p onload=\"fetch('x')\">h</p></body></html>"
+let cleaned = EpubSanitizer.sanitize(dirty)
+check("strips remote refs", !cleaned.contains("evil.example"))
+check("strips <script>", !cleaned.lowercased().contains("<script"))
+check("strips on* handlers", !cleaned.lowercased().contains("onload"))
+check("keeps local resources", cleaned.contains("local.png"))
+check("isRemote classifies https", EpubSanitizer.isRemote("https://x/a.png"))
+check("isRemote classifies protocol-relative", EpubSanitizer.isRemote("//x/a.png"))
+check("isRemote keeps relative local", !EpubSanitizer.isRemote("images/a.png"))
+
+print("EpubDocument — path helpers")
+check("resolvePath joins", EpubDocument.resolvePath(base: "OEBPS", href: "ch1.xhtml") == "OEBPS/ch1.xhtml")
+check("resolvePath handles ..", EpubDocument.resolvePath(base: "OEBPS/text", href: "../img/x.png") == "OEBPS/img/x.png")
+check("directory(of:)", EpubDocument.directory(of: "OEBPS/content.opf") == "OEBPS")
+
+print("EpubDocument — section folding (front matter / title page)")
+// AO3 shape: spine [preface, titlePage, ch1, ch2, afterword]; NCX skips the title page.
+if let foldURL = try? makeAO3LikeEpub(), let fdoc = try? EpubDocument(url: foldURL) {
+    check("spine has 5 docs", fdoc.spine.count == 5)
+    check("folds into 4 sections (title page absorbed)", fdoc.sectionCount == 4)
+    check("section titles from NCX", fdoc.sectionTitles == ["Preface", "Chapter 1", "Chapter 2", "Afterword"])
+    check("Preface section absorbs title page (spine 0+1)", fdoc.sections.first?.spineIndices == [0, 1])
+    // Entity safety: a chapter with &nbsp; renders fully (no XML truncation) once generated.
+    let chHTML = fdoc.chapterHTML(sectionIndex: 1, css: "")
+    check("nbsp chapter not truncated", chHTML.contains("AFTER the entity"))
+    // Generated doc carries no remote refs (built from sanitized bodies).
+    check("generated doc has no remote refs", !chHTML.contains("evil.example"))
+    // Scroll mode carries the scroll reporter; chapter mode doesn't.
+    check("scroll doc has reporter", fdoc.wholeWorkHTML(css: "x{}").contains("messageHandlers.reader"))
+    check("chapter doc has no reporter", !chHTML.contains("messageHandlers.reader"))
+    // bodyHTML is cached/stable across calls.
+    check("bodyHTML stable when cached", (try? fdoc.bodyHTML(forSpineIndex: 2)) == (try? fdoc.bodyHTML(forSpineIndex: 2)))
+    try? FileManager.default.removeItem(at: foldURL)
+} else {
+    check("AO3-like EPUB builds + parses", false)
+}
+
+print("ReaderSession — navigation")
+var rs = ReaderSession(unitCount: 3)
+check("starts at 0", rs.index == 0 && !rs.canGoPrevious)
+_ = rs.goNext(); _ = rs.goNext()
+check("advances and clamps at end", rs.index == 2 && !rs.canGoNext && rs.goNext() == false)
+check("progress at end == 1", rs.progress == 1.0)
+_ = rs.goPrevious()
+check("goPrevious works", rs.index == 1)
+check("init clamps over-range start", ReaderSession(unitCount: 3, index: 99).index == 2)
+var empty = ReaderSession(unitCount: 0)
+check("empty session is safe", empty.goNext() == false && empty.progress == 0)
+
+print("ReaderSettings — CSS + clamping")
+let clamped = ReaderSettings(theme: .sepia, fontScale: 9, lineSpacing: 0.1, fontFamily: "Palatino")
+check("fontScale clamps high", clamped.fontScale == ReaderSettings.fontScaleRange.upperBound)
+check("lineSpacing clamps low", clamped.lineSpacing == ReaderSettings.lineSpacingRange.lowerBound)
+check("CSS encodes theme + font %", clamped.injectedCSS.contains("theme: sepia") && clamped.injectedCSS.contains("200%"))
+check("CSS styles reader sections", clamped.injectedCSS.contains("section.ao3-chapter"))
+check("CSS round-trips Codable", (try? JSONDecoder().decode(ReaderSettings.self, from: JSONEncoder().encode(clamped))) == clamped)
+
+print("Store — reading position")
+if let posStore = try? Store(inMemory: true) {
+    try? posStore.upsertWork(WorkBlurb(workID: 7, title: "W", author: "A"))
+    check("no position before save", (try? posStore.readingPosition(workID: 7)) ?? nil == nil)
+    try? posStore.saveReadingPosition(workID: 7, spineIndex: 2, progress: 0.5)
+    check("position persists", (try? posStore.readingPosition(workID: 7))??.spineIndex == 2)
+    try? posStore.saveReadingPosition(workID: 7, spineIndex: 4, progress: 0.8)
+    check("position upserts", (try? posStore.readingPosition(workID: 7))??.spineIndex == 4)
 }
 
 print("")

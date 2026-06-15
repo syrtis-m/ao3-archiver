@@ -164,7 +164,59 @@ public final class Store: @unchecked Sendable {
             // Saved filter presets ("Smart Bookmarks"): name + a JSON-encoded GalleryFilter+sort.
             try db.execute(sql: "CREATE TABLE filter_preset (name TEXT PRIMARY KEY, payload TEXT NOT NULL)")
         }
+        m.registerMigration("v4-reading-position") { db in
+            // Where the in-app reader left off, per work. `spine_index` is the chapter
+            // granularity (robust across font changes); `locator` is an optional finer
+            // within-chapter anchor; `progress` is a 0…1 cache for display. Additive —
+            // touches no archive-state column. CASCADE so deleting a work clears its position.
+            try db.execute(sql: """
+                CREATE TABLE reading_position (
+                  work_id     INTEGER PRIMARY KEY REFERENCES work(id) ON DELETE CASCADE,
+                  spine_index INTEGER NOT NULL,
+                  locator     TEXT,
+                  progress    REAL,
+                  updated_at  TEXT NOT NULL
+                )
+                """)
+        }
         return m
+    }
+
+    // MARK: - Reading position (in-app reader resume)
+
+    /// Where the reader last was in a work. `nil` from `readingPosition(workID:)` means "never opened".
+    public struct ReadingPosition: Sendable, Equatable {
+        public let workID: Int
+        public let spineIndex: Int
+        public let locator: String?
+        public let progress: Double?
+        public init(workID: Int, spineIndex: Int, locator: String? = nil, progress: Double? = nil) {
+            self.workID = workID; self.spineIndex = spineIndex
+            self.locator = locator; self.progress = progress
+        }
+    }
+
+    public func saveReadingPosition(workID: Int, spineIndex: Int, locator: String? = nil,
+                                    progress: Double? = nil, now: String = Store.nowISO()) throws {
+        try dbQueue.write { db in
+            try db.execute(sql: """
+                INSERT INTO reading_position (work_id, spine_index, locator, progress, updated_at)
+                VALUES (?,?,?,?,?)
+                ON CONFLICT(work_id) DO UPDATE SET
+                   spine_index=excluded.spine_index, locator=excluded.locator,
+                   progress=excluded.progress, updated_at=excluded.updated_at
+                """, arguments: [workID, spineIndex, locator, progress, now])
+        }
+    }
+
+    public func readingPosition(workID: Int) throws -> ReadingPosition? {
+        try dbQueue.read { db in
+            guard let row = try Row.fetchOne(db, sql: """
+                SELECT spine_index, locator, progress FROM reading_position WHERE work_id = ?
+                """, arguments: [workID]) else { return nil }
+            return ReadingPosition(workID: workID, spineIndex: row["spine_index"],
+                                   locator: row["locator"], progress: row["progress"])
+        }
     }
 
     // MARK: - Filter presets (saved "Smart Bookmarks")
@@ -471,6 +523,7 @@ public final class Store: @unchecked Sendable {
     static let countableTables: Set<String> = [
         "work", "series", "series_work", "bookmark", "bookmark_tag",
         "tag", "work_tag", "work_fts", "filter_preset", "meta", "sync_run",
+        "reading_position",
     ]
 
     public func count(_ table: String) throws -> Int {
