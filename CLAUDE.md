@@ -21,17 +21,19 @@ chapter/scroll modes, off-main prep, independent windows). See [ARCHITECTURE.md]
 
 ```sh
 swift build                 # build library + CLI + app
-swift run selftest          # headless parser + Store + gallery + reader checks (243 checks)
-swift test                  # swift-testing suite (needs Xcode; 67 tests, 6 suites)
+swift run selftest          # headless parser + Store + gallery + reader checks (272 checks)
+swift test                  # swift-testing suite (74 tests, 6 suites) — run this; Xcode is installed
 swift run ao3archiver       # bounded CLI sync: paginate → ingest → expand series → download
 swift run AO3ArchiverApp    # SwiftUI gallery over the synced DB (reads AO3_ARCHIVE_DIR)
 ./Packaging/make-icon.sh    # render the liquid-glass app icon → Packaging/AppIcon.icns
 ./Packaging/make-app.sh     # assemble a real, double-clickable "AO3 Archiver.app"
 ```
 
-`swift run selftest` is the **framework-free** equivalent of `swift test` (same assertions, same
-fixtures) and also works under Command-Line-Tools-only toolchains, where `swift test` fails with
-"no such module 'Testing'". **Keep the two in lockstep** when changing the parser, store, or model.
+**Run `swift test` — Xcode is installed in this environment, so the swift-testing suite works.**
+`swift run selftest` is the **framework-free** equivalent (same assertions, same fixtures) for
+toolchains without Xcode (Command-Line-Tools only, where `swift test` fails with "no such module
+'Testing'"). Here, run **both**: `swift test` for the full suite and `swift run selftest` as the
+lockstep mirror. **Keep the two in lockstep** when changing the parser, store, or model.
 
 Config is via environment variables (see README's developer section): `AO3_USERNAME`,
 `AO3_SESSION_COOKIE`, `AO3_ARCHIVE_DIR`, `AO3_MIN_INTERVAL`, `AO3_USER_AGENT`, `AO3_LIST_PATH`,
