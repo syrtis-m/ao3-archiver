@@ -318,12 +318,15 @@ public final class SyncEngine: @unchecked Sendable {
                 try store.markDownloaded(workID: work.id, epubPath: rel, updatedAt: work.updatedAt)
                 downloaded += 1
                 onEvent(.downloaded(workID: work.id, bytes: data.count, title: work.title))
-            } catch let e as AO3Error {
-                // Restricted/locked works (no cookie) and the like: park them so the queue
-                // doesn't spin on the same failure. last_error records why.
-                try store.markFailed(workID: work.id, error: String(describing: e))
+            } catch {
+                // Park ANY failure on one work so the rest of the batch still runs: restricted/
+                // locked works (no cookie, an AO3Error), but also a disk-write failure or a DB
+                // hiccup — none of which should abort the whole content pass. `last_error` records
+                // why; the bookkeeping write is `try?` so a failure there can't re-abort the loop.
+                let reason = String(describing: error)
+                try? store.markFailed(workID: work.id, error: reason)
                 failed += 1
-                onEvent(.downloadFailed(workID: work.id, reason: String(describing: e)))
+                onEvent(.downloadFailed(workID: work.id, reason: reason))
             }
         }
         return (downloaded, failed)

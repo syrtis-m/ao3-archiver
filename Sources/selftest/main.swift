@@ -762,6 +762,29 @@ check("isRemote classifies https", EpubSanitizer.isRemote("https://x/a.png"))
 check("isRemote classifies protocol-relative", EpubSanitizer.isRemote("//x/a.png"))
 check("isRemote keeps relative local", !EpubSanitizer.isRemote("images/a.png"))
 
+// Remote CSS (zero-click subresource loads) — <style> blocks and inline style="…url()", incl.
+// the escaped form (\68ttps://) that a host-matching denylist would miss.
+let dirtyCSS = "<html><head><style>@import url(\"https://evil.example/b.css\");p{background:url(https://evil.example/x.png)}</style></head><body><p style=\"background:url(https://evil.example/t.png)\">a</p><p style=\"background:url(//evil.example/t2.png)\">b</p><p style=\"background:url(\\68ttps://evil.example/esc.png)\">e</p><p style=\"color:red\">c</p><div style=\"background:url(images/local.png)\">d</div></body></html>"
+let cleanedCSS = EpubSanitizer.sanitize(dirtyCSS)
+check("strips remote CSS refs (incl. escaped)", !cleanedCSS.contains("evil.example"))
+check("drops <style> element", !cleanedCSS.lowercased().contains("<style"))
+check("keeps benign inline style", cleanedCSS.contains("color:red"))
+check("drops any url()-bearing inline style", !cleanedCSS.contains("images/local.png"))
+check("keeps the element under a dropped style", cleanedCSS.contains("<div"))
+// Script-executing schemes in href/action — never reach the WebView nav delegate.
+let dirtyScheme = "<html><body><a href=\"javascript:fetch('https://evil.example/')\">x</a><a href=\"VBScript:x\">y</a><a href=\"ch2.xhtml#top\">l</a><form action=\"javascript:steal()\"></form></body></html>"
+let cleanedScheme = EpubSanitizer.sanitize(dirtyScheme)
+check("strips javascript: href", !cleanedScheme.lowercased().contains("javascript:"))
+check("strips vbscript: href", !cleanedScheme.lowercased().contains("vbscript:"))
+check("keeps local href", cleanedScheme.contains("ch2.xhtml#top"))
+check("hasDangerousScheme classifies javascript:", EpubSanitizer.hasDangerousScheme("javascript:x"))
+check("hasDangerousScheme sees through tab obfuscation", EpubSanitizer.hasDangerousScheme("java\tscript:x"))
+check("hasDangerousScheme ignores https", !EpubSanitizer.hasDangerousScheme("https://x/a"))
+check("styleMayLoadResource classifies remote url()", EpubSanitizer.styleMayLoadResource("background:url(https://x/a.png)"))
+check("styleMayLoadResource classifies escaped url()", EpubSanitizer.styleMayLoadResource("background:url(\\68ttps://x/a.png)"))
+check("styleMayLoadResource catches even local url()", EpubSanitizer.styleMayLoadResource("background:url(images/a.png)"))
+check("styleMayLoadResource keeps benign style", !EpubSanitizer.styleMayLoadResource("color:red"))
+
 print("EpubDocument — path helpers")
 check("resolvePath joins", EpubDocument.resolvePath(base: "OEBPS", href: "ch1.xhtml") == "OEBPS/ch1.xhtml")
 check("resolvePath handles ..", EpubDocument.resolvePath(base: "OEBPS/text", href: "../img/x.png") == "OEBPS/img/x.png")

