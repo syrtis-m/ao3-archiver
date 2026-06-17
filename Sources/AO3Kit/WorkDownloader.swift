@@ -20,11 +20,12 @@ public struct WorkDownloader {
         let doc = try SwiftSoup.parse(html)
         // Real AO3 hrefs are ".../Title.epub?updated_at=<ts>", so an ends-with selector
         // would miss them — match on the *path* (before "?") ending in .epub. Prefer the
-        // download menu, then fall back to a site-relative /downloads/ link. The fallback is
-        // anchored with `^=/downloads/` (not `*=`) so it can't pick up an attacker-supplied
-        // absolute href embedded in work content (e.g. https://evil/downloads/x.epub); the
-        // AO3Client host allowlist is the backstop, this avoids even forming the request.
-        let candidates = try doc.select("li.download a[href]").array()
+        // download menu, then fall back to a site-relative /downloads/ link. Both selectors
+        // are anchored with `^=/downloads/` (not `*=`) so neither can pick up an attacker-
+        // supplied absolute href — even one injected into a `li.download` wrapper inside work
+        // content (e.g. https://evil/downloads/x.epub). The AO3Client host allowlist is the
+        // backstop, but anchoring here avoids even forming the request.
+        let candidates = try doc.select("li.download a[href^=/downloads/]").array()
                        + doc.select("a[href^=/downloads/]").array()
         for a in candidates {
             let href = try a.attr("href")

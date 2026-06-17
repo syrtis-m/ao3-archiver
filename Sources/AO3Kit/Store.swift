@@ -165,10 +165,12 @@ public final class Store: @unchecked Sendable {
             try db.execute(sql: "CREATE TABLE filter_preset (name TEXT PRIMARY KEY, payload TEXT NOT NULL)")
         }
         m.registerMigration("v4-reading-position") { db in
-            // Where the in-app reader left off, per work. `spine_index` is the chapter
-            // granularity (robust across font changes); `locator` is an optional finer
-            // within-chapter anchor; `progress` is a 0…1 cache for display. Additive —
-            // touches no archive-state column. CASCADE so deleting a work clears its position.
+            // Where the in-app reader left off, per work. `spine_index` (legacy column name)
+            // actually stores the reader's *section* index — the reader navigates TOC
+            // sections, not raw spine items, so this is section granularity (robust across
+            // font changes). `locator` is an optional finer within-section anchor; `progress`
+            // is a 0…1 cache for display. Additive — touches no archive-state column.
+            // CASCADE so deleting a work clears its position.
             try db.execute(sql: """
                 CREATE TABLE reading_position (
                   work_id     INTEGER PRIMARY KEY REFERENCES work(id) ON DELETE CASCADE,
@@ -535,10 +537,24 @@ public final class Store: @unchecked Sendable {
 
     /// Full-text search over title/author/summary/tags/notes; returns matching work ids.
     public func searchWorkIDs(_ query: String) throws -> [Int] {
-        try dbQueue.read { db in
+        let match = Self.ftsMatchQuery(query)
+        // An empty query (or all-punctuation) yields no MATCH terms — return nothing rather
+        // than feeding FTS5 an empty pattern (a syntax error).
+        guard !match.isEmpty else { return [] }
+        return try dbQueue.read { db in
             try Int.fetchAll(db, sql: "SELECT rowid FROM work_fts WHERE work_fts MATCH ? ORDER BY rank",
-                             arguments: [query])
+                             arguments: [match])
         }
+    }
+
+    /// Turn arbitrary user text into a safe FTS5 `MATCH` pattern. Raw input can contain FTS5
+    /// query operators (`"`, `*`, `:`, `^`, `-`, `NEAR`, parentheses, unbalanced quotes) that
+    /// raise `SQLITE_ERROR`. We tokenize on whitespace and wrap each term as a double-quoted
+    /// phrase (doubling any embedded `"`), so every term is a literal and they're AND-ed.
+    static func ftsMatchQuery(_ query: String) -> String {
+        query.split(whereSeparator: \.isWhitespace)
+            .map { "\"" + $0.replacingOccurrences(of: "\"", with: "\"\"") + "\"" }
+            .joined(separator: " ")
     }
 
     public static func nowISO() -> String {

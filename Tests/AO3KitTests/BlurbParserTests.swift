@@ -171,6 +171,14 @@ import Foundation
         let html = #"<p>locked</p><a href="https://evil.example/downloads/x.epub">grab</a>"#
         #expect(try WorkDownloader.epubHref(fromWorkHTML: html) == nil)
     }
+
+    @Test func ignoresAbsoluteHrefInsideDownloadWrapper() throws {
+        // L3: an attacker-injected `li.download` wrapping an absolute href must be skipped by
+        // the *primary* selector too (now anchored `^=/downloads/`), not rely on the host
+        // allowlist one layer down.
+        let html = #"<li class="download"><a href="https://evil.example/downloads/x.epub">EPUB</a></li>"#
+        #expect(try WorkDownloader.epubHref(fromWorkHTML: html) == nil)
+    }
 }
 
 /// Security regression tests: the cookie/SSRF host gate, username path encoding, the
@@ -293,6 +301,9 @@ import Foundation
         #expect(!SyncEngine.reachedUpdateFrontier(pageCards: [old], since: nil))        // no watermark → page cap only
         #expect(!SyncEngine.reachedUpdateFrontier(pageCards: [recent, old], since: 100)) // a fresh card → keep going
         #expect(SyncEngine.reachedUpdateFrontier(pageCards: [old], since: 100))          // all stale → stop
+        // L4: an unparseable date (nil) counts as "unknown", not "old" — never ends the pass early.
+        let undated = WorkBlurb(kind: .work, sourcePath: "/works/3", workID: 3, title: "t", author: "a", updatedAt: nil)
+        #expect(!SyncEngine.reachedUpdateFrontier(pageCards: [old, undated], since: 100))
 
         // Date-updated sort injected into the listing path (brackets percent-encoded).
         #expect(SyncEngine.sortedByDateUpdated("/users/x/bookmarks?page=1")
@@ -317,6 +328,17 @@ import Foundation
         let store = try Store(inMemory: true)
         try ingest(store, try BlurbParser.parseListing(html: fixture("bookmarks_page")))
         #expect(try store.searchWorkIDs("circus").contains(1413325))
+    }
+
+    @Test func fullTextSearchToleratesFTS5Operators() throws {
+        // L1: raw text with FTS5 query operators must not raise SQLITE_ERROR — terms are
+        // quoted as literal phrases, so these run cleanly and a bare word still matches.
+        let store = try Store(inMemory: true)
+        try ingest(store, try BlurbParser.parseListing(html: fixture("bookmarks_page")))
+        for q in ["circus*", "\"unbalanced", "foo:bar", "a NEAR b", "-x", "()", "  "] {
+            #expect(throws: Never.self) { _ = try store.searchWorkIDs(q) }
+        }
+        #expect(try store.searchWorkIDs("\"circus\"").contains(1413325))
     }
 
     @Test func reBookmarkUnderNewIdReplacesStaleRow() throws {

@@ -211,10 +211,13 @@ public final class SyncEngine: @unchecked Sendable {
     }
 
     /// Stop the updated-works pass when the whole page predates our last successful run. With no
-    /// watermark (first ever run) we never stop early — the page cap is the only bound.
+    /// watermark (first ever run) we never stop early — the page cap is the only bound. A card
+    /// whose `updatedAt` failed to parse (nil) is treated as "unknown", NOT "old": it doesn't
+    /// count toward the frontier, so parser drift can't silently end the pass early (it just
+    /// keeps paging to the cap — fail-soft in the safe direction).
     public static func reachedUpdateFrontier(pageCards: [WorkBlurb], since watermark: Int?) -> Bool {
         guard let watermark else { return false }
-        return pageCards.allSatisfy { ($0.updatedAt ?? 0) < watermark }
+        return pageCards.allSatisfy { card in card.updatedAt.map { $0 < watermark } ?? false }
     }
 
     // MARK: - Index sync (paginated)

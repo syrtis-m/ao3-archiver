@@ -205,6 +205,13 @@ do {
 
         // FTS: a word from a real title is findable.
         check("FTS finds 'circus' (work 1413325)", try store.searchWorkIDs("circus").contains(1413325))
+        // L1: FTS5 query operators in raw input are quoted as literals, never raise SQLITE_ERROR.
+        var ftsThrew = false
+        for q in ["circus*", "\"unbalanced", "foo:bar", "a NEAR b", "-x", "()", "  "] {
+            do { _ = try store.searchWorkIDs(q) } catch { ftsThrew = true }
+        }
+        check("FTS tolerates query operators without throwing (L1)", !ftsThrew)
+        check("FTS quoted term still matches (L1)", try store.searchWorkIDs("\"circus\"").contains(1413325))
 
         // Re-bookmark: the same work under a NEW bookmark id (old bookmark deleted, fresh
         // one made) must not trip UNIQUE(item_kind,item_id) — it replaces the stale row.
@@ -604,6 +611,9 @@ do {
           !SyncEngine.reachedUpdateFrontier(pageCards: [recent, old], since: 100))
     check("reachedUpdateFrontier: whole page predates the watermark → stop",
           SyncEngine.reachedUpdateFrontier(pageCards: [old], since: 100))
+    let undated = WorkBlurb(kind: .work, sourcePath: "/works/3", workID: 3, title: "t", author: "a", updatedAt: nil)
+    check("reachedUpdateFrontier: an unparseable date doesn't end the pass early (L4)",
+          !SyncEngine.reachedUpdateFrontier(pageCards: [old, undated], since: 100))
     // Date-updated sort is injected into the listing path (brackets percent-encoded).
     check("sortedByDateUpdated appends to an existing query",
           SyncEngine.sortedByDateUpdated("/users/x/bookmarks?page=1")
@@ -627,6 +637,11 @@ do {
     // absolute href — the anchored `^=/downloads/` selector skips it.
     let evilMenu = #"<p>locked</p><a href="https://evil.example/downloads/x.epub">grab</a>"#
     check("ignores absolute off-site /downloads/ link", try WorkDownloader.epubHref(fromWorkHTML: evilMenu) == nil)
+    // L3: an absolute href injected inside a `li.download` wrapper must be skipped by the
+    // primary selector too (also anchored `^=/downloads/`), not just the fallback.
+    let evilWrapper = #"<li class="download"><a href="https://evil.example/downloads/x.epub">EPUB</a></li>"#
+    check("ignores absolute href inside li.download wrapper (L3)",
+          try WorkDownloader.epubHref(fromWorkHTML: evilWrapper) == nil)
 } catch {
     FileHandle.standardError.write(Data("threw: \(error)\n".utf8))
     exit(1)
