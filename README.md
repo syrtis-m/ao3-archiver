@@ -1,11 +1,13 @@
 # AO3 Archiver
 
-**Keep your own copy of your AO3 bookmarks — every story saved as a real file on your Mac, in a
-beautiful gallery you can search and filter however you like, even offline.**
+**A beautiful local browser for your AO3 bookmarks — search, filter, and read every one of them
+offline, and save the works you want to keep as real files on your Mac.**
 
-Fanworks disappear: authors delete accounts, works get orphaned, sites go down. AO3 Archiver
-quietly downloads the works you've bookmarked as standard `.epub` ebook files (the kind Apple
-Books reads) and keeps them in a folder you choose — so your favourites are yours to keep.
+AO3's own bookmarks page gets unwieldy once you have thousands. AO3 Archiver pulls your bookmarks
+into a dark, glassy gallery with instant, combinable filters, and lets you read them right in the
+app. And because fanworks disappear — authors delete accounts, works get orphaned, sites go down —
+you can save the ones you'd hate to lose as standard `.epub` ebook files (the kind Apple Books
+reads), in a folder you choose.
 
 It's a native Mac app with a dark, glassy look, and it's **private**: everything stays on your
 computer. Your login is stored in the Mac's Keychain and is only ever sent to AO3.
@@ -17,13 +19,14 @@ computer. Your login is stored in the Mac's Keychain and is only ever sent to AO
 
 ## What you can do with it
 
-- **Back up your bookmarks** as ebook files you own, readable in Apple Books and anywhere else.
 - **Browse them in a gallery** — each story shows its title, author, rating, tags, summary, word
   count, and your own bookmark notes.
 - **Find anything instantly.** Search by any word, or filter by fandom, relationship, character,
   rating, tags, length, kudos, date — and combine as many filters as you want. It stays fast even
   with tens of thousands of bookmarks. 
 - **Save your favourite filter combinations** ("Presets") and reapply them in one click.
+- **Save the works you want to keep** as ebook files you own — pick them as you browse, or grab a
+  batch — readable in Apple Books and anywhere else.
 - **Read right in the app.** A dark, glassy built-in reader opens any saved story in its own
   window — chapter-by-chapter or continuous scroll, with your choice of theme, font, and size, and
   it remembers where you left off. Open as many reader windows as you like.
@@ -70,9 +73,10 @@ Click **Sync**. You'll be asked for:
 
 Then press **Sync** and watch your bookmark list build up live.
 
-By default, syncing just builds your **catalog** (the list of everything, fast and gentle on AO3).
-To actually save a story's ebook file, open it and click **Download EPUB** — or turn on
-"Download EPUB files too" to grab them in bulk.
+By default, syncing just builds your **catalog** (the list of everything, fast and gentle on AO3) —
+so you can browse and filter your whole collection without downloading a single file. When you
+find a story worth keeping, open it and click **Download EPUB** to save its ebook — or turn on
+"Download EPUB files too" to save them as you sync.
 
 > **A note on patience:** AO3 asks apps to go slowly so they don't overload the site, and this app
 > respects that. A big library takes a while, and AO3 may ask it to pause partway — that's normal.

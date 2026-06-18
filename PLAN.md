@@ -8,14 +8,15 @@ For **how to use it**, see [README.md](README.md).
 ## Goals & non-goals
 
 **Goals**
-- Back up your AO3 bookmarks as real `.epub` files in a folder you control.
-- Work **with** a session cookie (private/restricted bookmarks) and **without** one (public only).
 - A dark, liquid-glass gallery that mirrors AO3's bookmarks UI, with **better, fully-local
-  filtering** — instant, multi-facet, combinable.
+  filtering** — instant, multi-facet, combinable — plus an in-app reader.
+- **Selectively archive** the works you want to keep as real `.epub` files in a folder you control
+  — saved as you browse or in a batch, never an all-or-nothing crawl.
+- Work **with** a session cookie (private/restricted bookmarks) and **without** one (public only).
 - Snappy at real scale: designed for ~20k bookmarks.
 
 **Non-goals**
-- Not a general AO3 reader/commenter/poster — read-only backup + browse.
+- Not a general AO3 reader/commenter/poster — read-only browse + selective backup.
 - Not a scraper of other people's libraries or a bulk-dataset tool (against AO3 policy). Scope is
   **your own bookmarks**.
 - No EPUB construction — AO3 renders EPUBs server-side; we download them as-is.
@@ -24,8 +25,9 @@ For **how to use it**, see [README.md](README.md).
 
 ## Status: V1.2 shipped
 
-The tool meets its goal — back up your AO3 bookmarks as EPUBs and browse/filter them locally,
-offline, snappily. You **sync, browse, and read entirely from the GUI**, no terminal required.
+The tool meets its goal — browse and filter your AO3 bookmarks locally, offline, and snappily, and
+selectively save the works you want to keep as EPUBs. You **sync, browse, and read entirely from
+the GUI**, no terminal required.
 
 **V1.2 (this release) — the in-app reader:**
 - A dark, Liquid-Glass **EPUB reader** that opens any saved work in its **own window** (resizable,

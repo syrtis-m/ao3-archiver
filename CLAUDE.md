@@ -8,10 +8,11 @@ gotchas that bite.
 
 ## What this is
 
-A native macOS app (**V1.2 shipped**) that backs up your AO3 bookmarks as `.epub` files with a
-dark, liquid-glass gallery and full local filtering — synced, browsed, and **read** entirely from
-the GUI. The core (parser, store, sync engine, gallery model, EPUB reader) is a tested Swift
-package; the SwiftUI app is a thin skin over it. V1.1 added the performance pass (scaled to ~20k
+A native macOS app (**V1.2 shipped**) for browsing your AO3 bookmarks in a dark, liquid-glass
+gallery with full local filtering — synced, browsed, and **read** entirely from the GUI — and
+selectively archiving the works you want to keep as `.epub` files. The core (parser, store, sync
+engine, gallery model, EPUB reader) is a tested Swift package; the SwiftUI app is a thin skin over
+it. V1.1 added the performance pass (scaled to ~20k
 bookmarks: stored haystack, debounced search, parallel facet passes, coalesced sync reloads) and a
 responsive layout. **V1.2 added the in-app Liquid-Glass EPUB reader** (TOC-section navigation,
 chapter/scroll modes, off-main prep, independent windows). See [ARCHITECTURE.md](ARCHITECTURE.md)
