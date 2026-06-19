@@ -263,6 +263,7 @@ public final class EpubDocument {
         </head>
         <body>
         \(body)
+        \(Self.keyScrollScript)
         \(scrollReporter ? Self.scrollReporterScript : "")
         </body>
         </html>
@@ -284,6 +285,23 @@ public final class EpubDocument {
     /// One-way, debounced (250ms) scroll reporter: posts `{i: topmostVisibleSectionIndex}` to the
     /// native `reader` message handler so the reader can persist where you actually scrolled to
     /// (section-granular — robust across font changes, unlike a pixel fraction).
+    /// WASD keyboard scrolling, mirroring the arrow keys the WebView already handles natively
+    /// (w/s = up/down, a/d = left/right). Operates only on the already-clean, locally-generated
+    /// document — pure `scrollBy`, no navigation, no message posting. Ignored while a text field
+    /// is focused or a modifier is held, so it never eats real shortcuts.
+    static let keyScrollScript = """
+    <script>
+    (function(){var V=72,H=72;
+    function editable(e){var t=e.target;if(!t)return false;var n=(t.tagName||'').toUpperCase();
+    return n==='INPUT'||n==='TEXTAREA'||t.isContentEditable;}
+    window.addEventListener('keydown',function(e){
+    if(e.metaKey||e.ctrlKey||e.altKey)return;if(editable(e))return;
+    var dx=0,dy=0,k=(e.key||'').toLowerCase();
+    if(k==='w')dy=-V;else if(k==='s')dy=V;else if(k==='a')dx=-H;else if(k==='d')dx=H;else return;
+    window.scrollBy(dx,dy);e.preventDefault();});})();
+    </script>
+    """
+
     static let scrollReporterScript = """
     <script>
     (function(){var t;function r(){var s=document.querySelectorAll('section.ao3-chapter'),b=0;

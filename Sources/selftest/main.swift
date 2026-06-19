@@ -311,6 +311,17 @@ do {
         vm.clearFilters()
         check("VM clear restores full set", vm.visibleCount == 20)
 
+        // Keyboard browsing (arrows + WASD map to these directions): step + clamp, no wrap.
+        let nav = vm.visibleItems
+        if nav.count >= 3 {
+            check("neighbor(nil,.next) → first", vm.neighbor(of: nil, .next) == nav.first?.id)
+            check("neighbor(nil,.previous) → last", vm.neighbor(of: nil, .previous) == nav.last?.id)
+            check("neighbor steps forward one", vm.neighbor(of: nav[1].id, .next) == nav[2].id)
+            check("neighbor steps back one", vm.neighbor(of: nav[1].id, .previous) == nav[0].id)
+            check("neighbor clamps at top", vm.neighbor(of: nav.first?.id, .previous) == nav.first?.id)
+            check("neighbor clamps at bottom", vm.neighbor(of: nav.last?.id, .next) == nav.last?.id)
+        }
+
         // Faceted-search invariant: selecting one value in a dimension must NOT collapse
         // that dimension's facet list — other values stay visible so multi-select (OR) is
         // reachable from the sidebar. (Counts are over the set filtered by all OTHER dims.)
@@ -760,6 +771,9 @@ for useNCX in [false, true] {
         check("[\(flavour)] chapter body readable", (try? doc.bodyHTML(forSpineIndex: 0).contains("Chapter One")) == true)
         let whole = doc.wholeWorkHTML(css: "x{}")
         check("[\(flavour)] whole-work doc has all sections", whole.contains("ao3-sec-0") && whole.contains("ao3-sec-2"))
+        // WASD scrolling (mirrors arrow keys) ships in both reading modes.
+        check("[\(flavour)] whole-work doc has WASD scrolling", whole.contains("window.scrollBy"))
+        check("[\(flavour)] chapter doc has WASD scrolling", doc.chapterHTML(sectionIndex: 0, css: "x{}").contains("window.scrollBy"))
         try? FileManager.default.removeItem(at: url)
     } else {
         check("synthetic EPUB (\(useNCX ? "ncx" : "nav")) builds + parses", false)

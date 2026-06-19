@@ -77,6 +77,15 @@ import Foundation
         #expect(!doc.chapterHTML(sectionIndex: 1, css: "x{}").contains("messageHandlers.reader"))
     }
 
+    @Test func bothModesCarryWASDKeyScrolling() throws {
+        let url = try SyntheticEpub.makeAO3Like()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let doc = try EpubDocument(url: url)
+        // WASD scrolling mirrors the arrow keys in both reading modes.
+        #expect(doc.wholeWorkHTML(css: "x{}").contains("window.scrollBy"))
+        #expect(doc.chapterHTML(sectionIndex: 1, css: "x{}").contains("window.scrollBy"))
+    }
+
     @Test func bodyHTMLIsStableWhenCached() throws {
         let url = try SyntheticEpub.makeAO3Like()
         defer { try? FileManager.default.removeItem(at: url) }

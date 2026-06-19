@@ -701,6 +701,22 @@ public final class GalleryViewModel {
     /// The currently-visible, filtered + sorted items.
     public var visibleItems: [WorkListItem] { derived.visible }
 
+    /// The id of the visible item adjacent to `current` in `direction` (keyboard browsing).
+    /// With no/unknown current selection, lands on the first (`.next`) or last (`.previous`)
+    /// visible item; clamps at the ends; returns nil only when nothing is visible.
+    public func neighbor(of current: WorkListItem.ID?,
+                         _ direction: GalleryNavDirection) -> WorkListItem.ID? {
+        let items = visibleItems
+        guard !items.isEmpty else { return nil }
+        guard let current, let idx = items.firstIndex(where: { $0.id == current }) else {
+            return direction == .next ? items.first?.id : items.last?.id
+        }
+        switch direction {
+        case .next:     return items[min(idx + 1, items.count - 1)].id
+        case .previous: return items[max(idx - 1, 0)].id
+        }
+    }
+
     /// Facet rows for one dimension. Counted against the set filtered by all OTHER
     /// dimensions, so selecting a value keeps that dimension's other values visible.
     public func facets(for dim: FacetDimension) -> [(name: String, count: Int)] {
@@ -746,3 +762,6 @@ public final class GalleryViewModel {
 
 /// Tri-state of a facet value in the sidebar.
 public enum FacetState: Sendable, Equatable { case neutral, include, exclude }
+
+/// Direction of keyboard browsing through the visible gallery list.
+public enum GalleryNavDirection: Sendable, Equatable { case previous, next }

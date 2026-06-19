@@ -12,6 +12,7 @@ struct GalleryView: View {
 
     @State private var selectionID: WorkListItem.ID?
     @State private var scrolledID: WorkListItem.ID?   // top-most card; preserved across reflows
+    @FocusState private var galleryFocused: Bool      // gallery must hold focus for key browsing
     @State private var compact = false
     @State private var showInspector = false
     @State private var showSync = false
@@ -165,6 +166,17 @@ struct GalleryView: View {
         }
     }
 
+    /// Move the keyboard selection one step and scroll the newly-selected card into view.
+    /// Returns `.handled` when the selection moved so the key isn't passed on. Does not open the
+    /// inspector — it updates on its own when already shown; keyboard browse stays lightweight.
+    private func moveSelection(_ direction: GalleryNavDirection,
+                               _ proxy: ScrollViewProxy) -> KeyPress.Result {
+        guard let next = vm.neighbor(of: selectionID, direction) else { return .ignored }
+        selectionID = next
+        proxy.scrollTo(next)   // nil anchor = minimal scroll to reveal it
+        return .handled
+    }
+
     @ViewBuilder
     private var gallery: some View {
         if let err = vm.loadError {
@@ -182,26 +194,43 @@ struct GalleryView: View {
             ContentUnavailableView.search
         } else {
             let items = vm.visibleItems   // compute the filtered+sorted set once per render
-            ScrollView {
-                LazyVStack(spacing: 12) {
-                    ForEach(items) { item in
-                        WorkCardView(item: item, compact: compact)
-                            .overlay {
-                                if item.id == selectionID {
-                                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                        .strokeBorder(Color.accentColor, lineWidth: 2)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 12) {
+                        ForEach(items) { item in
+                            WorkCardView(item: item, compact: compact)
+                                .overlay {
+                                    if item.id == selectionID {
+                                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                            .strokeBorder(Color.accentColor, lineWidth: 2)
+                                    }
                                 }
-                            }
-                            .contentShape(Rectangle())   // make the whole card clickable
-                            .onTapGesture { selectionID = item.id; presentDetails() }
+                                .contentShape(Rectangle())   // make the whole card clickable
+                                .onTapGesture {
+                                    selectionID = item.id; galleryFocused = true; presentDetails()
+                                }
+                        }
                     }
+                    .padding(16)
+                    .scrollTargetLayout()
                 }
-                .padding(16)
-                .scrollTargetLayout()
+                // Pin the scroll to the top-most card so opening/closing a side panel (which
+                // reflows the cards at a new width) keeps your place instead of jumping.
+                .scrollPosition(id: $scrolledID, anchor: .top)
+                // Keyboard browsing: arrow keys + WASD move the selection through the visible
+                // list and scroll it into view. Logic lives in the model (`neighbor`) so it stays
+                // testable; the View just maps keys → direction.
+                .focusable()
+                .focusEffectDisabled()
+                .focused($galleryFocused)
+                .onAppear { galleryFocused = true }
+                .onKeyPress(keys: [.upArrow, .leftArrow, "w", "a"]) { _ in
+                    moveSelection(.previous, proxy)
+                }
+                .onKeyPress(keys: [.downArrow, .rightArrow, "s", "d"]) { _ in
+                    moveSelection(.next, proxy)
+                }
             }
-            // Pin the scroll to the top-most card so opening/closing a side panel (which reflows
-            // the cards at a new width) keeps your place instead of jumping.
-            .scrollPosition(id: $scrolledID, anchor: .top)
         }
     }
 

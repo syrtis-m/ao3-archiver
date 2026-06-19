@@ -474,6 +474,25 @@ import Foundation
         #expect(vm.visibleCount == 20)
     }
 
+    @Test func keyboardNeighborWalksVisibleList() throws {
+        let cards = try BlurbParser.parseListing(html: fixture("bookmarks_page"))
+        let store = try Store(inMemory: true)
+        try ingest(store, cards)
+        let vm = GalleryViewModel(); vm.load(from: store)
+        let items = vm.visibleItems
+        try #require(items.count >= 3)
+
+        // No selection: .next lands on the first item, .previous on the last.
+        #expect(vm.neighbor(of: nil, .next) == items.first?.id)
+        #expect(vm.neighbor(of: nil, .previous) == items.last?.id)
+        // Steps forward/back by one.
+        #expect(vm.neighbor(of: items[1].id, .next) == items[2].id)
+        #expect(vm.neighbor(of: items[1].id, .previous) == items[0].id)
+        // Clamps at the ends (no wrap-around).
+        #expect(vm.neighbor(of: items.first?.id, .previous) == items.first?.id)
+        #expect(vm.neighbor(of: items.last?.id, .next) == items.last?.id)
+    }
+
     /// Faceted-search invariant: selecting one value in a dimension must keep that
     /// dimension's other values visible (so a multi-select — AND within a multi-value dim,
     /// OR within a single-valued one — is reachable from the sidebar), while still
