@@ -185,9 +185,12 @@ struct WorkDetailView: View {
         let root = archiveRoot, store = store
         Task {
             do {
+                // Higher retry budget than the default: AO3 behind Cloudflare can flap 525s for
+                // several requests in a row, and a single-work download should ride that out
+                // (with backoff) rather than give up after a handful of tries.
                 let client = AO3Client(config: AO3Config(
                     userAgent: AO3Config.defaultUserAgent(ao3User: CredentialStore.username),
-                    sessionCookie: cookie))
+                    sessionCookie: cookie, maxRetries: 8))
                 let data = try await WorkDownloader(client: client).downloadEPUB(workID: workID)
                 let rel = try FileStore(root: root).writeEPUB(data, workID: workID, title: title)
                 try store.markDownloaded(workID: workID, epubPath: rel, updatedAt: updatedAt)
