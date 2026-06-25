@@ -237,6 +237,14 @@ import Foundation
         // The surfaced messages name the cause, not a cookie problem.
         #expect("\(AO3Error.cloudflare(status: 503, shieldsUp: true))".contains("shields up"))
         #expect("\(AO3Error.cloudflare(status: 525, shieldsUp: false))".contains("525"))
+        #expect(!"\(AO3Error.cloudflare(status: 0, shieldsUp: false))".contains("0"))  // no "error 0"
+
+        // Body-only detection (used where only the HTML body is available): a challenge → true,
+        // a Cloudflare error page → false, real content / a binary EPUB → nil.
+        #expect(AO3Client.cloudflareWallKind(inBody: Data("<title>Just a moment...</title>".utf8)) == true)
+        #expect(AO3Client.cloudflareWallKind(inBody: Data("<h1>525: SSL handshake failed</h1>".utf8)) == false)
+        #expect(AO3Client.cloudflareWallKind(inBody: Data("<html>The Devil's Daughter</html>".utf8)) == nil)
+        #expect(AO3Client.cloudflareWallKind(inBody: Data([0x50, 0x4B, 0x03, 0x04])) == nil)  // EPUB zip
     }
 
     @Test func countRejectsUnknownTable() throws {

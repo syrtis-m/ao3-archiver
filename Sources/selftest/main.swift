@@ -706,6 +706,15 @@ check("cloudflare shields-up message names the cause",
       "\(AO3Error.cloudflare(status: 503, shieldsUp: true))".contains("shields up"))
 check("cloudflare edge message names the code",
       "\(AO3Error.cloudflare(status: 525, shieldsUp: false))".contains("525"))
+check("cloudflare message omits a zero status", !"\(AO3Error.cloudflare(status: 0, shieldsUp: false))".contains("0"))
+check("cloudflareWallKind: challenge body → true",
+      AO3Client.cloudflareWallKind(inBody: Data("<title>Just a moment...</title>".utf8)) == true)
+check("cloudflareWallKind: error page → false",
+      AO3Client.cloudflareWallKind(inBody: Data("<h1>525: SSL handshake failed</h1>".utf8)) == false)
+check("cloudflareWallKind: real content → nil",
+      AO3Client.cloudflareWallKind(inBody: Data("<html>The Devil's Daughter</html>".utf8)) == nil)
+check("cloudflareWallKind: EPUB zip → nil",
+      AO3Client.cloudflareWallKind(inBody: Data([0x50, 0x4B, 0x03, 0x04])) == nil)
 
 // Security: count(_:) rejects an unknown table name (interpolated identifier).
 if let secStore = try? Store(inMemory: true) {

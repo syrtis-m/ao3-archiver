@@ -42,16 +42,25 @@ public struct WorkDownloader {
         return try Self.epubHref(fromWorkHTML: html)
     }
 
-    /// Download the EPUB bytes for a work. Throws `AO3Error.requiresLogin` when the work
-    /// page exposes no download (restricted/locked works need a session cookie).
+    /// Download the EPUB bytes for a work. Throws `AO3Error.requiresLogin` when the work page
+    /// exposes no download (restricted/locked works need a session cookie), or `.cloudflare`
+    /// when a Cloudflare wall (challenge / edge error) slips back as a 2xx body — so a transient
+    /// network blip isn't mistaken for an auth problem.
     public func downloadEPUB(workID: Int) async throws -> Data {
-        guard let href = try await resolveEPUBHref(workID: workID) else {
+        let html = try await client.getHTML(path: "/works/\(workID)?view_adult=true")
+        guard let href = try Self.epubHref(fromWorkHTML: html) else {
+            if let shieldsUp = AO3Client.cloudflareWallKind(inBody: Data(html.utf8)) {
+                throw AO3Error.cloudflare(status: 0, shieldsUp: shieldsUp)
+            }
             throw AO3Error.requiresLogin
         }
         let data = try await client.getData(path: href)
         guard Self.looksLikeEPUB(data) else {
-            // A non-ZIP body here usually means we got an interstitial/redirect page,
-            // i.e. the content needs auth.
+            // A non-ZIP body is either a Cloudflare interstitial/error (transient) or an
+            // auth interstitial (needs a cookie) — classify so the UI guides correctly.
+            if let shieldsUp = AO3Client.cloudflareWallKind(inBody: data) {
+                throw AO3Error.cloudflare(status: 0, shieldsUp: shieldsUp)
+            }
             throw AO3Error.requiresLogin
         }
         return data

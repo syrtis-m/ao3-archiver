@@ -86,12 +86,13 @@ public enum AO3Error: Error, CustomStringConvertible {
         case .disallowedHost(let h):    return "refused request to non-AO3 host: \(h)"
         case .network(let m):           return "network error: \(m)"
         case .cloudflare(let code, let shieldsUp):
-            return shieldsUp
-                ? "AO3 is in Cloudflare \u{201C}shields up\u{201D} mode (Under-Attack / firewall "
-                  + "challenge) and is blocking automated access. This isn't a cookie problem — "
-                  + "wait a few minutes and try again."
-                : "Cloudflare edge error \(code) — AO3's servers are temporarily unreachable. "
-                  + "Try again shortly."
+            if shieldsUp {
+                return "AO3 is in Cloudflare \u{201C}shields up\u{201D} mode (Under-Attack / firewall "
+                     + "challenge) and is blocking automated access. This isn't a cookie problem — "
+                     + "wait a few minutes and try again."
+            }
+            let which = code > 0 ? " error \(code)" : " error"
+            return "Cloudflare\(which) — AO3's servers are temporarily unreachable. Try again shortly."
         }
     }
 }
@@ -308,5 +309,24 @@ public final class AO3Client: @unchecked Sendable {
                        "attention required", "enable javascript and cookies",
                        "checking your browser", "cf_chl_opt"]
         return markers.contains { head.contains($0) }
+    }
+
+    /// Body-only heuristic: does this HTML look like a Cloudflare wall (a challenge **or** an
+    /// error page like "525: SSL handshake failed") rather than real AO3 content? Used by the
+    /// EPUB/work-page consumers, which only have the body — so a Cloudflare interstitial that
+    /// slips back as a 2xx isn't mistaken for a locked / needs-login work. A real EPUB (binary
+    /// ZIP) or a genuine AO3 page won't match. Returns the challenge/edge kind, or nil.
+    public static func cloudflareWallKind(inBody data: Data) -> Bool? {
+        let head = String(decoding: data.prefix(4096), as: UTF8.self).lowercased()
+        let challengeMarkers = ["just a moment", "cf-browser-verification", "challenge-platform",
+                                "attention required", "enable javascript and cookies",
+                                "checking your browser", "cf_chl_opt"]
+        if challengeMarkers.contains(where: head.contains) { return true }   // shields up
+        let errorMarkers = ["cf-error-details", "cf-wrapper", "cf-error-overview",
+                            "ssl handshake failed", "web server is down",
+                            "performance &amp; security by cloudflare",
+                            "performance & security by cloudflare"]
+        if errorMarkers.contains(where: head.contains) { return false }      // edge error
+        return nil
     }
 }

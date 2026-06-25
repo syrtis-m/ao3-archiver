@@ -19,6 +19,10 @@ struct WorkDetailView: View {
     /// A fresh session cookie pasted into the retry field when a download fails (likely an
     /// expired cookie). Persisted to the Keychain on retry; cleared on success.
     @State private var cookieInput = ""
+    /// True only when the last failure was a genuine auth error (`requiresLogin`) — so the
+    /// cookie-paste field shows for that, not for a transient Cloudflare/network blip (which
+    /// would wrongly imply a login problem and just needs a plain retry).
+    @State private var needsCookie = false
     /// Set when a pasted cookie couldn't be saved to the Keychain (the download still proceeds
     /// with it, but it won't persist) — so the failure isn't silent.
     @State private var keychainWarning: String?
@@ -125,18 +129,24 @@ struct WorkDetailView: View {
             VStack(alignment: .leading, spacing: 8) {
                 Label(downloadError, systemImage: "exclamationmark.triangle")
                     .font(.caption).foregroundStyle(.orange)
-                // The usual cause is an expired session cookie. Let the user paste a fresh one
-                // and retry this download in place — no trip through the sync sheet. The new
-                // cookie is saved to the Keychain, so later downloads pick it up too.
                 if item.kind == .work, !downloading {
-                    HStack(spacing: 8) {
-                        SecureField("Paste a fresh _otwarchive_session cookie", text: $cookieInput)
-                            .textFieldStyle(.roundedBorder)
-                            .onSubmit { retryWithCookie() }
-                        Button("Save & retry") { retryWithCookie() }
-                            .disabled(cookieInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    if needsCookie {
+                        // A genuine auth failure — let the user paste a fresh cookie and retry in
+                        // place (no trip through the sync sheet). Saved to the Keychain, so later
+                        // downloads pick it up too.
+                        HStack(spacing: 8) {
+                            SecureField("Paste a fresh _otwarchive_session cookie", text: $cookieInput)
+                                .textFieldStyle(.roundedBorder)
+                                .onSubmit { retryWithCookie() }
+                            Button("Save & retry") { retryWithCookie() }
+                                .disabled(cookieInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        }
+                        .controlSize(.small)
+                    } else {
+                        // Transient (Cloudflare / network) — not a cookie problem. Just retry.
+                        Button { download() } label: { Label("Retry", systemImage: "arrow.clockwise") }
+                            .controlSize(.small)
                     }
-                    .controlSize(.small)
                 }
                 if let keychainWarning {
                     Label(keychainWarning, systemImage: "key.slash")
@@ -187,6 +197,7 @@ struct WorkDetailView: View {
             } catch {
                 downloading = false
                 downloadError = String(describing: error)
+                if case AO3Error.requiresLogin = error { needsCookie = true } else { needsCookie = false }
             }
         }
     }
