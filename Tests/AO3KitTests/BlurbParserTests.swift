@@ -204,8 +204,39 @@ import Foundation
         #expect(AO3Config.sanitizeCookie("_otwarchive_session=abc123") == "abc123")
         #expect(AO3Config.sanitizeCookie("abc123; other=x") == "abc123")
         #expect(AO3Config.sanitizeCookie(" _otwarchive_session=abc123; other=x ") == "abc123")
+        // The session pair isn't first in a pasted Cookie header / document.cookie — find it
+        // anyway (anchoring to the start would keep the wrong pair → an anonymous request).
+        #expect(AO3Config.sanitizeCookie("view_adult=true; _otwarchive_session=abc123; x=y") == "abc123")
         #expect(AO3Config.sanitizeCookie("   ") == nil)
         #expect(AO3Config.sanitizeCookie(nil) == nil)
+    }
+
+    @Test func cloudflareDetection() throws {
+        // Edge 5xx (transient, retried then surfaced) vs ordinary codes.
+        #expect(AO3Client.isCloudflareEdge(525))
+        #expect(AO3Client.isCloudflareEdge(520))
+        #expect(AO3Client.isCloudflareEdge(530))
+        #expect(!AO3Client.isCloudflareEdge(503))   // origin 5xx, not a CF edge code
+        #expect(!AO3Client.isCloudflareEdge(200))
+
+        let url = URL(string: "https://archiveofourown.org/")!
+        func resp(_ code: Int, _ headers: [String: String]) -> HTTPURLResponse {
+            HTTPURLResponse(url: url, statusCode: code, httpVersion: nil, headerFields: headers)!
+        }
+        // The explicit Cloudflare header is enough, whatever the status.
+        #expect(AO3Client.isCloudflareChallenge(resp(403, ["cf-mitigated": "challenge"]), Data()))
+        // Cloudflare-served + interstitial body markers.
+        let challengeBody = Data("<html><head><title>Just a moment...</title></head>".utf8)
+        #expect(AO3Client.isCloudflareChallenge(resp(503, ["Server": "cloudflare"]), challengeBody))
+        // A genuine AO3 page served via Cloudflare without challenge markers is NOT a challenge.
+        let realPage = Data("<html><body>Log Out</body></html>".utf8)
+        #expect(!AO3Client.isCloudflareChallenge(resp(200, ["server": "cloudflare", "cf-ray": "abc"]), realPage))
+        // Not served by Cloudflare → never a challenge, even with a suggestive body.
+        #expect(!AO3Client.isCloudflareChallenge(resp(503, [:]), challengeBody))
+
+        // The surfaced messages name the cause, not a cookie problem.
+        #expect("\(AO3Error.cloudflare(status: 503, shieldsUp: true))".contains("shields up"))
+        #expect("\(AO3Error.cloudflare(status: 525, shieldsUp: false))".contains("525"))
     }
 
     @Test func countRejectsUnknownTable() throws {

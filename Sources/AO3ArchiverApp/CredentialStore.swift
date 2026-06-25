@@ -12,21 +12,32 @@ enum CredentialStore {
     static let usernameAccount = "username"
     static let cookieAccount = "session_cookie"
 
-    static func set(_ value: String?, account: String) {
+    @discardableResult
+    static func set(_ value: String?, account: String) -> Bool {
         let base: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
         ]
-        SecItemDelete(base as CFDictionary)
         let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let trimmed, !trimmed.isEmpty, let data = trimmed.data(using: .utf8) else { return }
+        guard let trimmed, !trimmed.isEmpty, let data = trimmed.data(using: .utf8) else {
+            SecItemDelete(base as CFDictionary)   // empty → clear any stored value
+            return true
+        }
         var add = base
         add[kSecValueData as String] = data
         // Local to this device, readable only after first unlock — never synced to iCloud
         // Keychain and never available while the device is locked.
         add[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-        SecItemAdd(add as CFDictionary, nil)
+        let status = SecItemAdd(add as CFDictionary, nil)
+        if status == errSecDuplicateItem {
+            // Already present — overwrite the value in place. (A blind delete-then-add can
+            // silently no-op if the delete is denied, stranding a STALE cookie that every
+            // later download keeps using. Update-on-duplicate guarantees the overwrite.)
+            return SecItemUpdate(base as CFDictionary,
+                                 [kSecValueData as String: data] as CFDictionary) == errSecSuccess
+        }
+        return status == errSecSuccess
     }
 
     static func read(account: String) -> String? {

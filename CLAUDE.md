@@ -22,8 +22,8 @@ chapter/scroll modes, off-main prep, independent windows). See [ARCHITECTURE.md]
 
 ```sh
 swift build                 # build library + CLI + app
-swift run selftest          # headless parser + Store + gallery + reader checks (282 checks)
-swift test                  # swift-testing suite (76 tests, 6 suites) — run this; Xcode is installed
+swift run selftest          # headless parser + Store + gallery + reader checks (292 checks)
+swift test                  # swift-testing suite (77 tests, 6 suites) — run this; Xcode is installed
 swift run ao3archiver       # bounded CLI sync: paginate → ingest → expand series → download
 swift run AO3ArchiverApp    # SwiftUI gallery over the synced DB (reads AO3_ARCHIVE_DIR)
 ./Packaging/make-icon.sh    # render the liquid-glass app icon → Packaging/AppIcon.icns

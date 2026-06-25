@@ -677,8 +677,35 @@ check("sanitizeCookie strips the name= prefix", AO3Config.sanitizeCookie("_otwar
 check("sanitizeCookie drops trailing cookies", AO3Config.sanitizeCookie("abc123; other=x") == "abc123")
 check("sanitizeCookie strips prefix and trailing junk together",
       AO3Config.sanitizeCookie(" _otwarchive_session=abc123; other=x ") == "abc123")
+check("sanitizeCookie finds the session pair when it isn't first",
+      AO3Config.sanitizeCookie("view_adult=true; _otwarchive_session=abc123; x=y") == "abc123")
 check("sanitizeCookie nil for empty/whitespace", AO3Config.sanitizeCookie("   ") == nil)
 check("sanitizeCookie nil for nil", AO3Config.sanitizeCookie(nil) == nil)
+
+// Cloudflare "shields up" detection — surfaced plainly, not retried into a confusing failure.
+check("isCloudflareEdge accepts 52x", AO3Client.isCloudflareEdge(525) && AO3Client.isCloudflareEdge(520))
+check("isCloudflareEdge accepts 530", AO3Client.isCloudflareEdge(530))
+check("isCloudflareEdge rejects origin 503", !AO3Client.isCloudflareEdge(503))
+do {
+    let url = URL(string: "https://archiveofourown.org/")!
+    func resp(_ code: Int, _ h: [String: String]) -> HTTPURLResponse {
+        HTTPURLResponse(url: url, statusCode: code, httpVersion: nil, headerFields: h)!
+    }
+    let challenge = Data("<title>Just a moment...</title>".utf8)
+    check("cf challenge via cf-mitigated header",
+          AO3Client.isCloudflareChallenge(resp(403, ["cf-mitigated": "challenge"]), Data()))
+    check("cf challenge via served-by-CF + body marker",
+          AO3Client.isCloudflareChallenge(resp(503, ["Server": "cloudflare"]), challenge))
+    check("real CF-served page is not a challenge",
+          !AO3Client.isCloudflareChallenge(resp(200, ["server": "cloudflare", "cf-ray": "x"]),
+                                           Data("Log Out".utf8)))
+    check("non-CF response is never a challenge",
+          !AO3Client.isCloudflareChallenge(resp(503, [:]), challenge))
+}
+check("cloudflare shields-up message names the cause",
+      "\(AO3Error.cloudflare(status: 503, shieldsUp: true))".contains("shields up"))
+check("cloudflare edge message names the code",
+      "\(AO3Error.cloudflare(status: 525, shieldsUp: false))".contains("525"))
 
 // Security: count(_:) rejects an unknown table name (interpolated identifier).
 if let secStore = try? Store(inMemory: true) {

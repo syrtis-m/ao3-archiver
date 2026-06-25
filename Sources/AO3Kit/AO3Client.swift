@@ -47,8 +47,10 @@ public struct AO3Config: Sendable {
         guard var s = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !s.isEmpty else {
             return nil
         }
-        let prefix = "_otwarchive_session="
-        if s.hasPrefix(prefix) { s.removeFirst(prefix.count) }   // pasted the whole pair
+        // Find the session pair wherever it sits — a pasted Cookie header / document.cookie
+        // often has other pairs before it (e.g. "view_adult=true; _otwarchive_session=…").
+        // Anchoring to the start would silently keep the wrong pair → an anonymous request.
+        if let r = s.range(of: "_otwarchive_session=") { s = String(s[r.upperBound...]) }
         if let semi = s.firstIndex(of: ";") { s = String(s[..<semi]) }  // trailing cookies
         s = s.trimmingCharacters(in: .whitespacesAndNewlines)
         return s.isEmpty ? nil : s
@@ -71,6 +73,9 @@ public enum AO3Error: Error, CustomStringConvertible {
     case badURL(String)
     case disallowedHost(String)
     case network(String)
+    /// AO3 is behind a Cloudflare wall. `shieldsUp` = an Under-Attack / firewall **challenge**
+    /// we can't pass programmatically (surface immediately); otherwise a transient edge 5xx.
+    case cloudflare(status: Int, shieldsUp: Bool)
 
     public var description: String {
         switch self {
@@ -80,6 +85,13 @@ public enum AO3Error: Error, CustomStringConvertible {
         case .badURL(let u):            return "bad URL: \(u)"
         case .disallowedHost(let h):    return "refused request to non-AO3 host: \(h)"
         case .network(let m):           return "network error: \(m)"
+        case .cloudflare(let code, let shieldsUp):
+            return shieldsUp
+                ? "AO3 is in Cloudflare \u{201C}shields up\u{201D} mode (Under-Attack / firewall "
+                  + "challenge) and is blocking automated access. This isn't a cookie problem — "
+                  + "wait a few minutes and try again."
+                : "Cloudflare edge error \(code) — AO3's servers are temporarily unreachable. "
+                  + "Try again shortly."
         }
     }
 }
@@ -202,6 +214,15 @@ public final class AO3Client: @unchecked Sendable {
                 throw AO3Error.network("non-HTTP response")
             }
 
+            // Cloudflare "shields up" (Under-Attack / firewall challenge) can land on any status
+            // — 403, 429, 503, even 200 with a JS interstitial. We can't solve the challenge, so
+            // surface it plainly instead of retrying uselessly or mis-reporting it as HTTP 403 /
+            // requiresLogin (a non-EPUB challenge body would otherwise look like a locked work).
+            if Self.isCloudflareChallenge(http, data) {
+                log("Cloudflare challenge (\"shields up\") on HTTP \(http.statusCode) — surfacing")
+                throw AO3Error.cloudflare(status: http.statusCode, shieldsUp: true)
+            }
+
             switch http.statusCode {
             case 200..<300:
                 return (data, http)
@@ -217,8 +238,14 @@ public final class AO3Client: @unchecked Sendable {
                 try await sleep(wait)
                 return try await perform(request, attempt: attempt + 1)
 
-            case 502, 503, 504:
-                guard attempt < config.maxRetries else { throw AO3Error.http(http.statusCode) }
+            // Transient origin/edge 5xx — incl. Cloudflare's own 520–527/530. Retry with backoff,
+            // then surface (as a Cloudflare edge error for the 52x codes, plain HTTP otherwise).
+            case 502, 503, 504, 520, 521, 522, 523, 524, 525, 526, 527, 530:
+                guard attempt < config.maxRetries else {
+                    throw Self.isCloudflareEdge(http.statusCode)
+                        ? AO3Error.cloudflare(status: http.statusCode, shieldsUp: false)
+                        : AO3Error.http(http.statusCode)
+                }
                 let wait = Self.backoff(attempt)
                 log("HTTP \(http.statusCode) — retrying in \(Int(wait))s (attempt \(attempt + 1)/\(config.maxRetries))")
                 onRateLimit(wait, attempt + 1, config.maxRetries)
@@ -255,5 +282,31 @@ public final class AO3Client: @unchecked Sendable {
     private static func backoff(_ attempt: Int) -> TimeInterval {
         let base = min(60.0, pow(2.0, Double(attempt)))
         return base + Double.random(in: 0...1)
+    }
+
+    /// Cloudflare's own edge status codes (origin unreachable / handshake failures). Distinct
+    /// from a *challenge*: these are transient, so they're retried before being surfaced.
+    public static func isCloudflareEdge(_ code: Int) -> Bool {
+        (520...527).contains(code) || code == 530
+    }
+
+    /// True when the response is a Cloudflare **challenge** ("shields up" / Under-Attack mode or
+    /// a firewall block) rather than real AO3 content. Such a page can't be solved without a
+    /// browser, so we surface it instead of retrying. Detected by the `cf-mitigated: challenge`
+    /// header (Cloudflare's explicit signal) or, for a Cloudflare-served response, the
+    /// interstitial's tell-tale body markers. A genuine AO3 429/5xx or a binary EPUB won't match.
+    public static func isCloudflareChallenge(_ http: HTTPURLResponse, _ data: Data) -> Bool {
+        if http.value(forHTTPHeaderField: "cf-mitigated")?.lowercased() == "challenge" {
+            return true
+        }
+        let server = (http.value(forHTTPHeaderField: "Server") ?? "").lowercased()
+        let servedByCloudflare = server.contains("cloudflare")
+            || http.value(forHTTPHeaderField: "cf-ray") != nil
+        guard servedByCloudflare else { return false }
+        let head = String(decoding: data.prefix(4096), as: UTF8.self).lowercased()
+        let markers = ["just a moment", "cf-browser-verification", "challenge-platform",
+                       "attention required", "enable javascript and cookies",
+                       "checking your browser", "cf_chl_opt"]
+        return markers.contains { head.contains($0) }
     }
 }

@@ -16,6 +16,12 @@ struct WorkDetailView: View {
     @State private var seriesMembers: [WorkListItem] = []
     @State private var downloading = false
     @State private var downloadError: String?
+    /// A fresh session cookie pasted into the retry field when a download fails (likely an
+    /// expired cookie). Persisted to the Keychain on retry; cleared on success.
+    @State private var cookieInput = ""
+    /// Set when a pasted cookie couldn't be saved to the Keychain (the download still proceeds
+    /// with it, but it won't persist) — so the failure isn't silent.
+    @State private var keychainWarning: String?
 
     var body: some View {
         ScrollView {
@@ -116,26 +122,67 @@ struct WorkDetailView: View {
         .buttonStyle(.glass)
         .controlSize(.large)
         if let downloadError {
-            Label(downloadError, systemImage: "exclamationmark.triangle")
-                .font(.caption).foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 8) {
+                Label(downloadError, systemImage: "exclamationmark.triangle")
+                    .font(.caption).foregroundStyle(.orange)
+                // The usual cause is an expired session cookie. Let the user paste a fresh one
+                // and retry this download in place — no trip through the sync sheet. The new
+                // cookie is saved to the Keychain, so later downloads pick it up too.
+                if item.kind == .work, !downloading {
+                    HStack(spacing: 8) {
+                        SecureField("Paste a fresh _otwarchive_session cookie", text: $cookieInput)
+                            .textFieldStyle(.roundedBorder)
+                            .onSubmit { retryWithCookie() }
+                        Button("Save & retry") { retryWithCookie() }
+                            .disabled(cookieInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                    .controlSize(.small)
+                }
+                if let keychainWarning {
+                    Label(keychainWarning, systemImage: "key.slash")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+            }
         }
     }
 
-    /// Fetch this single work's EPUB (using the stored cookie if present), write it, and
-    /// mark it downloaded — then refresh so the buttons flip to Open/Reveal.
-    private func download() {
+    private func retryWithCookie() {
+        let trimmed = cookieInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        download(newCookie: trimmed)
+    }
+
+    /// Fetch this single work's EPUB and mark it downloaded — then refresh so the buttons
+    /// flip to Open/Reveal. Pass `newCookie` to retry with a freshly-pasted session cookie:
+    /// it's persisted to the Keychain (so every later download uses it too) and used for this
+    /// request. With no argument it uses whatever cookie is already stored.
+    private func download(newCookie: String? = nil) {
         downloading = true; downloadError = nil
+        let typed = newCookie.flatMap(AO3Config.sanitizeCookie)
+        if let typed {
+            // Persist so later downloads reuse it. If the Keychain write is denied (e.g. an
+            // ad-hoc-signed rebuild changed identity), the retry below still uses `typed`, but
+            // warn — otherwise the next download silently falls back to the stale stored cookie.
+            if !CredentialStore.set(typed, account: CredentialStore.cookieAccount) {
+                keychainWarning = "Couldn't save the cookie to the Keychain — this download will "
+                    + "use it, but you may have to paste it again next time."
+            } else {
+                keychainWarning = nil
+            }
+        }
+        let cookie = typed ?? CredentialStore.cookie
         let workID = item.itemID, title = item.title, updatedAt = item.updatedAt
         let root = archiveRoot, store = store
         Task {
             do {
                 let client = AO3Client(config: AO3Config(
                     userAgent: AO3Config.defaultUserAgent(ao3User: CredentialStore.username),
-                    sessionCookie: CredentialStore.cookie))
+                    sessionCookie: cookie))
                 let data = try await WorkDownloader(client: client).downloadEPUB(workID: workID)
                 let rel = try FileStore(root: root).writeEPUB(data, workID: workID, title: title)
                 try store.markDownloaded(workID: workID, epubPath: rel, updatedAt: updatedAt)
                 downloading = false
+                cookieInput = ""
                 onChanged()
             } catch {
                 downloading = false

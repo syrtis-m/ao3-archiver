@@ -101,6 +101,7 @@ struct GalleryView: View {
                     if let item = selectedItem {
                         WorkDetailView(item: item, store: store, archiveRoot: archiveRoot,
                                        onChanged: { vm.load(from: store) })
+                            .id(item.id)   // fresh per-work state (no stale error/cookie bleed)
                             .inspectorColumnWidth(min: 280, ideal: 360, max: 460)
                     } else {
                         ContentUnavailableView("No selection", systemImage: "sidebar.right")
@@ -145,6 +146,7 @@ struct GalleryView: View {
                 if let item = selectedItem {
                     WorkDetailView(item: item, store: store, archiveRoot: archiveRoot,
                                    onChanged: { vm.load(from: store) })
+                        .id(item.id)   // fresh per-work state (no stale error/cookie bleed)
                 } else {
                     ContentUnavailableView("No selection", systemImage: "sidebar.right")
                 }
