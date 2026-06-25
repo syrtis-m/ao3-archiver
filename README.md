@@ -48,7 +48,7 @@ computer. Your login is stored in the Mac's Keychain and is only ever sent to AO
 You'll need an **Apple Silicon Mac** running **macOS 26 (Tahoe)**.
 
 1. Go to the [**latest release**](https://github.com/syrtis-m/ao3-archiver/releases/latest) and
-   download **`AO3-Archiver-v1.2.1.zip`** (under *Assets*).
+   download **`AO3-Archiver-v1.2.2.zip`** (under *Assets*).
 2. Double-click the downloaded zip to unzip it, then drag **AO3 Archiver.app** into your
    **Applications** folder.
 3. The first time you open it, **right-click (or Control-click) the app → Open → Open**. macOS
