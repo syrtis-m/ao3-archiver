@@ -290,6 +290,33 @@ do {
         check("title sort is alphabetical",
               byTitle == byTitle.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending })
 
+        // Derived ratio sorts: smoothed num/(den+prior) so a tiny fluke can't top the list, and
+        // each ratio surfaces a different kind of fic (gem / keeper / short banger).
+        let mk: (Int, String, Int, Int, Int, Int, Int) -> WorkListItem =
+            { id, t, wc, ku, co, bm, hi in
+                WorkListItem(itemID: id, kind: .work, sourcePath: "/w/\(id)", title: t, author: "a",
+                             wordCount: wc, kudos: ku, comments: co, bookmarksCount: bm, hits: hi) }
+        let ratioItems = [
+            mk(1, "Blockbuster gem", 50000, 900, 50, 400, 10000),
+            mk(2, "Tiny fluke",        500,   5,  1,   3,     5),  // raw kudos/hits = 100%
+            mk(3, "Keeper / discussed", 5000, 100, 80, 300,  4000),
+            mk(4, "Short banger",       800, 600, 10,  50,  8000),
+        ]
+        check("acclaim-rate smoothing: blockbuster beats the 5-hit fluke",
+              GallerySort.acclaimRate.sorted(ratioItems).first?.itemID == 1)
+        check("acclaim-rate never floats the tiny fluke to the top",
+              GallerySort.acclaimRate.sorted(ratioItems).first?.itemID != 2)
+        check("keeper-ratio ranks high saves-per-kudos first",
+              GallerySort.keeperRatio.sorted(ratioItems).first?.itemID == 3)
+        check("conversation-ratio ranks high comments-per-kudos first",
+              GallerySort.conversationRatio.sorted(ratioItems).first?.itemID == 3)
+        check("acclaim-density ranks the short banger first",
+              GallerySort.acclaimDensity.sorted(ratioItems).first?.itemID == 4)
+        check("collector-rate ranks high saves-per-hit first",
+              GallerySort.collectorRate.sorted(ratioItems).first?.itemID == 3)
+        check("isRatio flags only the derived sorts",
+              GallerySort.allCases.filter(\.isRatio).count == 5 && !GallerySort.kudos.isRatio)
+
         print("Gallery — facets")
         let types = Facets.values(for: .bookmarkType, in: items)
         check("type facet counts sum to item count", types.reduce(0) { $0 + $1.count } == 20)

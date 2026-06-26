@@ -247,7 +247,10 @@ struct GalleryView: View {
             // Menu-style + fixedSize so the control stays a compact pop-up (the default
             // picker chrome stretches and reads as overlapping in a crowded toolbar).
             Picker("Sort", selection: $vm.sort) {
-                ForEach(GallerySort.allCases, id: \.self) { Text($0.label).tag($0) }
+                ForEach(GallerySort.allCases.filter { !$0.isRatio }, id: \.self) { Text($0.label).tag($0) }
+                Section("Ratios") {
+                    ForEach(GallerySort.allCases.filter(\.isRatio), id: \.self) { Text($0.label).tag($0) }
+                }
             }
             .pickerStyle(.menu)
             .fixedSize()

@@ -100,7 +100,11 @@ The app saves it securely in your Mac's Keychain and only ever sends it to AO3.
 ### 4. Browse and filter
 
 Use the sidebar on the left to filter, the search box up top to find words, and the sort menu to
-order things (newest bookmark, most kudos, title, and so on). Click any story to see its full
+order things (newest bookmark, most kudos, title, and so on). The sort menu also has a **Ratios**
+section that ranks by how metrics relate rather than a single number — *Acclaim* (kudos per hit, a
+quietly-beloved hidden gem), *Keeper* (saves per kudos, the fics people keep to reread),
+*Conversation* (comments per kudos), *Density* (kudos per 1k words, short stories that punch above
+their length), and *Collector* (saves per hit). Click any story to see its full
 details, then **Read** to open it in the built-in reader (or open it in Books, or jump to it on
 AO3). The reader opens in its own window — use the **list** button for the table of contents and
 **Aa** to switch between chapter and scroll modes and adjust theme, font, and size.

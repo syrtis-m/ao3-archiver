@@ -354,6 +354,27 @@ single section on open — instant regardless of work size, the path for enormou
 `content-visibility` was tried for lazy off-screen rendering and **removed**: it makes WebKit jump
 scroll position when scrolling up into a virtualized chapter. Scroll mode renders the full DOM.
 
+## 11. Derived "ratio" sorts (`GallerySort`)
+
+Beyond the single-metric sorts (kudos, hits, word count…), the gallery offers five **derived
+ratio sorts** that rank by a *relationship* between two metrics, surfacing fics single-metric
+sorts bury: **Acclaim** (kudos ÷ hits — quietly beloved), **Keeper** (bookmarks ÷ kudos — saved to
+reread, not just liked), **Conversation** (comments ÷ kudos — discussion magnets / serials),
+**Density** (kudos ÷ words — short bangers), **Collector** (bookmarks ÷ hits). They were picked
+from an offline exploratory analysis of the archive (the scatter-lab report under the archive
+folder) as the ratios most *independent of raw popularity* — i.e. they reorder the list rather than
+echo the kudos sort.
+
+**Smoothing, not a hard floor.** A naive `num/den` puts flukes first — a 5-hit/5-kudos fic scores a
+perfect 100% acclaim. So each sort ranks by `num / (den + prior)`, where the per-ratio `prior`
+(hits 300, kudos 40, words 2000) is a soft exposure floor: it shrinks tiny-denominator works toward
+zero while leaving normal-sized ones essentially unchanged, and — unlike a filter — **keeps every
+item in the list** (missing metrics → 0, sink to the bottom). This is a pure, deterministic
+function of the in-memory item, so it stays below the SwiftUI line and is unit-tested in both the
+swift-testing suite (`ratioSorts`) and the headless `selftest`. `GallerySort.isRatio` lets the
+toolbar picker group them under a "Ratios" section; the cases are `Codable` raw strings, so they
+round-trip in filter presets like any other sort.
+
 **Resume** is **section-granular** (robust across font changes). In scroll mode a one-way,
 debounced scroll reporter posts the topmost-visible section index to the native side
 (`recordVisibleSection`), so resume lands where you actually read, not the last TOC selection; the

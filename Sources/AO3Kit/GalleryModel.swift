@@ -568,19 +568,45 @@ public struct FilterPreset: Sendable, Equatable, Codable, Identifiable {
 /// bookmark date is human text), newest first.
 public enum GallerySort: String, Sendable, CaseIterable, Codable {
     case dateBookmarked, dateUpdated, title, author, wordCount, kudos, comments, bookmarks, hits
+    // Derived "ratio" sorts (see ARCHITECTURE.md §11): each ranks by a relationship between two
+    // raw metrics rather than a single metric, surfacing fics that single-metric sorts bury —
+    // a quietly-beloved hidden gem, a saved-to-reread keeper, a discussion magnet.
+    case acclaimRate, keeperRatio, conversationRatio, acclaimDensity, collectorRate
 
     public var label: String {
         switch self {
-        case .dateBookmarked: return "Date bookmarked"
-        case .dateUpdated:    return "Date updated"
-        case .title:          return "Title"
-        case .author:         return "Author"
-        case .wordCount:      return "Word count"
-        case .kudos:          return "Kudos"
-        case .comments:       return "Comments"
-        case .bookmarks:      return "Bookmarks"
-        case .hits:           return "Hits"
+        case .dateBookmarked:    return "Date bookmarked"
+        case .dateUpdated:       return "Date updated"
+        case .title:             return "Title"
+        case .author:            return "Author"
+        case .wordCount:         return "Word count"
+        case .kudos:             return "Kudos"
+        case .comments:          return "Comments"
+        case .bookmarks:         return "Bookmarks"
+        case .hits:              return "Hits"
+        case .acclaimRate:       return "Acclaim · kudos per hit"
+        case .keeperRatio:       return "Keeper · saves per kudos"
+        case .conversationRatio: return "Conversation · comments per kudos"
+        case .acclaimDensity:    return "Density · kudos per 1k words"
+        case .collectorRate:     return "Collector · saves per hit"
         }
+    }
+
+    /// True for the derived ratio sorts, so the UI can group them under a header / divider.
+    public var isRatio: Bool {
+        switch self {
+        case .acclaimRate, .keeperRatio, .conversationRatio, .acclaimDensity, .collectorRate: return true
+        default: return false
+        }
+    }
+
+    /// Smoothed ratio `num / (den + prior)`. The prior is a soft exposure floor: a fluke fic
+    /// with 5 hits and 5 kudos would top a raw kudos/hits sort, so we shrink small-denominator
+    /// works toward zero while leaving normal-sized ones essentially unchanged. Missing metrics
+    /// count as 0 and sink to the bottom (externals, un-scraped fields). Priors are round
+    /// order-of-magnitude floors, mirroring the scatter-lab analysis that motivated these sorts.
+    private static func ratio(_ num: Int?, _ den: Int?, prior: Double) -> Double {
+        Double(num ?? 0) / (Double(den ?? 0) + prior)
     }
 
     public func sorted(_ items: [WorkListItem]) -> [WorkListItem] {
@@ -594,6 +620,16 @@ public enum GallerySort: String, Sendable, CaseIterable, Codable {
         case .comments:       return items.sorted { ($0.comments ?? 0) > ($1.comments ?? 0) }
         case .bookmarks:      return items.sorted { ($0.bookmarksCount ?? 0) > ($1.bookmarksCount ?? 0) }
         case .hits:           return items.sorted { ($0.hits ?? 0) > ($1.hits ?? 0) }
+        case .acclaimRate:
+            return items.sorted { Self.ratio($0.kudos, $0.hits, prior: 300) > Self.ratio($1.kudos, $1.hits, prior: 300) }
+        case .keeperRatio:
+            return items.sorted { Self.ratio($0.bookmarksCount, $0.kudos, prior: 40) > Self.ratio($1.bookmarksCount, $1.kudos, prior: 40) }
+        case .conversationRatio:
+            return items.sorted { Self.ratio($0.comments, $0.kudos, prior: 40) > Self.ratio($1.comments, $1.kudos, prior: 40) }
+        case .acclaimDensity:
+            return items.sorted { Self.ratio($0.kudos, $0.wordCount, prior: 2000) > Self.ratio($1.kudos, $1.wordCount, prior: 2000) }
+        case .collectorRate:
+            return items.sorted { Self.ratio($0.bookmarksCount, $0.hits, prior: 300) > Self.ratio($1.bookmarksCount, $1.hits, prior: 300) }
         }
     }
 }

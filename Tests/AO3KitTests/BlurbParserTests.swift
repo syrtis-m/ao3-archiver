@@ -484,6 +484,29 @@ import Foundation
         #expect(types.first?.name == "work")
     }
 
+    /// Derived ratio sorts (acclaim/keeper/conversation/density/collector): smoothed
+    /// `num/(den+prior)` so a tiny fluke can't top the list, and each surfaces a different fic.
+    @Test func ratioSorts() {
+        func mk(_ id: Int, _ wc: Int, _ ku: Int, _ co: Int, _ bm: Int, _ hi: Int) -> WorkListItem {
+            WorkListItem(itemID: id, kind: .work, sourcePath: "/w/\(id)", title: "t\(id)", author: "a",
+                         wordCount: wc, kudos: ku, comments: co, bookmarksCount: bm, hits: hi)
+        }
+        let items = [
+            mk(1, 50000, 900, 50, 400, 10000),  // blockbuster gem
+            mk(2,   500,   5,  1,   3,     5),  // tiny fluke — raw kudos/hits = 100%
+            mk(3,  5000, 100, 80, 300,  4000),  // keeper / discussed
+            mk(4,   800, 600, 10,  50,  8000),  // short banger
+        ]
+        #expect(GallerySort.acclaimRate.sorted(items).first?.itemID == 1)
+        #expect(GallerySort.acclaimRate.sorted(items).first?.itemID != 2)  // fluke never tops it
+        #expect(GallerySort.keeperRatio.sorted(items).first?.itemID == 3)
+        #expect(GallerySort.conversationRatio.sorted(items).first?.itemID == 3)
+        #expect(GallerySort.acclaimDensity.sorted(items).first?.itemID == 4)
+        #expect(GallerySort.collectorRate.sorted(items).first?.itemID == 3)
+        #expect(GallerySort.allCases.filter(\.isRatio).count == 5)
+        #expect(!GallerySort.kudos.isRatio)
+    }
+
     @Test func seriesBookmarkIsOneItem() throws {
         let card = try #require(try BlurbParser.parseListing(html: fixture("series_card")).first)
         let members = try BlurbParser.parseListing(html: fixture("series_page"))
