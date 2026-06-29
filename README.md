@@ -30,6 +30,11 @@ computer. Your login is stored in the Mac's Keychain and is only ever sent to AO
 - **Read right in the app.** A dark, glassy built-in reader opens any saved story in its own
   window — chapter-by-chapter or continuous scroll, with your choice of theme, font, and size, and
   it remembers where you left off. Open as many reader windows as you like.
+- **Send to your Kindle in one click.** If you have Amazon's *Send to Kindle* Mac app installed,
+  any saved work has a **Send to Kindle** button. AO3's ebooks ship without a cover, so the app
+  generates one — a clean cover with the title, author, fandom, ship, and word count, so it's
+  recognisable on your Kindle homescreen — and prepends an info page (fandom, ship, rating,
+  warnings, stats) you land on when you open it.
 - **Read offline.** Once saved, your works don't need AO3 or an internet connection.
 
 > Works you bookmarked that live on *other* sites (external works) can't be saved as ebooks —
@@ -48,7 +53,7 @@ computer. Your login is stored in the Mac's Keychain and is only ever sent to AO
 You'll need an **Apple Silicon Mac** running **macOS 26 (Tahoe)**.
 
 1. Go to the [**latest release**](https://github.com/syrtis-m/ao3-archiver/releases/latest) and
-   download **`AO3-Archiver-v1.2.2.zip`** (under *Assets*).
+   download **`AO3-Archiver-v1.4.0.zip`** (under *Assets*).
 2. Double-click the downloaded zip to unzip it, then drag **AO3 Archiver.app** into your
    **Applications** folder.
 3. The first time you open it, **right-click (or Control-click) the app → Open → Open**. macOS
@@ -153,7 +158,8 @@ If you fork this tool, please update the user-agent string logic in Sources/AO3K
 **Requirements:** macOS 26 (Tahoe) + Xcode 26 to build the app (it uses Apple's Liquid Glass).
 Dependencies: [SwiftSoup](https://github.com/scinfu/SwiftSoup) (HTML parsing),
 [GRDB](https://github.com/groue/GRDB.swift) (SQLite/FTS5), and
-[ZIPFoundation](https://github.com/weichsel/ZIPFoundation) (reading EPUB archives for the reader).
+[ZIPFoundation](https://github.com/weichsel/ZIPFoundation) (reading EPUB archives for the reader,
+and rewriting them for the Send-to-Kindle export).
 
 ---
 

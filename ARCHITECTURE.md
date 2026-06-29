@@ -60,6 +60,8 @@ These are not preferences; getting them wrong gets the tool (or the user's IP) t
 │  EpubDocument   .epub → spine + TOC sections + generated reader HTML   │
 │  EpubSanitizer  strip remote refs / scripts from chapter bodies        │
 │  ReaderModel · ReaderSession · ReaderSettings  (reader logic + state)  │
+│  KindleExport   build a Send-to-Kindle .epub (info page + cover + badge)│
+│  KindleCover    render a JPEG cover (CoreText) — AO3 ships none         │
 │  RateLimiter · Models · ArchivePaths                                  │
 └──────────────────────────────────────────────────────────────────────┘
                 ▲                              ▲
@@ -391,3 +393,46 @@ bounds + progress; `ReaderSettings` = theme/font/mode + the generated CSS) is pu
 `ReaderSettings` are unit-tested (synthetic EPUBs in both TOC flavours, an AO3-shaped fixture for
 folding + entity-safety + no-remote, the body cache); the `WKWebView`/SwiftUI layer is
 compile-verified only — rendering, windows, and scroll-resume are run-to-confirm.
+
+---
+
+## 12. Send to Kindle (`KindleExport`, `KindleCover` — V1.4)
+
+`WorkDetailView`'s **Send to Kindle** button hands a saved work to Amazon's *Send to Kindle* Mac
+app (`open` via `NSWorkspace`, resolved by **bundle id** `com.amazon.SendToKindle` — `Amazon
+Kindle.app` is also installed, so a name lookup is ambiguous). AO3's exported EPUB is bare — no
+cover, plain title — so before the hand-off `KindleExport.makeKindleEPUB` writes a *temp copy* and
+augments it with three additions, each targeting a different Kindle surface:
+
+1. **A generated cover** (`KindleCover.renderJPEG`) — AO3 epubs ship no cover, so the homescreen
+   has nothing to thumbnail. A 2:3 JPEG drawn with **CoreGraphics + CoreText** (no AppKit, so it's
+   safe off the main thread — the send runs in a background `Task`): centered serif title (auto-
+   shrinks as it lengthens), author, fandom, ship, word count. Registered via a manifest `<item>` +
+   `<meta name="cover">` (the hint Amazon's converter reads). Skipped if the book already declares a
+   cover.
+2. **An info page** (`infoPageXHTML`) — prepended as spine[0], added to the `<guide>` *and* the
+   NCX/nav TOC, so Kindle (which auto-skips spine front matter to "chapter 1") treats it as content
+   and lands you on it. Reflowable, relative (`em`) sizing, no tables/flexbox (KF8 reflow mangles
+   them), darker labels for eink contrast. Fields: fandom, ship, rating/warnings/category, stats.
+3. **A title badge** (`kindleTitle`) — a compact `(Fandom, 10k words)` suffix folded into
+   `<dc:title>` for the library *list* view. Length-bounded (≤2 fandoms, capped chars) so it can't
+   overflow; fandom-first so it survives truncation. (Sized against the real archive: median badged
+   title ~60 chars, which fits the Paperwhite list view.)
+
+**OPF edits are surgical string splices, never a SwiftSoup re-serialize** — round-tripping an OPF
+through a lenient parser risks mangling the `xmlns:dc`/`xmlns:opf` namespace decls and breaking the
+book. `mimetype` is left untouched (stays first + stored). **The OPF is re-fetched and replaced
+*last***: the cover/page/TOC writes shift ZIP central-directory offsets, so an `Entry` captured
+earlier would be stale and corrupt the package (this bit, caught by the real-archive stress test).
+The whole thing is **best-effort** — a missing/unparseable OPF leaves the already-valid copy alone
+rather than throwing, so the book still reaches the device. Temp copies live in
+`tmp/ao3-kindle/`; they can't be deleted on the way out (the async hand-off must outlive the call),
+so each run sweeps copies older than an hour.
+
+**Pure, tested logic** (title/badge building, word abbreviation, fandom shortening, info-page
+XHTML, chapter text) is unit-tested in both the swift-testing suite and the headless `selftest`;
+the EPUB surgery is verified by **reopening the built file with `EpubDocument`** (spine +1, info
+page first + in the TOC, mimetype first, cover meta + extractable bytes) — the discriminating check
+that catches both string-splice and ZIP corruption. What can't be verified headlessly and is
+**run-to-confirm on a device**: whether Amazon's converter honours the cover/start-page, and
+list-view truncation of the badge.

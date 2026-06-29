@@ -938,6 +938,39 @@ if let posStore = try? Store(inMemory: true) {
     check("position upserts", (try? posStore.readingPosition(workID: 7))??.spineIndex == 4)
 }
 
+print("KindleExport — title building")
+check("abbrev nil/0 omits", KindleExport.abbreviateWords(nil) == nil && KindleExport.abbreviateWords(0) == nil)
+check("abbrev <1k", KindleExport.abbreviateWords(999) == "<1k words")
+check("abbrev 10k", KindleExport.abbreviateWords(10_000) == "10k words")
+check("abbrev 1.5M", KindleExport.abbreviateWords(1_500_000) == "1.5M words")
+check("suffix fandom + words", KindleExport.titleSuffix(fandoms: ["Harry Potter - J. K. Rowling", "Cyberpunk 2077"], wordCount: 10_000) == "(Harry Potter/Cyberpunk 2077, 10k words)")
+check("suffix caps to 2 fandoms with +", KindleExport.titleSuffix(fandoms: ["A", "B", "C"], wordCount: nil) == "(A/B+)")
+check("suffix empty → nil", KindleExport.titleSuffix(fandoms: [], wordCount: nil) == nil)
+check("title appends", KindleExport.kindleTitle("My Fic", fandoms: ["Marvel"], wordCount: 3_000) == "My Fic (Marvel, 3k words)")
+check("splice escapes &", KindleExport.spliceTitle(in: "<dc:title>Old</dc:title>", to: "X & Y") == "<dc:title>X &amp; Y</dc:title>")
+
+check("info page is well-formed XML + escapes &", {
+    let html = KindleExport.infoPageXHTML(for: .init(title: "A & B", author: "X", rating: "Explicit", wordCount: 12_345))
+    return (try? XMLDocument(xmlString: html)) != nil && html.contains("A &amp; B") && html.contains("12,345 words")
+}())
+check("chapterText WIP", KindleExport.chapterText(have: 3, total: nil) == "3/? chapters")
+check("cover renders as JPEG", {
+    guard let d = KindleCover.renderJPEG(for: .init(title: "A Fic", author: "Auth", fandoms: ["Marvel"], wordCount: 10_000)) else { return false }
+    return d.prefix(2) == Data([0xFF, 0xD8]) && d.count > 1_000
+}())
+
+print("KindleExport — EPUB round-trip")
+if let kSrc = try? makeSyntheticEpub(useNCX: true),
+   let kSpine = try? EpubDocument(url: kSrc).spine.count,
+   let kOut = try? KindleExport.makeKindleEPUB(source: kSrc, work: .init(title: "Synthetic Work", author: "Auth", fandoms: ["Harry Potter - J. K. Rowling"], wordCount: 10_000)),
+   let kDoc = try? EpubDocument(url: kOut) {
+    check("Kindle EPUB reopens with badged title", kDoc.metadata.title == "Synthetic Work (Harry Potter, 10k words)")
+    check("Kindle EPUB prepends info page as first spine item", kDoc.spine.count == kSpine + 1 && (kDoc.spine.first?.path.hasSuffix(KindleExport.infoPageFilename) ?? false))
+    try? FileManager.default.removeItem(at: kOut)
+} else {
+    check("KindleExport round-trip", false)
+}
+
 print("")
 if failures == 0 {
     print("ALL CHECKS PASSED")

@@ -16,6 +16,9 @@ struct WorkDetailView: View {
     @State private var seriesMembers: [WorkListItem] = []
     @State private var downloading = false
     @State private var downloadError: String?
+    /// In-flight / failure state for the one-button "Send to Kindle" hand-off.
+    @State private var sendingToKindle = false
+    @State private var kindleError: String?
     /// A fresh session cookie pasted into the retry field when a download fails (likely an
     /// expired cookie). Persisted to the Keychain on retry; cleared on success.
     @State private var cookieInput = ""
@@ -108,6 +111,11 @@ struct WorkDetailView: View {
                 Button { read(item) } label: { Label("Read", systemImage: "book.pages") }
                     .buttonStyle(.glassProminent)
                 Button { NSWorkspace.shared.open(url) } label: { Label("Open in Books", systemImage: "book") }
+                if sendingToKindle {
+                    HStack(spacing: 6) { ProgressView().controlSize(.small); Text("Sending…") }
+                } else {
+                    Button { sendToKindle(rel) } label: { Label("Send to Kindle", systemImage: "paperplane") }
+                }
                 Button { NSWorkspace.shared.activateFileViewerSelecting([url]) } label: {
                     Label("Reveal in Finder", systemImage: "folder")
                 }
@@ -152,6 +160,40 @@ struct WorkDetailView: View {
                     Label(keychainWarning, systemImage: "key.slash")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
+            }
+        }
+        if let kindleError {
+            Label(kindleError, systemImage: "exclamationmark.triangle")
+                .font(.caption).foregroundStyle(.orange)
+        }
+    }
+
+    /// One-button hand-off: write a temp EPUB copy whose `<dc:title>` carries the fandom +
+    /// word-count badge, then open it with Amazon's Send to Kindle Mac app (the user confirms
+    /// the device in its window). Title-rewrite keeps useful metadata visible in the Kindle list.
+    private func sendToKindle(_ rel: String) {
+        sendingToKindle = true; kindleError = nil
+        let src = archiveRoot.appendingPathComponent(rel)
+        let work = KindleExport.WorkInfo(
+            title: item.title, author: item.author, fandoms: item.fandoms,
+            relationships: item.relationships, rating: item.rating, warnings: item.warnings,
+            category: item.category, wordCount: item.wordCount, chaptersHave: item.chaptersHave,
+            chaptersTotal: item.chaptersTotal, isComplete: item.isComplete, updated: item.dateText,
+            kudos: item.kudos, hits: item.hits)
+        Task {
+            do {
+                let tagged = try KindleExport.makeKindleEPUB(source: src, work: work)
+                guard let app = NSWorkspace.shared.urlForApplication(
+                    withBundleIdentifier: KindleExport.sendToKindleBundleID) else {
+                    throw KindleExport.ExportError.rewriteFailed(
+                        "Send to Kindle isn't installed (open the app once first).")
+                }
+                _ = try await NSWorkspace.shared.open(
+                    [tagged], withApplicationAt: app, configuration: NSWorkspace.OpenConfiguration())
+                sendingToKindle = false
+            } catch {
+                sendingToKindle = false
+                kindleError = "Couldn't send to Kindle: \(error)"
             }
         }
     }
