@@ -9,7 +9,7 @@ import AO3Kit
 @Observable
 @MainActor
 final class SyncController {
-    enum Phase: Equatable { case idle, running, done, failed, cancelled }
+    enum Phase: Equatable { case idle, running, done, failed, cancelled, needsCookie }
 
     var phase: Phase = .idle
     var statusLine = ""
@@ -22,6 +22,17 @@ final class SyncController {
     var rateLimit: String?
     /// Recent events, newest first (capped) — the "what's happening right now" feed.
     var activity: [String] = []
+
+    /// Captured `start(...)` arguments for a paused-on-cookie-expiry run, so `resumeWithCookie`
+    /// can re-invoke `start` exactly as it was called, with only the cookie swapped in. The
+    /// full-sync resume cursor (`SyncEngine.resumeKey`) is already persisted in the DB by the
+    /// time the pause happens, so re-starting from page 1 here still picks up where it left off.
+    private struct ResumeParams {
+        let store: Store, username: String?, archiveRoot: URL, interval: TimeInterval
+        let downloadEPUBs: Bool, maxPages: Int, resumeIndex: Bool, incremental: Bool
+        let reload: () -> Void
+    }
+    private var pendingResume: ResumeParams?
 
     private var task: Task<Void, Never>?
     /// Refreshes the gallery from the store. Called live as pages index (so the list builds
@@ -68,6 +79,7 @@ final class SyncController {
                reload: @escaping () -> Void) {
         guard phase != .running else { return }
         self.reload = reload
+        pendingResume = nil
         phase = .running; statusLine = downloadEPUBs ? "Starting…" : "Building bookmark list…"
         currentPage = 0; totalPages = nil; downloaded = 0; failed = 0
         lastError = nil; rateLimit = nil; activity = []
@@ -111,12 +123,32 @@ final class SyncController {
                 self?.finish(result: result)
             } catch is CancellationError {
                 self?.endRun(.cancelled)
+            } catch AO3Error.sessionExpired {
+                self?.pendingResume = ResumeParams(
+                    store: store, username: username, archiveRoot: archiveRoot, interval: interval,
+                    downloadEPUBs: downloadEPUBs, maxPages: maxPages, resumeIndex: resumeIndex,
+                    incremental: incremental, reload: reload)
+                self?.lastError = String(describing: AO3Error.sessionExpired)
+                self?.push("Paused — re-paste your session cookie above to continue.")
+                self?.endRun(.needsCookie)
             } catch {
                 self?.lastError = String(describing: error)
                 self?.push("Stopped: \(error)")
                 self?.endRun(.failed)
             }
         }
+    }
+
+    /// Re-paste-cookie recovery: continue a run paused by `.sessionExpired` with a fresh
+    /// cookie, otherwise identical to how it was started. A full sync resumes from its
+    /// persisted page cursor; a quick sync just restarts its bounded catch-up (cheap and
+    /// idempotent — the early-stop checks mean re-walking the first few pages costs little).
+    func resumeWithCookie(_ cookie: String?) {
+        guard let p = pendingResume else { return }
+        pendingResume = nil
+        start(store: p.store, username: p.username, cookie: cookie, archiveRoot: p.archiveRoot,
+              interval: p.interval, downloadEPUBs: p.downloadEPUBs, maxPages: p.maxPages,
+              resumeIndex: p.resumeIndex, incremental: p.incremental, reload: p.reload)
     }
 
     func cancel() {
@@ -127,8 +159,13 @@ final class SyncController {
     private func finish(result: SyncEngine.Result) {
         downloaded = result.epubsDownloaded
         failed = result.downloadsFailed
+        // worksDeleted is a SUBSET of downloadsFailed (a deletion is one kind of download
+        // failure) — subtract it out of the "(N failed)" clause so the two numbers don't
+        // double-count the same works for the reader.
+        let otherFailures = result.downloadsFailed - result.worksDeleted
         statusLine = "Done — \(result.works) works listed, \(result.epubsDownloaded) saved"
-            + (result.downloadsFailed > 0 ? " (\(result.downloadsFailed) need a cookie)" : "")
+            + (result.worksDeleted > 0 ? ", \(result.worksDeleted) gone from AO3" : "")
+            + (otherFailures > 0 ? " (\(otherFailures) failed)" : "")
         push(statusLine)
         endRun(.done)
     }

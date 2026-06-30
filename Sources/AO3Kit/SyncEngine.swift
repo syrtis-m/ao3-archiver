@@ -15,6 +15,21 @@ public final class SyncEngine: @unchecked Sendable {
     let files: FileStore
     let downloader: WorkDownloader
 
+    /// workID → chapters gained since the last sync, recorded during ingest and consumed by
+    /// the following download pass to report "gained N chapters" instead of a bare file-size
+    /// line. Scoped to one `run`/`incrementalSync` call (reset at its start) — SyncEngine
+    /// doesn't support overlapping runs (SyncController already guards against starting a
+    /// second one while the first is in flight).
+    private var chapterGains: [Int: Int] = [:]
+
+    /// AO3's logged-out page chrome plausibly carries its own `action="/users/login"` form
+    /// (it's site-wide navigation), so an anonymous sync hitting a legitimately-empty page
+    /// must never be misread as "your cookie expired" — gate the login-page check on a
+    /// cookie actually having been supplied in the first place.
+    private var hasCookie: Bool {
+        AO3Config.sanitizeCookie(client.config.sessionCookie) != nil
+    }
+
     public init(client: AO3Client, store: Store, files: FileStore) {
         self.client = client
         self.store = store
@@ -64,6 +79,9 @@ public final class SyncEngine: @unchecked Sendable {
         public var seriesExpanded = 0
         public var epubsDownloaded = 0
         public var downloadsFailed = 0
+        /// Of `downloadsFailed`, how many failed because AO3 returned a genuine 404 — the work
+        /// was deleted by its author, not a transient/auth failure. A subset, not additional.
+        public var worksDeleted = 0
     }
 
     /// Structured progress for the CLI log and the sync-status UI.
@@ -82,15 +100,17 @@ public final class SyncEngine: @unchecked Sendable {
     public func run(listPath: String, options: Options = Options(),
                     onEvent: @Sendable (Event) -> Void = { _ in }) async throws -> Result {
         let runID = try store.beginSyncRun()
+        chapterGains = [:]
         var result = Result()
         do {
             result = try await indexSync(listPath: listPath, options: options, onEvent: onEvent)
             if options.expandSeries {
                 result = try await expandSeries(into: result, maxSeries: options.maxSeries, onEvent: onEvent)
             }
-            let (downloaded, failed) = try await contentSync(limit: options.maxDownloads, onEvent: onEvent)
+            let (downloaded, failed, deleted) = try await contentSync(limit: options.maxDownloads, onEvent: onEvent)
             result.epubsDownloaded = downloaded
             result.downloadsFailed = failed
+            result.worksDeleted = deleted
             try store.finishSyncRun(id: runID, pages: result.pagesScanned, worksSeen: result.works,
                                     downloaded: downloaded, status: "ok", message: nil)
             return result
@@ -131,6 +151,7 @@ public final class SyncEngine: @unchecked Sendable {
     public func incrementalSync(listPath: String, options: Options = Options(),
                                 onEvent: @Sendable (Event) -> Void = { _ in }) async throws -> Result {
         let runID = try store.beginSyncRun()
+        chapterGains = [:]
         let runStart = Int(Date().timeIntervalSince1970)
         let watermark = (try? store.getMeta(Self.lastIncrementalSyncKey)).flatMap { $0 }.flatMap { Int($0) }
         var result = Result()
@@ -139,9 +160,10 @@ public final class SyncEngine: @unchecked Sendable {
                                                  into: result, onEvent: onEvent)
             result = try await indexUpdatedWorks(listPath: listPath, since: watermark,
                                                  options: options, into: result, onEvent: onEvent)
-            let (downloaded, failed) = try await redownloadUpdated(limit: options.maxDownloads, onEvent: onEvent)
+            let (downloaded, failed, deleted) = try await redownloadUpdated(limit: options.maxDownloads, onEvent: onEvent)
             result.epubsDownloaded = downloaded
             result.downloadsFailed = failed
+            result.worksDeleted = deleted
             try store.setMeta(Self.lastIncrementalSyncKey, String(runStart))   // persist frontier on success
             try store.finishSyncRun(id: runID, pages: result.pagesScanned, worksSeen: result.works,
                                     downloaded: downloaded, status: "ok", message: nil)
@@ -165,9 +187,12 @@ public final class SyncEngine: @unchecked Sendable {
             let html = try await client.getHTML(path: path)
             if total == nil { total = try BlurbParser.lastPageNumber(html: html) }
             let cards = try BlurbParser.parseListing(html: html)
+            if hasCookie, BlurbParser.looksLikeLoginPage(html: html, cardCount: cards.count) {
+                throw AO3Error.sessionExpired
+            }
             let ids = cards.compactMap { $0.bookmarkID }
             let known = try store.knownBookmarkIDs(among: ids)
-            for card in cards { try ingest(card) }
+            for card in cards { try ingest(card, onEvent: onEvent) }
             pages += 1
             let absPage = Self.pageNumber(inPath: path) ?? pages
             result.pagesScanned = max(result.pagesScanned, absPage)
@@ -193,7 +218,10 @@ public final class SyncEngine: @unchecked Sendable {
         while let path = nextPath, pages < options.maxPages {
             let html = try await client.getHTML(path: path)
             let cards = try BlurbParser.parseListing(html: html)
-            for card in cards { try ingest(card) }
+            if hasCookie, BlurbParser.looksLikeLoginPage(html: html, cardCount: cards.count) {
+                throw AO3Error.sessionExpired
+            }
+            for card in cards { try ingest(card, onEvent: onEvent) }
             pages += 1
             let absPage = Self.pageNumber(inPath: path) ?? pages
             result.pagesScanned = max(result.pagesScanned, absPage)
@@ -238,7 +266,10 @@ public final class SyncEngine: @unchecked Sendable {
             let html = try await client.getHTML(path: path)
             if total == nil { total = try BlurbParser.lastPageNumber(html: html) }   // "page N of T"
             let cards = try BlurbParser.parseListing(html: html)
-            for card in cards { try ingest(card) }
+            if hasCookie, BlurbParser.looksLikeLoginPage(html: html, cardCount: cards.count) {
+                throw AO3Error.sessionExpired
+            }
+            for card in cards { try ingest(card, onEvent: onEvent) }
             pagesThisRun += 1
             let absPage = Self.pageNumber(inPath: path) ?? pagesThisRun
             result.pagesScanned = absPage
@@ -260,11 +291,15 @@ public final class SyncEngine: @unchecked Sendable {
     }
 
     /// Persist one parsed card: the item row (work/external/series) plus its bookmark row.
-    private func ingest(_ card: WorkBlurb) throws {
+    /// A work whose chapter count grew since we last saw it is recorded in `chapterGains`, so
+    /// the download pass that follows can report "gained N chapters" once the file is actually
+    /// (re)saved, instead of claiming it before the bytes are on disk.
+    private func ingest(_ card: WorkBlurb, onEvent: @Sendable (Event) -> Void) throws {
         switch card.kind {
         case .work, .external:
-            try store.upsertWork(card)
+            let change = try store.upsertWork(card)
             try store.upsertBookmark(card, itemKind: card.kind, itemID: card.workID)
+            if let gained = change.newChapters { chapterGains[card.workID] = gained }
         case .series:
             try store.upsertSeries(card)
             try store.upsertBookmark(card, itemKind: .series, itemID: card.workID)
@@ -296,9 +331,9 @@ public final class SyncEngine: @unchecked Sendable {
     // MARK: - Content sync (download queue)
 
     /// Download EPUBs for every work that needs one (the full backlog), committing each
-    /// immediately. Returns (downloaded, failed).
+    /// immediately. Returns (downloaded, failed, deleted).
     public func contentSync(limit: Int?,
-                            onEvent: @Sendable (Event) -> Void = { _ in }) async throws -> (Int, Int) {
+                            onEvent: @Sendable (Event) -> Void = { _ in }) async throws -> (Int, Int, Int) {
         try await download(store.worksNeedingDownload(limit: limit), onEvent: onEvent)
     }
 
@@ -306,14 +341,16 @@ public final class SyncEngine: @unchecked Sendable {
     /// revision). The download cap applies *here* — it never gets eaten by the never-downloaded
     /// backlog, so a Quick sync reliably refreshes stale files within its query budget.
     public func redownloadUpdated(limit: Int?,
-                                  onEvent: @Sendable (Event) -> Void = { _ in }) async throws -> (Int, Int) {
+                                  onEvent: @Sendable (Event) -> Void = { _ in }) async throws -> (Int, Int, Int) {
         try await download(store.worksNeedingRedownload(limit: limit), onEvent: onEvent)
     }
 
-    /// Shared download loop for a pre-computed pending list.
+    /// Shared download loop for a pre-computed pending list. A genuine 404 means the work was
+    /// deleted by its author (not a transient/auth failure) — recorded distinctly so we stop
+    /// re-requesting it and the UI can flag "your saved copy is the only one left".
     private func download(_ pending: [Store.PendingWork],
-                          onEvent: @Sendable (Event) -> Void) async throws -> (Int, Int) {
-        var downloaded = 0, failed = 0
+                          onEvent: @Sendable (Event) -> Void) async throws -> (Int, Int, Int) {
+        var downloaded = 0, failed = 0, deleted = 0
         for work in pending {
             do {
                 let data = try await downloader.downloadEPUB(workID: work.id)
@@ -321,6 +358,18 @@ public final class SyncEngine: @unchecked Sendable {
                 try store.markDownloaded(workID: work.id, epubPath: rel, updatedAt: work.updatedAt)
                 downloaded += 1
                 onEvent(.downloaded(workID: work.id, bytes: data.count, title: work.title))
+                if let gained = chapterGains.removeValue(forKey: work.id) {
+                    onEvent(.message("\(work.title) gained \(gained) chapter\(gained == 1 ? "" : "s") — saved"))
+                }
+            } catch AO3Error.http(404) {
+                try? store.markDeletedOnAO3(workID: work.id)
+                failed += 1
+                deleted += 1
+                let msg = work.hasDownload
+                    ? "\(work.title) was deleted on AO3 — your saved copy is the only one left"
+                    : "\(work.title) was deleted on AO3 before you could save it"
+                onEvent(.message(msg))
+                onEvent(.downloadFailed(workID: work.id, reason: "deleted on AO3"))
             } catch {
                 // Park ANY failure on one work so the rest of the batch still runs: restricted/
                 // locked works (no cookie, an AO3Error), but also a disk-write failure or a DB
@@ -332,6 +381,6 @@ public final class SyncEngine: @unchecked Sendable {
                 onEvent(.downloadFailed(workID: work.id, reason: reason))
             }
         }
-        return (downloaded, failed)
+        return (downloaded, failed, deleted)
     }
 }

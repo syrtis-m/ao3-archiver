@@ -86,7 +86,7 @@ updates, and never lives in `/tmp`. The canonical schema is the migration list i
 
 | Table | Holds | Notes |
 |---|---|---|
-| `work` | works + external works | `id` = AO3 work id; archive state (`epub_path`, `epub_updated_at`, `download_state`) lives here |
+| `work` | works + external works | `id` = AO3 work id; archive state (`epub_path`, `epub_updated_at`, `download_state`, `deleted_on_ao3_at`) lives here |
 | `series` | bookmarked series | expanded into member `work` rows on sync |
 | `series_work` | series ↔ member work links | with `part` ordering |
 | `bookmark` | one row per AO3 bookmark | polymorphic `(item_kind, item_id)` → a work or a series |
@@ -114,6 +114,10 @@ updates, and never lives in `/tmp`. The canonical schema is the migration list i
 - **Series dedup:** a series' members share the one `work` row (UNIQUE id) plus a `series_work`
   link; if separately bookmarked they keep their own `bookmark` row too. The polymorphic
   `bookmark(item_kind, item_id)` makes the overlap a non-issue.
+- **`upsertWork` returns a `WorkUpsertChange`** (`isNew`, `newChapters`) computed from the row's
+  `chapters_have` *before* the upsert overwrites it — the only way to detect "gained N chapters"
+  without a second pass, since the column itself is gone by the time the caller could compare. See
+  [§13](#13-cookie-expiry-mid-sync--deleted-work-detection-v15).
 
 On-disk layout:
 ```
@@ -154,7 +158,9 @@ AO3, and the EPUB-link parser is anchored to site-relative `/downloads/` paths. 
 large account by accident. **Resumable:** the next-page URL is persisted in `meta`
 (`SyncEngine.resumeKey`), so a run throttled at page 15 of ~130 resumes there, not at page 1.
 A failed download stays in the queue (retryable across runs — run anonymously, add a cookie,
-re-run to pick up works that needed login).
+re-run to pick up works that needed login). A listing fetch that bounces to AO3's login form
+(cookie expired) throws `AO3Error.sessionExpired` and pauses the run instead of silently
+completing as if the index were caught up — see [§13](#13-cookie-expiry-mid-sync--deleted-work-detection-v15).
 
 ---
 
@@ -254,7 +260,11 @@ A thin SwiftUI skin over the tested model. **Platform is macOS 26 package-wide**
   live progress — page-of-total, a rate-limit banner, an activity feed — and reloads the gallery
   live (coalesced) as pages index. `SyncSheet` collects username + cookie into `CredentialStore`
   (Keychain). Default sync is **index-only** (fast, gentle); EPUBs download per-work on demand or
-  via a bulk toggle.
+  via a bulk toggle. A `.needsCookie` phase (V1.5) pauses on `AO3Error.sessionExpired` instead of
+  failing outright — see [§13](#13-cookie-expiry-mid-sync--deleted-work-detection-v15).
+- **Deleted-on-AO3 badge (V1.5).** A work flagged `deletedOnAO3` gets a red `ColorBadge` on its
+  card and a banner in the detail view — "only copy" if `epubPath != nil`, "deleted before you
+  could save it" otherwise. Gated on `epubPath`, not `downloadState`, deliberately: see §13.
 - **The sidebar is a `ScrollView`, not a `List`:** a `List` is NSTableView-backed and reloads
   mid-event when a filter row mutates the model → "reentrant operation in NSTableView delegate".
 
@@ -436,3 +446,81 @@ page first + in the TOC, mimetype first, cover meta + extractable bytes) — the
 that catches both string-splice and ZIP corruption. What can't be verified headlessly and is
 **run-to-confirm on a device**: whether Amazon's converter honours the cover/start-page, and
 list-view truncation of the badge.
+
+---
+
+## 13. Cookie-expiry mid-sync + deleted-work detection (V1.5)
+
+Two related additions, both triggered by signals the sync already produces — neither adds new
+network surface or proactive probing.
+
+**Cookie-expiry detection.** A sync that silently produces zero new bookmarks looks identical
+whether the account is genuinely caught up or the session cookie just expired — AO3 doesn't 401/403
+a stale-cookie request to `/users/<x>/bookmarks`, it 200s a rendered login form. Previously
+`BlurbParser.parseListing` would just find no `li.bookmark.blurb.group` cards on that page and the
+sync would complete looking successful. `BlurbParser.looksLikeLoginPage(html:cardCount:)` catches
+this: **gated on the listing being otherwise empty** (so a coincidental string match inside a fic
+summary can't misfire while real cards are present) and matched against multiple markers ORed
+together — Devise's default flash text and the login form's `action`/field-name — fail-soft like the
+rest of the parser. `SyncEngine` checks it at every listing fetch (`indexSync`, `indexNewBookmarks`,
+`indexUpdatedWorks`) and throws `AO3Error.sessionExpired`, but **only when a cookie was actually
+supplied** (`hasCookie`, checked via `AO3Config.sanitizeCookie(client.config.sessionCookie)`) — AO3's
+logged-out page chrome plausibly carries its own login form as site-wide navigation, so an anonymous
+sync hitting a legitimately-empty page must never be misread as "your cookie expired."
+
+`SyncController` catches `.sessionExpired` distinctly from a generic failure: it captures the exact
+`start(...)` arguments in a `ResumeParams` struct, sets `phase = .needsCookie`, and stops. `SyncSheet`
+shows a re-paste-cookie prompt in that phase (the cookie field is already editable again, since
+`.needsCookie != .running`); `resumeWithCookie(_:)` re-invokes `start` with everything unchanged
+except the fresh cookie. A full sync resumes from its **persisted page cursor** (`SyncEngine.resumeKey`
+was already written through the last successfully-processed page before the failing one); a Quick
+sync just re-runs its bounded, idempotent catch-up — cheap enough that re-walking a few pages costs
+nothing.
+
+**Caveat — unverified against live AO3.** Unlike every other parser selector, the login-page markers
+have no captured fixture behind them (a real expired-cookie response wasn't available to capture
+during development). If AO3's actual login-redirect markup drifts from the assumed Devise
+conventions, update `looksLikeLoginPage` the same way any other selector drift gets fixed: capture
+the real page into `Tests/AO3KitTests/Fixtures/` and pin the test to it.
+
+**Chapter-gain log line.** `Store.upsertWork` returns a `WorkUpsertChange` (`isNew`, `newChapters`)
+computed by reading the row's *old* `chapters_have` before the `ON CONFLICT DO UPDATE` overwrites it
+— the only point such a comparison is possible, since the column is gone by the time a caller could
+look back. `SyncEngine.ingest` stashes a positive delta in a private `chapterGains: [Int: Int]`
+(reset at the top of `run`/`incrementalSync`) keyed by work id; the download loop consumes it
+(`removeValue`) only once the file is actually re-saved, so the log says "gained N chapters — saved"
+at the point that's true, not at index time when it'd be a promise.
+
+**Deleted-work detection.** A genuine HTTP 404 fetching a work's page during the download loop means
+the author deleted it — a stronger, more specific signal than the prior behavior of lumping every
+download failure (including this one) under `.requiresLogin`/"needs a cookie", which was actively
+misleading for a deleted work. `download(_:onEvent:)` catches `AO3Error.http(404)` specifically,
+calls `Store.markDeletedOnAO3(workID:)`, and logs a message that names what we hold: "your saved copy
+is the only one left" when `Store.PendingWork.hasDownload` is true, "deleted before you could save
+it" otherwise. `markDeletedOnAO3` sets `deleted_on_ao3_at` (`COALESCE`d, so a repeat sighting keeps
+the *first* detection time) and is the kind of thing this codebase calls **never proactively
+probed** — it only ever fires when the existing download/redownload flow happens to hit the 404 on
+its own.
+
+A subtlety caught by the real-archive demo run, not the test suite: `markDeletedOnAO3` must **not**
+unconditionally overwrite `download_state` to `'failed'`. A work that's already `'downloaded'` (we
+hold a perfectly good prior copy) staying `'downloaded'` is what keeps it in the **Saved** filter
+facet — exactly the work worth being able to find. The SQL is conditional:
+`download_state = CASE WHEN epub_path IS NOT NULL THEN download_state ELSE 'failed' END`. The UI
+badge mirrors this by checking `epubPath != nil` directly rather than `downloadState == "downloaded"`,
+so it can't regress the same way again. `worksNeedingDownload`/`worksNeedingRedownload` both exclude
+`deleted_on_ao3_at IS NOT NULL`, so a confirmed-gone work stops being re-requested on every future
+sync — a politeness win, not just bookkeeping.
+
+**Caveat — unverified against live AO3.** The 404-means-deleted assumption hasn't been confirmed
+against a real deleted work. If AO3 instead serves a 200 "this work has been deleted" tombstone page
+rather than a 404, `WorkDownloader.downloadEPUB` would still fall through to its existing
+no-download-link path and throw `.requiresLogin` — silently missing the new classification rather
+than breaking anything. Capture a real deleted-work response into `Tests/AO3KitTests/Fixtures/` to
+close this gap, the same way the cookie-expiry markers need a real fixture.
+
+**Verification.** `WorkUpsertChange` (new/gain detection), `markDeletedOnAO3` (the `download_state`
+preservation + queue exclusion), and `looksLikeLoginPage` (marker matching + the empty-listing gate)
+are unit-tested in both the swift-testing suite and the headless `selftest`. What isn't — and can't
+be, without a captured fixture — is whether AO3's actual markup matches the assumptions above; see
+the two caveats.

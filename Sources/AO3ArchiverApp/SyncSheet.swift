@@ -119,6 +119,19 @@ struct SyncSheet: View {
         case .cancelled:
             Label("Cancelled", systemImage: "xmark.circle").foregroundStyle(.secondary)
             activityFeed
+        case .needsCookie:
+            VStack(alignment: .leading, spacing: 8) {
+                Label(controller.lastError ?? "Your session cookie needs to be refreshed.",
+                      systemImage: "person.crop.circle.badge.exclamationmark")
+                    .font(.callout).foregroundStyle(.orange)
+                Text("Re-paste your `_otwarchive_session` cookie above, then resume — the sync "
+                     + "picks up where it left off.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Button("Resume sync") { resumeSync() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(AO3Config.sanitizeCookie(cookie) == nil)
+            }
+            activityFeed
         case .running:
             VStack(alignment: .leading, spacing: 8) {
                 // Index progress — a determinate bar once we know the total page count.
@@ -161,6 +174,14 @@ struct SyncSheet: View {
             .padding(8)
             .background(.black.opacity(0.2), in: RoundedRectangle(cornerRadius: 8))
         }
+    }
+
+    /// Continue a run paused by `.needsCookie` with the freshly re-pasted cookie.
+    private func resumeSync() {
+        let cleanCookie = AO3Config.sanitizeCookie(cookie)
+        cookie = cleanCookie ?? ""
+        CredentialStore.set(cookie, account: CredentialStore.cookieAccount)
+        controller.resumeWithCookie(cleanCookie)
     }
 
     /// Quick = bounded incremental catch-up: index new bookmarks AND re-download already-saved

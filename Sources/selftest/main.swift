@@ -226,6 +226,66 @@ do {
         }
     }
 
+    // Store — chapter-gain detection (drives the "gained N chapters" sync log line) and
+    // deleted-on-AO3 marking (drives the "only copy" UI badge). A fresh store, isolated from
+    // the idempotency checks above.
+    if let bmHTML = try? String(contentsOf: bookmarksURL, encoding: .utf8) {
+        let workCards = try BlurbParser.parseListing(html: bmHTML).filter { $0.kind == .work }
+        let store = try Store(inMemory: true)
+        print("Store — chapter gains + deleted-on-AO3")
+
+        var work = workCards[0]
+        let neverDownloaded = workCards[1]
+
+        let firstChange = try store.upsertWork(work)
+        try store.upsertBookmark(work, itemKind: .work, itemID: work.workID)
+        try store.upsertWork(neverDownloaded)
+        try store.upsertBookmark(neverDownloaded, itemKind: .work, itemID: neverDownloaded.workID)
+        check("first sighting of a work is reported as new", firstChange.isNew)
+        check("a brand-new work has no chapter-gain on first sighting", firstChange.newChapters == nil)
+
+        work.chaptersHave = (work.chaptersHave ?? 0) + 2
+        let gainChange = try store.upsertWork(work)
+        check("re-upsert of a known work is not reported as new", !gainChange.isNew)
+        check("a chapter-count increase of 2 is reported as a gain of 2", gainChange.newChapters == 2)
+        check("an unchanged chapter count on a later upsert reports no gain",
+              try store.upsertWork(work).newChapters == nil)
+
+        let items = try store.fetchAllListItems()
+        check("a not-yet-deleted work surfaces deletedOnAO3 == false in the gallery",
+              items.first { $0.itemID == work.workID }?.deletedOnAO3 == false)
+
+        try store.markDownloaded(workID: work.workID, epubPath: "works/\(work.workID).epub",
+                                 updatedAt: work.updatedAt)
+        work.updatedAt = (work.updatedAt ?? 0) + 1
+        try store.upsertWork(work)   // AO3 shows a newer revision — re-arms the redownload queue
+
+        check("the stale-but-downloaded work carries hasDownload == true",
+              try store.worksNeedingDownload().first { $0.id == work.workID }?.hasDownload == true)
+        check("the never-downloaded work carries hasDownload == false",
+              try store.worksNeedingDownload().first { $0.id == neverDownloaded.workID }?.hasDownload == false)
+        check("redownload queue is exactly the stale-but-downloaded work",
+              try store.worksNeedingRedownload().map(\.id) == [work.workID])
+
+        try store.markDeletedOnAO3(workID: work.workID)
+        check("a deleted work drops out of the redownload queue",
+              try store.worksNeedingRedownload().isEmpty)
+        check("a deleted work drops out of the download queue too",
+              !(try store.worksNeedingDownload().contains { $0.id == work.workID }))
+        check("the never-downloaded (non-deleted) work is still queued",
+              try store.worksNeedingDownload().contains { $0.id == neverDownloaded.workID })
+        try store.markDeletedOnAO3(workID: work.workID)   // idempotent re-mark must not throw
+        let after = try store.fetchAllListItems().first { $0.itemID == work.workID }
+        check("a deleted work surfaces deletedOnAO3 == true in the gallery", after?.deletedOnAO3 == true)
+        // A deleted-but-already-saved work must stay 'downloaded' — overwriting it to 'failed'
+        // would drop it out of the Saved filter facet (backwards: it's worth finding).
+        check("a deleted-but-saved work stays downloadState == downloaded", after?.downloadState == "downloaded")
+
+        try store.markDeletedOnAO3(workID: neverDownloaded.workID)
+        check("a never-downloaded work that 404s becomes downloadState == failed",
+              try store.fetchAllListItems().first { $0.itemID == neverDownloaded.workID }?.downloadState == "failed")
+    }
+
     // Store — series expansion wiring (card + member page fixtures).
     if let scHTML = try? String(contentsOf: seriesCardURL, encoding: .utf8),
        let spHTML = try? String(contentsOf: seriesPageURL, encoding: .utf8) {
@@ -659,6 +719,22 @@ do {
     check("sortedByDateUpdated starts a query when none",
           SyncEngine.sortedByDateUpdated("/users/x/bookmarks")
             == "/users/x/bookmarks?bookmark_search%5Bsort_column%5D=bookmarkable_date")
+
+    print("BlurbParser — login-page detection (cookie-expiry mid-sync)")
+    let loginForm = #"<form action="/users/login" method="post"><input name="user[login]"></form>"#
+    let devisePage = "<div class=\"flash\">You need to sign in or sign up before continuing.</div>"
+    check("a login form with zero cards reads as a login page",
+          BlurbParser.looksLikeLoginPage(html: loginForm, cardCount: 0))
+    check("the Devise flash message with zero cards reads as a login page",
+          BlurbParser.looksLikeLoginPage(html: devisePage, cardCount: 0))
+    check("the same markup with cards present is NOT a login page (cards win)",
+          !BlurbParser.looksLikeLoginPage(html: loginForm, cardCount: 1))
+    check("a real listing page (20 real cards) is never mistaken for a login page",
+          !BlurbParser.looksLikeLoginPage(html: html, cardCount: blurbs.count))
+    check("ordinary content with zero cards is not a login page",
+          !BlurbParser.looksLikeLoginPage(html: "<p>nothing here</p>", cardCount: 0))
+    check("AO3Error.sessionExpired names a cookie problem, not a generic HTTP code",
+          "\(AO3Error.sessionExpired)".lowercased().contains("cookie"))
 
     print("WorkDownloader")
     let menu = """

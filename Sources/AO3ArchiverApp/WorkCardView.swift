@@ -41,6 +41,10 @@ struct WorkCardView: View {
     // with the title for width: rating · category(ies) · warnings · completion.
     private var badgeRow: some View {
         FlowLayout(spacing: 6) {
+            if item.deletedOnAO3 {
+                ColorBadge(text: item.epubPath != nil ? "Only copy" : "Deleted on AO3",
+                          systemImage: "exclamationmark.shield.fill", color: .red)
+            }
             if item.kind == .series {
                 ColorBadge(text: "Series", systemImage: "books.vertical", color: .purple)
             } else {

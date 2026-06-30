@@ -36,6 +36,10 @@ computer. Your login is stored in the Mac's Keychain and is only ever sent to AO
   recognisable on your Kindle homescreen — and prepends an info page (fandom, ship, rating,
   warnings, stats) you land on when you open it.
 - **Read offline.** Once saved, your works don't need AO3 or an internet connection.
+- **Know when a work has been deleted from AO3.** If you sync a work whose page now 404s, it gets
+  a red badge — "only copy" if you'd already saved it (your backup is now the sole surviving
+  copy), or "deleted before you could save it" if you hadn't. The sync log also calls out chapter
+  updates as they're saved ("gained 2 chapters") instead of just a bare file size.
 
 > Works you bookmarked that live on *other* sites (external works) can't be saved as ebooks —
 > AO3 doesn't host their files — but they're still listed so you have the record.
@@ -53,7 +57,7 @@ computer. Your login is stored in the Mac's Keychain and is only ever sent to AO
 You'll need an **Apple Silicon Mac** running **macOS 26 (Tahoe)**.
 
 1. Go to the [**latest release**](https://github.com/syrtis-m/ao3-archiver/releases/latest) and
-   download **`AO3-Archiver-v1.4.0.zip`** (under *Assets*).
+   download **`AO3-Archiver-v1.5.0.zip`** (under *Assets*).
 2. Double-click the downloaded zip to unzip it, then drag **AO3 Archiver.app** into your
    **Applications** folder.
 3. The first time you open it, **right-click (or Control-click) the app → Open → Open**. macOS
@@ -86,7 +90,9 @@ find a story worth keeping, open it and click **Download EPUB** to save its eboo
 > **A note on patience:** AO3 asks apps to go slowly so they don't overload the site, and this app
 > respects that. A big library takes a while, and AO3 may ask it to pause partway — that's normal.
 > The app shows you when it's waiting, and if it gets interrupted it picks up where it left off
-> next time.
+> next time. If your login cookie expires partway through a sync, the app pauses and asks you to
+> paste a fresh one instead of quietly finishing as if nothing happened — re-paste it and hit
+> **Resume sync** to pick up exactly where it stopped.
 
 <img width="1214" height="772" alt="image" src="https://github.com/user-attachments/assets/9a1433fa-36c5-4c01-8af7-9c0b6a4de8f9" />
 

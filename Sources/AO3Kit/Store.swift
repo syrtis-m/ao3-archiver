@@ -181,6 +181,14 @@ public final class Store: @unchecked Sendable {
                 )
                 """)
         }
+        m.registerMigration("v5-deleted-on-ao3") { db in
+            // Set when a content fetch for a work still in our library comes back a genuine
+            // 404 — the author deleted it on AO3. We never proactively probe for this; it's
+            // only ever recorded when the normal download/redownload flow happens to hit it.
+            // nil = not (currently known to be) deleted. ISO timestamp of first detection
+            // otherwise, so the UI can flag "your saved copy is the only one left".
+            try db.execute(sql: "ALTER TABLE work ADD COLUMN deleted_on_ao3_at TEXT")
+        }
         return m
     }
 
@@ -266,15 +274,30 @@ public final class Store: @unchecked Sendable {
 
     // MARK: - Upserts (index sync)
 
+    /// What changed about a work as a result of an upsert — used to drive the sync activity
+    /// log (e.g. "gained 2 chapters") without a second pass over the data.
+    public struct WorkUpsertChange: Sendable, Equatable {
+        public let workID: Int
+        public let isNew: Bool
+        /// Positive delta in `chaptersHave` since the last time we saw this work, or nil if
+        /// unknown/unchanged. Only set for a work we'd already seen (never for `isNew`).
+        public let newChapters: Int?
+    }
+
     /// Insert or update a work/external card, preserving local archive-state columns.
     /// Refreshes normalized tags and the FTS row.
-    public func upsertWork(_ b: WorkBlurb, now: String = Store.nowISO()) throws {
+    @discardableResult
+    public func upsertWork(_ b: WorkBlurb, now: String = Store.nowISO()) throws -> WorkUpsertChange {
         try dbQueue.write { db in
             try Self.upsertWork(db, b, now: now)
         }
     }
 
-    static func upsertWork(_ db: Database, _ b: WorkBlurb, now: String) throws {
+    @discardableResult
+    static func upsertWork(_ db: Database, _ b: WorkBlurb, now: String) throws -> WorkUpsertChange {
+        let existing = try Row.fetchOne(db, sql: "SELECT chapters_have FROM work WHERE id = ?",
+                                        arguments: [b.workID])
+        let prevChapters: Int? = existing?["chapters_have"]
         try db.execute(sql: """
             INSERT INTO work
               (id, kind, source_path, title, author, author_url, summary, rating, category,
@@ -304,6 +327,10 @@ public final class Store: @unchecked Sendable {
 
         try replaceWorkTags(db, workID: b.workID, b)
         try replaceFTS(db, workID: b.workID, b)
+
+        var newChapters: Int? = nil
+        if let prev = prevChapters, let cur = b.chaptersHave, cur > prev { newChapters = cur - prev }
+        return WorkUpsertChange(workID: b.workID, isNew: existing == nil, newChapters: newChapters)
     }
 
     /// Insert or update the bookmark row for a card (only when it carries a bookmark id).
@@ -413,6 +440,10 @@ public final class Store: @unchecked Sendable {
         public let id: Int
         public let title: String
         public let updatedAt: Int?
+        /// Whether we already hold a copy (an `epub_path` on file) — distinguishes "this 404
+        /// is gone before we ever saved it" from "your saved copy is now the only one left"
+        /// without a second query when the download loop hits a deleted work.
+        public let hasDownload: Bool
     }
 
     /// Works that still need an EPUB: AO3 works (not external) with no file yet, or whose
@@ -423,19 +454,23 @@ public final class Store: @unchecked Sendable {
     /// without a cookie must re-enter the queue once a cookie is present. (`download_state`
     /// /`last_error` remain as a UI status cache.) In-run spinning is already prevented by
     /// `contentSync` snapshotting this list once, so excluding 'failed' here would only
-    /// block the *cross-run* retry we actually want.
+    /// block the *cross-run* retry we actually want. A work confirmed gone from AO3
+    /// (`deleted_on_ao3_at`) is excluded — retrying a permanent 404 every sync is wasted
+    /// politeness budget for a result we already know.
     public func worksNeedingDownload(limit: Int? = nil) throws -> [PendingWork] {
         try dbQueue.read { db in
             let lim = limit.map { " LIMIT \($0)" } ?? ""
             let rows = try Row.fetchAll(db, sql: """
-                SELECT id, title, updated_at FROM work
+                SELECT id, title, updated_at, epub_path FROM work
                 WHERE kind = 'work'
+                  AND deleted_on_ao3_at IS NULL
                   AND (epub_path IS NULL
                        OR (updated_at IS NOT NULL
                            AND (epub_updated_at IS NULL OR updated_at > epub_updated_at)))
                 ORDER BY id\(lim)
                 """)
-            return rows.map { PendingWork(id: $0["id"], title: $0["title"], updatedAt: $0["updated_at"]) }
+            return rows.map { PendingWork(id: $0["id"], title: $0["title"], updatedAt: $0["updated_at"],
+                                          hasDownload: ($0["epub_path"] as String?) != nil) }
         }
     }
 
@@ -448,14 +483,16 @@ public final class Store: @unchecked Sendable {
         try dbQueue.read { db in
             let lim = limit.map { " LIMIT \($0)" } ?? ""
             let rows = try Row.fetchAll(db, sql: """
-                SELECT id, title, updated_at FROM work
+                SELECT id, title, updated_at, epub_path FROM work
                 WHERE kind = 'work'
+                  AND deleted_on_ao3_at IS NULL
                   AND epub_path IS NOT NULL
                   AND updated_at IS NOT NULL
                   AND (epub_updated_at IS NULL OR updated_at > epub_updated_at)
                 ORDER BY id\(lim)
                 """)
-            return rows.map { PendingWork(id: $0["id"], title: $0["title"], updatedAt: $0["updated_at"]) }
+            return rows.map { PendingWork(id: $0["id"], title: $0["title"], updatedAt: $0["updated_at"],
+                                          hasDownload: ($0["epub_path"] as String?) != nil) }
         }
     }
 
@@ -495,6 +532,23 @@ public final class Store: @unchecked Sendable {
                 UPDATE work SET download_state = 'failed', last_error = ?, last_synced_at = ?
                 WHERE id = ?
                 """, arguments: [error, now, workID])
+        }
+    }
+
+    /// Record that a work's page now genuinely 404s on AO3 — the author deleted it. Only ever
+    /// called from the download loop when this happens to be hit (never a proactive probe).
+    /// `COALESCE` keeps the *first* detection timestamp on a repeat sighting. `download_state`
+    /// is left at `'downloaded'` when we already hold a copy — overwriting it to `'failed'`
+    /// would silently drop a "your saved copy is the only one left" work out of the Saved
+    /// filter facet, which is exactly backwards (these are the works worth finding).
+    public func markDeletedOnAO3(workID: Int, now: String = Store.nowISO()) throws {
+        try dbQueue.write { db in
+            try db.execute(sql: """
+                UPDATE work SET deleted_on_ao3_at = COALESCE(deleted_on_ao3_at, ?),
+                    download_state = CASE WHEN epub_path IS NOT NULL THEN download_state ELSE 'failed' END,
+                    last_error = 'deleted on AO3', last_synced_at = ?
+                WHERE id = ?
+                """, arguments: [now, now, workID])
         }
     }
 

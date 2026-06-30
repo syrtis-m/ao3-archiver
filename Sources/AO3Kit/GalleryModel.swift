@@ -51,6 +51,9 @@ public struct WorkListItem: Sendable, Identifiable, Equatable, Hashable {
     /// work: pending|downloaded|failed|unavailable. series → "series" (no own file).
     public var downloadState: String
     public var epubPath: String?
+    /// True when AO3 has 404'd this work since we last checked — the author deleted it.
+    /// Never set by proactive probing, only when the normal download flow happens to hit it.
+    public var deletedOnAO3: Bool
 
     // ── Precomputed once at construction (perf: M6/P1) ──────────────────────────────
     /// Concatenated, lowercased text the search box matches against. Built ONCE in `init`
@@ -77,7 +80,7 @@ public struct WorkListItem: Sendable, Identifiable, Equatable, Hashable {
         bookmarkedAt: String? = nil, bookmarkedDate: Date? = nil,
         bookmarkTags: [String] = [], bookmarkerNotes: String? = nil,
         isRec: Bool = false, isPrivate: Bool = false,
-        downloadState: String = "pending", epubPath: String? = nil
+        downloadState: String = "pending", epubPath: String? = nil, deletedOnAO3: Bool = false
     ) {
         self.itemID = itemID; self.bookmarkID = bookmarkID; self.kind = kind
         self.sourcePath = sourcePath; self.title = title; self.author = author
@@ -91,7 +94,7 @@ public struct WorkListItem: Sendable, Identifiable, Equatable, Hashable {
         self.bookmarkedAt = bookmarkedAt; self.bookmarkedDate = bookmarkedDate
         self.bookmarkTags = bookmarkTags
         self.bookmarkerNotes = bookmarkerNotes; self.isRec = isRec; self.isPrivate = isPrivate
-        self.downloadState = downloadState; self.epubPath = epubPath
+        self.downloadState = downloadState; self.epubPath = epubPath; self.deletedOnAO3 = deletedOnAO3
         // Derived, computed once (see field docs).
         self.searchHaystack = ([title, author, summary ?? "", bookmarkerNotes ?? ""]
             + fandoms + relationships + characters + freeforms + bookmarkTags)
@@ -301,7 +304,8 @@ extension Store {
                     bookmarkTags: btagsByBookmark[bid] ?? [],
                     bookmarkerNotes: row["bnotes"],
                     isRec: (row["brec"] as Int? ?? 0) != 0, isPrivate: (row["bpriv"] as Int? ?? 0) != 0,
-                    downloadState: row["download_state"], epubPath: row["epub_path"]))
+                    downloadState: row["download_state"], epubPath: row["epub_path"],
+                    deletedOnAO3: (row["deleted_on_ao3_at"] as String?) != nil))
             }
 
             // Series bookmarks.
@@ -361,7 +365,8 @@ extension Store {
                     summary: row["summary"], updatedAt: row["updated_at"], dateText: row["date_text"],
                     bookmarkedAt: nil, bookmarkTags: [], bookmarkerNotes: nil,
                     isRec: false, isPrivate: false,
-                    downloadState: row["download_state"], epubPath: row["epub_path"])
+                    downloadState: row["download_state"], epubPath: row["epub_path"],
+                    deletedOnAO3: (row["deleted_on_ao3_at"] as String?) != nil)
             }
         }
     }

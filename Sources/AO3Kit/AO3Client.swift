@@ -70,6 +70,11 @@ public enum AO3Error: Error, CustomStringConvertible {
     case http(Int)
     case rateLimited(retryAfter: TimeInterval)
     case requiresLogin
+    /// A *listing* page (bookmarks/series) came back as AO3's login form instead of the
+    /// requested content — the session cookie is missing, malformed, or has expired mid-sync.
+    /// Distinct from `.requiresLogin` (one locked work's content) — this means the page we
+    /// were paging through bounced to login, so the whole pass needs to pause and re-auth.
+    case sessionExpired
     case badURL(String)
     case disallowedHost(String)
     case network(String)
@@ -82,6 +87,9 @@ public enum AO3Error: Error, CustomStringConvertible {
         case .http(let code):           return "HTTP \(code)"
         case .rateLimited(let s):       return "rate limited (retry after \(Int(s))s, exhausted retries)"
         case .requiresLogin:            return "this content requires a logged-in session cookie"
+        case .sessionExpired:
+            return "AO3 asked you to log in — your session cookie may have expired or wasn't "
+                 + "recognized. Re-paste it to continue."
         case .badURL(let u):            return "bad URL: \(u)"
         case .disallowedHost(let h):    return "refused request to non-AO3 host: \(h)"
         case .network(let m):           return "network error: \(m)"

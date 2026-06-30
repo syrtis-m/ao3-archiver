@@ -161,6 +161,19 @@ public enum BlurbParser {
         return href.isEmpty ? nil : href
     }
 
+    /// True when a listing fetch came back as AO3's login form rather than real cards — the
+    /// tell that a session cookie is missing, malformed, or expired mid-sync. Gated on the
+    /// listing being otherwise empty so a coincidental string match inside someone's summary
+    /// text can't misfire while real cards are present; markers are ORed (fail-soft, like the
+    /// rest of the parser) so drift in any one of them doesn't break detection.
+    public static func looksLikeLoginPage(html: String, cardCount: Int) -> Bool {
+        guard cardCount == 0 else { return false }
+        let head = html.lowercased()
+        let markers = ["action=\"/users/login\"", "name=\"user[login]\"",
+                       "you need to sign in or sign up before continuing"]
+        return markers.contains { head.contains($0) }
+    }
+
     /// The highest page number in the pagination control (the total page count), for a
     /// progress readout like "page 15 of 130". nil when there's no pagination (single page).
     public static func lastPageNumber(html: String) throws -> Int? {

@@ -134,6 +134,24 @@ import Foundation
         #expect(ArchivePaths.sanitize("A/B: C?") == "A B C")
         #expect(ArchivePaths.sanitize("   ") == "untitled")
     }
+
+    /// Cookie-expiry mid-sync: a listing fetch that bounces to AO3's login form (cookie
+    /// missing/malformed/expired) must be distinguishable from a real, empty-result page.
+    @Test func loginPageDetection() throws {
+        let loginForm = #"<form action="/users/login" method="post"><input name="user[login]"></form>"#
+        let devisePage = "<div class=\"flash\">You need to sign in or sign up before continuing.</div>"
+        #expect(BlurbParser.looksLikeLoginPage(html: loginForm, cardCount: 0))
+        #expect(BlurbParser.looksLikeLoginPage(html: devisePage, cardCount: 0))
+        // Cards present wins — a coincidental marker match can't misfire while real cards exist.
+        #expect(!BlurbParser.looksLikeLoginPage(html: loginForm, cardCount: 1))
+        #expect(!BlurbParser.looksLikeLoginPage(html: "<p>nothing here</p>", cardCount: 0))
+        // A real listing page is never mistaken for a login page.
+        let real = try fixtureHTML()
+        let realCount = try BlurbParser.parseListing(html: real).count
+        #expect(!BlurbParser.looksLikeLoginPage(html: real, cardCount: realCount))
+        // The surfaced message names the actual problem (a cookie), not a bare HTTP code.
+        #expect("\(AO3Error.sessionExpired)".lowercased().contains("cookie"))
+    }
 }
 
 /// Verifies EPUB download-link extraction against a faithful copy of AO3's download menu.
@@ -394,6 +412,73 @@ import Foundation
         try store.upsertBookmark(rebm, itemKind: .work, itemID: rebm.workID)
 
         #expect(try store.count("bookmark") == before)      // replaced, not duplicated
+    }
+
+    /// `upsertWork`'s returned change info drives the sync log's "gained N chapters" line —
+    /// verify it reports new-vs-known and the chapter delta correctly, in isolation.
+    @Test func upsertWorkReportsChapterGains() throws {
+        let cards = try BlurbParser.parseListing(html: fixture("bookmarks_page"))
+            .filter { $0.kind == .work }
+        let store = try Store(inMemory: true)
+
+        var work = cards[0]
+        let firstChange = try store.upsertWork(work)
+        #expect(firstChange.isNew)
+        #expect(firstChange.newChapters == nil)   // never seen before — no "gain" to report
+
+        work.chaptersHave = (work.chaptersHave ?? 0) + 2
+        let gainChange = try store.upsertWork(work)
+        #expect(!gainChange.isNew)
+        #expect(gainChange.newChapters == 2)
+
+        #expect(try store.upsertWork(work).newChapters == nil)   // unchanged → no gain
+    }
+
+    /// A genuine 404 during download means the work was deleted by its author — distinct from
+    /// a transient/auth failure. `markDeletedOnAO3` should both flag it (for the "only copy"
+    /// UI badge) and stop it from being re-requested on every future sync.
+    @Test func deletedOnAO3MarksAndExcludesFromQueues() throws {
+        let cards = try BlurbParser.parseListing(html: fixture("bookmarks_page"))
+            .filter { $0.kind == .work }
+        let store = try Store(inMemory: true)
+
+        var work = cards[0]
+        let neverDownloaded = cards[1]
+        try store.upsertWork(work)
+        try store.upsertBookmark(work, itemKind: .work, itemID: work.workID)
+        try store.upsertWork(neverDownloaded)
+        try store.upsertBookmark(neverDownloaded, itemKind: .work, itemID: neverDownloaded.workID)
+
+        let itemsBefore = try store.fetchAllListItems()
+        #expect(itemsBefore.first { $0.itemID == work.workID }?.deletedOnAO3 == false)
+
+        try store.markDownloaded(workID: work.workID, epubPath: "works/\(work.workID).epub",
+                                 updatedAt: work.updatedAt)
+        work.updatedAt = (work.updatedAt ?? 0) + 1
+        try store.upsertWork(work)   // AO3 shows a newer revision — re-arms the redownload queue
+
+        let pending = try store.worksNeedingDownload()
+        #expect(pending.first { $0.id == work.workID }?.hasDownload == true)
+        #expect(pending.first { $0.id == neverDownloaded.workID }?.hasDownload == false)
+        #expect(try store.worksNeedingRedownload().map(\.id) == [work.workID])
+
+        try store.markDeletedOnAO3(workID: work.workID)
+        #expect(try store.worksNeedingRedownload().isEmpty)
+        #expect(!(try store.worksNeedingDownload().contains { $0.id == work.workID }))
+        #expect(try store.worksNeedingDownload().contains { $0.id == neverDownloaded.workID })
+
+        try store.markDeletedOnAO3(workID: work.workID)   // idempotent re-mark must not throw
+        let after = try store.fetchAllListItems().first { $0.itemID == work.workID }
+        #expect(after?.deletedOnAO3 == true)
+        // A deleted-but-already-saved work must stay 'downloaded' — overwriting it to 'failed'
+        // would silently drop it out of the Saved filter facet (backwards: this is precisely
+        // the work worth being able to find).
+        #expect(after?.downloadState == "downloaded")
+
+        // A never-downloaded work that 404s has nothing to preserve — it becomes 'failed'.
+        try store.markDeletedOnAO3(workID: neverDownloaded.workID)
+        let neverAfter = try store.fetchAllListItems().first { $0.itemID == neverDownloaded.workID }
+        #expect(neverAfter?.downloadState == "failed")
     }
 
     @Test func seriesExpansionLinksMembers() throws {
