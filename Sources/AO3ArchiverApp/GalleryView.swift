@@ -232,6 +232,15 @@ struct GalleryView: View {
                 .onKeyPress(keys: [.downArrow, .rightArrow, "s", "d"]) { _ in
                     moveSelection(.next, proxy)
                 }
+                // A full `vm.allItems` reload (single-work download, sync finishing) hands the
+                // ForEach a brand-new array — same ids/order, but `ScrollViewReader` coexisting
+                // with `.scrollPosition(id:)` on the same ScrollView doesn't reliably keep its
+                // pin across that swap, and the view snaps back to the top. Re-assert it
+                // explicitly once the new content has laid out.
+                .onChange(of: vm.loadGeneration) { _, _ in
+                    guard let pinned = scrolledID else { return }
+                    Task { @MainActor in proxy.scrollTo(pinned, anchor: .top) }
+                }
             }
         }
     }
