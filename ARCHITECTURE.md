@@ -6,8 +6,7 @@ For day-to-day contributor conventions, see [CLAUDE.md](CLAUDE.md).
 
 > **Built from scratch.** This is an original codebase. `ao3_api` / `ao3downloader` and similar
 > tools are referenced only as *documentation of AO3's behaviour* (download-URL shape, 429
-> handling, bookmark pagination, which fields live on a card) — no vendored code, no dependency
-> on their abstractions.
+> handling, bookmark pagination, which fields live on a card) — no vendored code, no dependency on their abstractions.
 
 ---
 
@@ -209,7 +208,7 @@ post-V1 item).
 
 ---
 
-## 6. Performance architecture (the V1.1 "M6" pass — designed for 20k bookmarks)
+## 6. Performance architecture (designed for 20k bookmarks)
 
 **Design point:** ~20k unique bookmarks on Apple-Silicon compute (many fast cores, ample RAM).
 At this scale nothing in the pipeline is O(n²) and 20k items are only tens of MB resident — so
@@ -231,7 +230,7 @@ blocking, and no input debounce. The fix keeps the tested in-memory engine and m
 assertion in the scale test, so later changes can't silently regress them. A "parallel facets ==
 serial facets" check proves the concurrency stays deterministic.
 
-**Deferred (optional, post-V1.1):** moving the recompute fully off-main with a generation token
+**Deferred (optional, future):** moving the recompute fully off-main with a generation token
 (insurance for 50k+ / pathological filters; high architectural cost, modest payoff at 20k after
 the above), and a SQL/FTS fallback (only past ~100k — and a search-*semantics* change, since
 FTS is token/prefix matching, not the current substring-anywhere `contains`).

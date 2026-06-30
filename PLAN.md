@@ -103,11 +103,6 @@ None of these are blockers; V1.5 stands on its own.
 - **Export / import** the archive folder; backup integrity checks.
 - **Local file-size / download-status sort** — the one deferred sort (needs epub byte size stored
   at download).
-- **Off-main recompute** (generation token) — insurance for 50k+ / pathological filters; high
-  architectural cost, modest payoff at the 20k target. Deferred from V1.1's perf pass.
-- **100k+ ceiling-raiser** — a SQL/FTS5 search/filter fallback that pages from disk. Only if the
-  library grows an order of magnitude past 20k, and a deliberate search-*semantics* change (FTS
-  is token/prefix matching, not the current substring-anywhere match).
 
 ---
 
