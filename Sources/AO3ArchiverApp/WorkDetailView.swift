@@ -104,15 +104,30 @@ struct WorkDetailView: View {
     /// AO3 has 404'd this work since we last checked. If we hold an EPUB, that copy is now
     /// the only one left; if we never got to save it, say so instead of claiming a copy exists.
     private var deletedBanner: some View {
-        Label(
-            item.epubPath != nil
-                ? "This work was deleted from AO3 — your saved copy is the only one left."
-                : "This work was deleted from AO3 before you could save it.",
-            systemImage: "exclamationmark.shield.fill")
-            .font(.callout).foregroundStyle(.red)
-            .padding(10)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.red.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+        VStack(alignment: .leading, spacing: 8) {
+            Label(
+                item.epubPath != nil
+                    ? "This work was deleted from AO3 — your saved copy is the only one left."
+                    : "This work was deleted from AO3 before you could save it.",
+                systemImage: "exclamationmark.shield.fill")
+                .font(.callout).foregroundStyle(.red)
+            // The escape hatch. "Deleted" is inferred from AO3 returning 404, which it also
+            // does during deploys and for works flipped to registered-users-only — so the
+            // user must be able to challenge the claim rather than live with a work that's
+            // permanently excluded from every future sync.
+            HStack(spacing: 8) {
+                Button("Check again on AO3") {
+                    try? store.clearDeletedOnAO3(workID: item.itemID)
+                    onChanged()
+                }
+                .buttonStyle(.glass).controlSize(.small)
+                Text("Re-queues it for the next sync.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.red.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
     }
 
     @ViewBuilder

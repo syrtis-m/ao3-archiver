@@ -89,22 +89,40 @@ final class SyncController {
             $0.isEmpty ? nil : "/users/\(AO3Config.encodePathComponent($0))/bookmarks?page=1"
         } ?? "/tags/Good%20Omens%20(TV)/works"   // anonymous demo when no username
 
-        task = Task { [weak self] in
+        // A single ordered channel for progress events. Previously each event spawned its own
+        // `Task { @MainActor in … }`; independent tasks hopping to an actor have no FIFO
+        // guarantee, so the activity feed could render out of order. One consumer draining a
+        // stream fixes that and drops ~40 task allocations per page.
+        let (events, continuation) = AsyncStream<SyncEngine.Event>.makeStream()
+        let consumer = Task { @MainActor [weak self] in
+            for await event in events { self?.apply(event) }
+        }
+
+        // `Task.detached`, NOT `Task {}`: `start` is @MainActor-isolated, so an unstructured
+        // `Task` inherits that isolation and the whole sync — every SwiftSoup listing parse,
+        // every Store write transaction, every EPUB write — ran ON THE MAIN THREAD. Detaching
+        // forces each hop back to be an explicit `await`, which is the compiler check that was
+        // missing (the old code called `self?.finish(...)` with no `await`, which only
+        // compiled *because* it was main-actor isolated).
+        task = Task.detached(priority: .userInitiated) { [weak self] in
+            defer { continuation.finish() }
             do {
                 // maxRetries bumped: a long index reliably hits AO3's throttle, and we want
                 // it to wait it out (visibly) rather than give up.
                 let client = AO3Client(config: AO3Config(
                     userAgent: userAgent, sessionCookie: cookie,
                     minRequestInterval: interval, maxRetries: 8))
+                // Bind once: `self` here is a captured *var* from the outer [weak self], and
+                // referencing it inside a second concurrently-executing closure is an error
+                // under the Swift 6 language mode.
+                let controller = self
                 client.onRateLimit = { secs, attempt, max in
-                    Task { @MainActor in self?.noteRateLimit(secs, attempt: attempt, max: max) }
+                    Task { @MainActor in controller?.noteRateLimit(secs, attempt: attempt, max: max) }
                 }
                 let files = FileStore(root: archiveRoot)
                 try files.ensureDirectories()
                 let engine = SyncEngine(client: client, store: store, files: files)
-                let onEvent: @Sendable (SyncEngine.Event) -> Void = { event in
-                    Task { @MainActor in self?.apply(event) }
-                }
+                let onEvent: @Sendable (SyncEngine.Event) -> Void = { continuation.yield($0) }
                 let result: SyncEngine.Result
                 if incremental {
                     // Quick sync: bounded two-pass catch-up. expandSeries OFF (one query per
@@ -120,23 +138,38 @@ final class SyncController {
                                                      resumeIndex: resumeIndex)
                     result = try await engine.run(listPath: listPath, options: options, onEvent: onEvent)
                 }
-                self?.finish(result: result)
+                continuation.finish()
+                await consumer.value            // drain the feed before writing the final state
+                await self?.finish(result: result)
             } catch is CancellationError {
-                self?.endRun(.cancelled)
+                continuation.finish(); await consumer.value
+                await self?.endRun(.cancelled)
             } catch AO3Error.sessionExpired {
-                self?.pendingResume = ResumeParams(
+                continuation.finish(); await consumer.value
+                await self?.pauseForCookie(ResumeParams(
                     store: store, username: username, archiveRoot: archiveRoot, interval: interval,
                     downloadEPUBs: downloadEPUBs, maxPages: maxPages, resumeIndex: resumeIndex,
-                    incremental: incremental, reload: reload)
-                self?.lastError = String(describing: AO3Error.sessionExpired)
-                self?.push("Paused — re-paste your session cookie above to continue.")
-                self?.endRun(.needsCookie)
+                    incremental: incremental, reload: reload))
             } catch {
-                self?.lastError = String(describing: error)
-                self?.push("Stopped: \(error)")
-                self?.endRun(.failed)
+                continuation.finish(); await consumer.value
+                await self?.fail(with: error)
             }
         }
+    }
+
+    /// Cookie expired mid-run: capture how the run was started so `resumeWithCookie` can
+    /// re-invoke it unchanged, and pause rather than fail.
+    private func pauseForCookie(_ params: ResumeParams) {
+        pendingResume = params
+        lastError = String(describing: AO3Error.sessionExpired)
+        push("Paused — re-paste your session cookie above to continue.")
+        endRun(.needsCookie)
+    }
+
+    private func fail(with error: Error) {
+        lastError = String(describing: error)
+        push("Stopped: \(error)")
+        endRun(.failed)
     }
 
     /// Re-paste-cookie recovery: continue a run paused by `.sessionExpired` with a fresh

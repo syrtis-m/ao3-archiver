@@ -2,7 +2,7 @@
 
 Contributor guide for working in this repo. **Architecture lives in
 [ARCHITECTURE.md](ARCHITECTURE.md)** (the single source of design truth — read it first);
-[README.md](README.md) is user-facing; [PLAN.md](PLAN.md) is the roadmap. This file is the
+[README.md](README.md) is user-facing; [plans/](plans/README.md) holds the roadmap and forward-looking plans. This file is the
 day-to-day operational guide: how to build/test/run, where things are, and the conventions and
 gotchas that bite.
 

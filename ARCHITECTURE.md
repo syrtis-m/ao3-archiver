@@ -1,7 +1,7 @@
 # Architecture
 
 The single source of truth for **how AO3 Archiver is built and why**. For what it does and how
-to use it, see [README.md](README.md). For the forward-looking roadmap, see [PLAN.md](PLAN.md).
+to use it, see [README.md](README.md). For the forward-looking roadmap and plans, see [plans/](plans/README.md).
 For day-to-day contributor conventions, see [CLAUDE.md](CLAUDE.md).
 
 > **Built from scratch.** This is an original codebase. `ao3_api` / `ao3downloader` and similar
@@ -96,6 +96,17 @@ updates, and never lives in `/tmp`. The canonical schema is the migration list i
 | `reading_position` | reader resume point per work | `(work_id PK → work, spine_index, locator, progress)`; section-granular |
 | `meta` | key/value | resume cursor for a throttled index |
 | `sync_run` | sync bookkeeping | per-run counts/status |
+| `deleted_sighting` | one row per corroborating 404 sighting | `(work_id, source)`; a work is only *believed* deleted at `deletedConfirmThreshold` sightings |
+
+**Connections are opened WAL + busy-timeout, and that is load-bearing, not tuning.**
+`Store.makeConfiguration` sets `journalMode = .wal` and `busyMode = .timeout(5)`. The app holds
+**several handles on one file** — one for the gallery, one *per reader window* — and GRDB's
+default `busyMode` is `.immediateError`. With the stock rollback journal that combination made a
+reader's resume write during a sync fail instantly with `SQLITE_BUSY`, which `ReaderModel`'s
+`try?` then discarded: your place in a work vanished with no error anywhere. `DatabaseQueue` does
+**not** enable WAL on its own (only `DatabasePool` does), so the setting is explicit. Note WAL
+adds `-wal`/`-shm` sidecar files that are only consistent *as a set* — never copy `archive.sqlite`
+alone, and never two-way file-sync it.
 
 **Design decisions that matter:**
 
@@ -255,7 +266,8 @@ A thin SwiftUI skin over the tested model. **Platform is macOS 26 package-wide**
   auto-hides (width tracked via `onGeometryChange`) and returns when the window widens; the
   sidebar collapses to a toggle when its min width can't be honored. Tag pills truncate inside
   the card (`FlowLayout` clamps over-long children to the row width) instead of overflowing.
-- **In-app sync.** `SyncController` (@MainActor @Observable) runs the off-main `SyncEngine` with
+- **In-app sync.** `SyncController` (@MainActor @Observable) runs the genuinely off-main
+  `SyncEngine` (an `actor`, driven from a `Task.detached`) with
   live progress — page-of-total, a rate-limit banner, an activity feed — and reloads the gallery
   live (coalesced) as pages index. `SyncSheet` collects username + cookie into `CredentialStore`
   (Keychain). Default sync is **index-only** (fast, gentle); EPUBs download per-work on demand or
@@ -489,6 +501,22 @@ look back. `SyncEngine.ingest` stashes a positive delta in a private `chapterGai
 (reset at the top of `run`/`incrementalSync`) keyed by work id; the download loop consumes it
 (`removeValue`) only once the file is actually re-saved, so the log says "gained N chapters — saved"
 at the point that's true, not at index time when it'd be a promise.
+
+> **Updated (post-V1.5 correctness pass).** Three things below changed once the caveats in this
+> section were taken seriously — see `plans/ADVERSARIAL-REVIEW.md` F1–F3:
+> 1. **A single 404 no longer latches a work as deleted.** Because "404 means deleted" is *not*
+>    pinned to a fixture, one sighting only records evidence in `deleted_sighting`;
+>    `Store.deletedConfirmThreshold` (2) independent sightings are needed to set
+>    `deleted_on_ao3_at`. The old behaviour permanently retired a work from **both** download
+>    queues with no way back — one transient 404 during an AO3 deploy silently stopped the tool
+>    archiving a work that was still there, while badging it as gone.
+> 2. **The exclusion expires.** `worksNeedingDownload`/`worksNeedingRedownload` exclude a
+>    confirmed-deleted work only for `Store.deletedRecheckDays` (90), then give it one more
+>    chance — authors do restore works. `Store.clearDeletedOnAO3` plus a **"Check again on AO3"**
+>    button in the detail banner is the manual escape hatch.
+> 3. **`SyncEngine` is an `actor`** and the GUI drives it from a `Task.detached`. It previously
+>    inherited `SyncController`'s `@MainActor` isolation, so every listing parse, DB write, and
+>    EPUB write ran on the main thread despite comments here claiming otherwise.
 
 **Deleted-work detection.** A genuine HTTP 404 fetching a work's page during the download loop means
 the author deleted it — a stronger, more specific signal than the prior behavior of lumping every

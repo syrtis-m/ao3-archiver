@@ -81,6 +81,13 @@ struct ReaderView: View {
                     .disabled(!model.canGoNext)
             }
 
+            // Surfaced, not swallowed: a failed resume write used to vanish into a `try?`.
+            if model.showsPersistWarning {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.yellow)
+                    .help("Couldn't save your place: \(model.lastPersistError ?? "")")
+            }
+
             Button { showTOC.toggle() } label: { Image(systemName: "list.bullet") }
                 .keyboardShortcut("t", modifiers: .command)
                 .popover(isPresented: $showTOC, arrowEdge: .bottom) { tocPopover(model) }

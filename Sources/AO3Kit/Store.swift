@@ -21,16 +21,43 @@ public enum StoreError: Error, CustomStringConvertible {
 public final class Store: @unchecked Sendable {
     let dbQueue: DatabaseQueue
 
+    /// WAL + a busy timeout are **required here, not tuning**. The app opens one `Store` for
+    /// the gallery *and one per reader window* on the same file, and GRDB's default
+    /// `busyMode` is `.immediateError` — so with the stock rollback journal, a reader's
+    /// resume write during a sync failed instantly with `SQLITE_BUSY` and the caller's `try?`
+    /// discarded it, silently losing your place in a work.
+    ///
+    /// WAL lets readers and the single writer proceed concurrently; the timeout covers the
+    /// remaining writer-vs-writer window (a sync transaction vs. a resume write — both short,
+    /// so 5s means "something is actually wrong", not "we were unlucky").
+    ///
+    /// `DatabaseQueue` does **not** enable WAL on its own (only `DatabasePool` does), hence
+    /// the explicit `journalMode`. WAL is persistent in the DB header and a no-op in memory.
+    static func makeConfiguration() -> Configuration {
+        var config = Configuration()
+        config.journalMode = .wal
+        config.busyMode = .timeout(5.0)
+        return config
+    }
+
     /// Open (creating if needed) the database at `path` and run migrations.
     public init(path: String) throws {
-        dbQueue = try DatabaseQueue(path: path)
+        dbQueue = try DatabaseQueue(path: path, configuration: Self.makeConfiguration())
         try Self.migrator.migrate(dbQueue)
     }
 
     /// In-memory store, for tests.
     public init(inMemory: Bool) throws {
-        dbQueue = try DatabaseQueue()
+        dbQueue = try DatabaseQueue(configuration: Self.makeConfiguration())
         try Self.migrator.migrate(dbQueue)
+    }
+
+    /// The database's active journal mode (`"wal"` on disk, `"memory"` in memory). Exposed so
+    /// tests can assert the WAL invariant above actually holds rather than trusting config.
+    public func journalMode() throws -> String {
+        try dbQueue.read { db in
+            try String.fetchOne(db, sql: "PRAGMA journal_mode") ?? ""
+        }
     }
 
     // MARK: - Schema
@@ -189,8 +216,50 @@ public final class Store: @unchecked Sendable {
             // otherwise, so the UI can flag "your saved copy is the only one left".
             try db.execute(sql: "ALTER TABLE work ADD COLUMN deleted_on_ao3_at TEXT")
         }
+        m.registerMigration("v6-deleted-sightings") { db in
+            // A 404 is EVIDENCE of deletion, not proof — the premise is not pinned to a
+            // captured fixture, and AO3 can 404 for other reasons (a deploy window, a work
+            // flipped to registered-users-only, a CDN blip). Previously a single sighting
+            // latched `deleted_on_ao3_at` forever and BOTH download queues excluded it with
+            // no way back, so one transient 404 permanently stopped us archiving a work that
+            // was still there — while the UI asserted it was gone.
+            //
+            // One row per (work, sighting source). Counting rows rather than bumping an
+            // integer is deliberate: it merges cleanly if this archive ever spans devices
+            // (two sightings from two devices should count the same as two from one), so
+            // this doesn't need a second migration later.
+            try db.execute(sql: """
+                CREATE TABLE deleted_sighting (
+                  work_id  INTEGER NOT NULL REFERENCES work(id) ON DELETE CASCADE,
+                  source   TEXT NOT NULL,      -- device/run identity; 'local' on a single-device archive
+                  seen_at  TEXT NOT NULL,
+                  PRIMARY KEY (work_id, source)
+                )
+                """)
+            // Existing latched rows keep their flag (the user has already seen the badge),
+            // but are seeded with a sighting so the confirmation threshold and the cool-off
+            // below apply to them too.
+            try db.execute(sql: """
+                INSERT OR IGNORE INTO deleted_sighting (work_id, source, seen_at)
+                SELECT id, 'legacy', deleted_on_ao3_at FROM work WHERE deleted_on_ao3_at IS NOT NULL
+                """)
+        }
         return m
     }
+
+    // MARK: - Deleted-on-AO3 detection (corroborated, expiring, reversible)
+
+    /// Sightings required before we believe a work is really gone. Each sighting costs one
+    /// polite request against a work we suspect is gone, so two (i.e. confirmed on a
+    /// *separate* sync run) buys out the transient-blip case for one extra request per
+    /// genuinely-deleted work, ever. Three would double that for almost no additional
+    /// certainty.
+    public static let deletedConfirmThreshold = 2
+
+    /// How long a confirmed-deleted work stays out of the download queues before getting one
+    /// more chance. Authors do restore works and un-restrict them; an archival tool should
+    /// eventually notice, and 90 days keeps the politeness win that motivated the exclusion.
+    public static let deletedRecheckDays = 90
 
     // MARK: - Reading position (in-app reader resume)
 
@@ -454,16 +523,18 @@ public final class Store: @unchecked Sendable {
     /// without a cookie must re-enter the queue once a cookie is present. (`download_state`
     /// /`last_error` remain as a UI status cache.) In-run spinning is already prevented by
     /// `contentSync` snapshotting this list once, so excluding 'failed' here would only
-    /// block the *cross-run* retry we actually want. A work confirmed gone from AO3
-    /// (`deleted_on_ao3_at`) is excluded — retrying a permanent 404 every sync is wasted
-    /// politeness budget for a result we already know.
+    /// block the *cross-run* retry we actually want. A work **confirmed** gone from AO3
+    /// (`deleted_on_ao3_at`, which needs `deletedConfirmThreshold` sightings) is excluded —
+    /// retrying a permanent 404 every sync is wasted politeness budget. That exclusion now
+    /// **expires** after `deletedRecheckDays` so a misclassified 404 can't retire a work
+    /// forever; see `recordDeletedSighting`.
     public func worksNeedingDownload(limit: Int? = nil) throws -> [PendingWork] {
         try dbQueue.read { db in
             let lim = limit.map { " LIMIT \($0)" } ?? ""
             let rows = try Row.fetchAll(db, sql: """
                 SELECT id, title, updated_at, epub_path FROM work
                 WHERE kind = 'work'
-                  AND deleted_on_ao3_at IS NULL
+                  \(Self.notRecentlyConfirmedDeleted)
                   AND (epub_path IS NULL
                        OR (updated_at IS NOT NULL
                            AND (epub_updated_at IS NULL OR updated_at > epub_updated_at)))
@@ -485,7 +556,7 @@ public final class Store: @unchecked Sendable {
             let rows = try Row.fetchAll(db, sql: """
                 SELECT id, title, updated_at, epub_path FROM work
                 WHERE kind = 'work'
-                  AND deleted_on_ao3_at IS NULL
+                  \(Self.notRecentlyConfirmedDeleted)
                   AND epub_path IS NOT NULL
                   AND updated_at IS NOT NULL
                   AND (epub_updated_at IS NULL OR updated_at > epub_updated_at)
@@ -541,16 +612,95 @@ public final class Store: @unchecked Sendable {
     /// is left at `'downloaded'` when we already hold a copy — overwriting it to `'failed'`
     /// would silently drop a "your saved copy is the only one left" work out of the Saved
     /// filter facet, which is exactly backwards (these are the works worth finding).
-    public func markDeletedOnAO3(workID: Int, now: String = Store.nowISO()) throws {
+    /// Record one 404 sighting for a work, latching `deleted_on_ao3_at` **only once
+    /// `deletedConfirmThreshold` independent sightings agree**. Returns whether the work is
+    /// now considered deleted, so the caller can word its log line honestly ("might be gone"
+    /// vs. "is gone").
+    ///
+    /// `COALESCE` keeps the *first* confirmation timestamp on a repeat sighting.
+    /// `download_state` is left alone when we already hold a copy — overwriting it to
+    /// `'failed'` would drop a "your saved copy is the only one left" work out of the Saved
+    /// filter facet, which is exactly backwards (these are the works worth finding).
+    @discardableResult
+    public func recordDeletedSighting(workID: Int, source: String = "local",
+                                      now: String = Store.nowISO()) throws -> Bool {
         try dbQueue.write { db in
+            try db.execute(sql: """
+                INSERT INTO deleted_sighting (work_id, source, seen_at) VALUES (?,?,?)
+                ON CONFLICT(work_id, source) DO UPDATE SET seen_at = excluded.seen_at
+                """, arguments: [workID, source, now])
+            let count = try Int.fetchOne(db,
+                sql: "SELECT count(*) FROM deleted_sighting WHERE work_id = ?",
+                arguments: [workID]) ?? 0
+            guard count >= Self.deletedConfirmThreshold else { return false }
             try db.execute(sql: """
                 UPDATE work SET deleted_on_ao3_at = COALESCE(deleted_on_ao3_at, ?),
                     download_state = CASE WHEN epub_path IS NOT NULL THEN download_state ELSE 'failed' END,
                     last_error = 'deleted on AO3', last_synced_at = ?
                 WHERE id = ?
                 """, arguments: [now, now, workID])
+            return true
         }
     }
+
+    /// Forget everything we think we know about this work being deleted, re-arming both
+    /// download queues. Wired to the detail view's "Check again on AO3" button — the escape
+    /// hatch that turns an unfalsifiable claim into one the user can challenge.
+    public func clearDeletedOnAO3(workID: Int, now: String = Store.nowISO()) throws {
+        try dbQueue.write { db in
+            try db.execute(sql: "DELETE FROM deleted_sighting WHERE work_id = ?", arguments: [workID])
+            try db.execute(sql: """
+                UPDATE work SET deleted_on_ao3_at = NULL,
+                    last_error = CASE WHEN last_error = 'deleted on AO3' THEN NULL ELSE last_error END,
+                    last_synced_at = ?
+                WHERE id = ?
+                """, arguments: [now, workID])
+        }
+    }
+
+    /// How many independent sightings we have that this work 404s. Exposed for the UI (a
+    /// single unconfirmed sighting shouldn't badge a work as gone) and for tests.
+    public func deletedSightingCount(workID: Int) throws -> Int {
+        try dbQueue.read { db in
+            try Int.fetchOne(db, sql: "SELECT count(*) FROM deleted_sighting WHERE work_id = ?",
+                             arguments: [workID]) ?? 0
+        }
+    }
+
+    /// Move a work's deletion-confirmation timestamp back in time, so both test runners can
+    /// verify the recheck window actually expires without waiting `deletedRecheckDays`.
+    public func backdateDeletedConfirmation(workID: Int, to iso: String) throws {
+        try dbQueue.write { db in
+            try db.execute(sql: "UPDATE work SET deleted_on_ao3_at = ? WHERE id = ?",
+                           arguments: [iso, workID])
+        }
+    }
+
+    /// Run `body` while *this* handle genuinely **holds the write lock** — so a test can prove
+    /// a **second** handle on the same file can still write concurrently, which is the whole
+    /// point of the WAL + busy-timeout config above. Public because the headless `selftest`
+    /// runner has no `@testable` access and must assert the same invariant as the suite.
+    ///
+    /// The `meta` write is load-bearing, not incidental: GRDB opens a *deferred* transaction,
+    /// which acquires no lock until the first actual write statement. Without it the
+    /// "concurrent writer" is contending with nothing and the test passes even unfixed.
+    public func holdingWriteTransaction<T>(_ body: () throws -> T) throws -> T {
+        try dbQueue.write { db in
+            try db.execute(sql: """
+                INSERT INTO meta (key, value) VALUES ('write_lock_probe', ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """, arguments: [Store.nowISO()])
+            return try body()
+        }
+    }
+
+    /// SQL fragment excluding confirmed-deleted works from the download queues — but only
+    /// until the recheck window elapses, so a permanent exclusion can't be created by a
+    /// misclassified 404. Shared by both queue queries so they can never drift apart.
+    static let notRecentlyConfirmedDeleted = """
+          AND (deleted_on_ao3_at IS NULL
+               OR deleted_on_ao3_at < datetime('now', '-\(Store.deletedRecheckDays) days'))
+        """
 
     // MARK: - sync_run bookkeeping
 
@@ -579,7 +729,7 @@ public final class Store: @unchecked Sendable {
     static let countableTables: Set<String> = [
         "work", "series", "series_work", "bookmark", "bookmark_tag",
         "tag", "work_tag", "work_fts", "filter_preset", "meta", "sync_run",
-        "reading_position",
+        "reading_position", "deleted_sighting",
     ]
 
     public func count(_ table: String) throws -> Int {

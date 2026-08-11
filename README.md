@@ -179,7 +179,7 @@ This software is provided as-is. This was a weekend hobby project - I may not ma
 
 ## License
 
-[PolyForm Noncommercial License 1.0.0](LICENSE) — free to use, modify, and share for any
+[PolyForm Noncommercial License 1.0.0](LICENSE.md) — free to use, modify, and share for any
 **noncommercial** purpose (personal use, hobby projects, research, nonprofits). Commercial use is
 not granted. The noncommercial restriction reflects AO3's own nonprofit, transformative-works
 ethos. Dependencies remain under their own MIT licenses.

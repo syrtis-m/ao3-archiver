@@ -267,23 +267,107 @@ do {
         check("redownload queue is exactly the stale-but-downloaded work",
               try store.worksNeedingRedownload().map(\.id) == [work.workID])
 
-        try store.markDeletedOnAO3(workID: work.workID)
-        check("a deleted work drops out of the redownload queue",
+        // ONE sighting must NOT latch: a 404 is evidence, not proof (AO3 also 404s during
+        // deploys / for registered-users-only works), and latching permanently retired the
+        // work from every future sync with no way back.
+        check("a single 404 sighting does not confirm deletion",
+              try store.recordDeletedSighting(workID: work.workID, source: "run-1") == false)
+        check("an unconfirmed work stays in the redownload queue",
+              try store.worksNeedingRedownload().map(\.id) == [work.workID])
+        check("an unconfirmed work is not badged deleted in the gallery",
+              try store.fetchAllListItems().first { $0.itemID == work.workID }?.deletedOnAO3 == false)
+
+        check("a second, independent sighting confirms deletion",
+              try store.recordDeletedSighting(workID: work.workID, source: "run-2") == true)
+        check("a confirmed-deleted work drops out of the redownload queue",
               try store.worksNeedingRedownload().isEmpty)
-        check("a deleted work drops out of the download queue too",
+        check("a confirmed-deleted work drops out of the download queue too",
               !(try store.worksNeedingDownload().contains { $0.id == work.workID }))
-        check("the never-downloaded (non-deleted) work is still queued",
+        check("the never-sighted work is still queued",
               try store.worksNeedingDownload().contains { $0.id == neverDownloaded.workID })
-        try store.markDeletedOnAO3(workID: work.workID)   // idempotent re-mark must not throw
+
+        // Re-sighting from a known source is idempotent and must not double-count.
+        try store.recordDeletedSighting(workID: work.workID, source: "run-2")
+        check("a repeat sighting from the same source does not double-count",
+              try store.deletedSightingCount(workID: work.workID) == 2)
         let after = try store.fetchAllListItems().first { $0.itemID == work.workID }
         check("a deleted work surfaces deletedOnAO3 == true in the gallery", after?.deletedOnAO3 == true)
         // A deleted-but-already-saved work must stay 'downloaded' — overwriting it to 'failed'
         // would drop it out of the Saved filter facet (backwards: it's worth finding).
         check("a deleted-but-saved work stays downloadState == downloaded", after?.downloadState == "downloaded")
 
-        try store.markDeletedOnAO3(workID: neverDownloaded.workID)
-        check("a never-downloaded work that 404s becomes downloadState == failed",
+        // The escape hatch: "Check again on AO3" clears the verdict and re-arms both queues.
+        try store.clearDeletedOnAO3(workID: work.workID)
+        check("clearing deletion drops every sighting",
+              try store.deletedSightingCount(workID: work.workID) == 0)
+        check("a cleared work is no longer badged deleted",
+              try store.fetchAllListItems().first { $0.itemID == work.workID }?.deletedOnAO3 == false)
+        check("a cleared work returns to the redownload queue",
+              try store.worksNeedingRedownload().map(\.id) == [work.workID])
+
+        try store.recordDeletedSighting(workID: neverDownloaded.workID, source: "run-1")
+        check("a never-downloaded work stays queued while deletion is unconfirmed",
+              try store.fetchAllListItems()
+                  .first { $0.itemID == neverDownloaded.workID }?.downloadState != "failed")
+        try store.recordDeletedSighting(workID: neverDownloaded.workID, source: "run-2")
+        check("a confirmed never-downloaded work becomes downloadState == failed",
               try store.fetchAllListItems().first { $0.itemID == neverDownloaded.workID }?.downloadState == "failed")
+
+        // The exclusion must EXPIRE — a misclassified 404 must not retire a work forever.
+        let stale = ISO8601DateFormatter().string(
+            from: Date().addingTimeInterval(-Double(Store.deletedRecheckDays + 1) * 86_400))
+        try store.backdateDeletedConfirmation(workID: neverDownloaded.workID, to: stale)
+        check("a confirmed-deleted work is re-queued once the recheck window elapses",
+              try store.worksNeedingDownload().contains { $0.id == neverDownloaded.workID })
+    }
+
+    // Store — WAL concurrency (F1). The app opens one Store for the gallery and one per
+    // reader window on the SAME file. Without WAL + a busy timeout, GRDB's default
+    // `.immediateError` busy mode made a reader's resume write during a sync fail instantly
+    // with SQLITE_BUSY — and the caller's `try?` discarded it, silently losing the position.
+    if let bmHTML = try? String(contentsOf: bookmarksURL, encoding: .utf8),
+       let card = try BlurbParser.parseListing(html: bmHTML).first(where: { $0.kind == .work }) {
+        print("Store — concurrent handles (WAL)")
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("ao3-wal-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let path = dir.appendingPathComponent("archive.sqlite").path
+
+        let gallery = try Store(path: path)
+        let reader = try Store(path: path)
+        check("an on-disk archive opens in WAL journal mode",
+              try gallery.journalMode().lowercased() == "wal")
+        try gallery.upsertWork(card)
+
+        // Hold the write lock briefly on a background thread (a sync transaction in flight),
+        // then release it — WAL gives one writer + many readers, so what the busy timeout
+        // buys is *waiting* for a short transaction instead of failing instantly.
+        let holding = DispatchSemaphore(value: 0)
+        let released = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            try? gallery.holdingWriteTransaction {
+                holding.signal()
+                Thread.sleep(forTimeInterval: 0.4)
+            }
+            released.signal()
+        }
+        holding.wait()
+
+        var wroteWhileBusy = true
+        let started = Date()
+        do {
+            try reader.saveReadingPosition(workID: card.workID, spineIndex: 41, progress: 0.9)
+        } catch { wroteWhileBusy = false }
+        let waited = Date().timeIntervalSince(started)
+        released.wait()
+
+        check("a reader window can save its position while another handle is writing", wroteWhileBusy)
+        check("that write actually contended for the lock (didn't sail through)", waited > 0.1)
+        check("the position written under contention is readable back",
+              try reader.readingPosition(workID: card.workID)?.spineIndex == 41)
+        check("both handles observe the same saved position",
+              try gallery.readingPosition(workID: card.workID)?.spineIndex == 41)
     }
 
     // Store — series expansion wiring (card + member page fixtures).

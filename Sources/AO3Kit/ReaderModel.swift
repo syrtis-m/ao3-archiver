@@ -167,9 +167,25 @@ public final class ReaderModel {
         }
     }
 
+    /// Why the last resume write failed, or nil if the last one succeeded. Non-fatal but
+    /// deliberately **not silent**: a dropped reading position is a user-visible feature
+    /// failing, and the bare `try?` this replaces is exactly what let it fail invisibly when
+    /// a concurrent sync held the write lock (see `Store.makeConfiguration`).
+    public private(set) var lastPersistError: String?
+
+    /// Whether to show the "couldn't save your place" affordance. Branching lives here, not
+    /// in the View.
+    public var showsPersistWarning: Bool { lastPersistError != nil }
+
     private func persistPosition() {
-        try? store?.saveReadingPosition(workID: workID, spineIndex: session.index,
-                                        progress: session.progress)
+        guard let store else { return }
+        do {
+            try store.saveReadingPosition(workID: workID, spineIndex: session.index,
+                                          progress: session.progress)
+            lastPersistError = nil
+        } catch {
+            lastPersistError = String(describing: error)
+        }
     }
 
     private func persistSettings() {

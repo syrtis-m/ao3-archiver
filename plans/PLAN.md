@@ -1,7 +1,7 @@
 # Roadmap
 
-What's shipped and what's next. For **how it's built**, see [ARCHITECTURE.md](ARCHITECTURE.md).
-For **how to use it**, see [README.md](README.md).
+What's shipped and what's next. For **how it's built**, see [ARCHITECTURE.md](../ARCHITECTURE.md).
+For **how to use it**, see [README.md](../README.md).
 
 ---
 
@@ -52,14 +52,14 @@ the GUI**, no terminal required.
 **V1.4 — Send to Kindle:**
 - A one-button **Send to Kindle** on any saved work: generates a cover (AO3 ships none), prepends
   an info page (fandom/ship/rating/stats), and folds a compact badge into the Kindle library title.
-  See [ARCHITECTURE.md §12](ARCHITECTURE.md#12-send-to-kindle-kindleexport-kindlecover--v14).
+  See [ARCHITECTURE.md §12](../ARCHITECTURE.md#12-send-to-kindle-kindleexport-kindlecover--v14).
 
 **V1.3 — Quick sync + ratio sorts:**
 - **Quick sync** — a bounded, two-pass incremental catch-up (new bookmarks + re-download of works
   that gained chapters) for fast day-to-day syncing, instead of always walking the whole account.
 - **Ratio sorts** — five derived sorts (Acclaim, Keeper, Conversation, Density, Collector) that
   rank by a *relationship* between two metrics, surfacing fics the single-metric sorts bury. See
-  [ARCHITECTURE.md §11](ARCHITECTURE.md#11-derived-ratio-sorts-gallerysort).
+  [ARCHITECTURE.md §11](../ARCHITECTURE.md#11-derived-ratio-sorts-gallerysort).
 
 **V1.2 — the in-app reader:**
 - A dark, Liquid-Glass **EPUB reader** that opens any saved work in its **own window** (resizable,
@@ -70,13 +70,13 @@ the GUI**, no terminal required.
   **section-granular resume**.
 - Renders a **generated `text/html`** doc (fixes the `&nbsp;`-truncates-the-chapter XML bug);
   remote refs / scripts stripped by `EpubSanitizer`; whole-work sanitize runs **off the main
-  thread** with a spinner and caches results. See [ARCHITECTURE.md §10](ARCHITECTURE.md#10-the-in-app-reader-v12).
+  thread** with a spinner and caches results. See [ARCHITECTURE.md §10](../ARCHITECTURE.md#10-the-in-app-reader-v12).
 
 **V1.1 — performance & polish:**
 - **Scaled to 20k bookmarks.** Stored search haystack, debounced search, precomputed sort keys,
   allocation-free matching, and **parallelized facet passes** cut a full recompute ~2.6×
   (349ms → 135ms debug at 20k), guarded by a regression budget in the scale test. See
-  [ARCHITECTURE.md §6](ARCHITECTURE.md#6-performance-architecture-the-v11-m6-pass--designed-for-20k-bookmarks).
+  [ARCHITECTURE.md §6](../ARCHITECTURE.md#6-performance-architecture-designed-for-20k-bookmarks).
 - **Responsive layout** — the detail inspector auto-hides on narrow windows and the sidebar
   collapses, instead of panes clipping; tag pills truncate inside their card.
 - **Coalesced live sync reloads** so a long sync doesn't hitch the UI on every page.
@@ -92,17 +92,36 @@ the GUI**, no terminal required.
 
 ---
 
-## What's next (post-V1.5, all optional)
+## What's next (post-V1.5)
 
-None of these are blockers; V1.5 stands on its own.
+An [adversarial review](ADVERSARIAL-REVIEW.md) of V1.5 has since found three **P0** issues
+that are *not* optional, and the multi-device direction now has a design. See
+[plans/README.md](README.md) for the full index and dependency order.
 
-- **Live-verify cookie-expiry + deleted-work detection** against real AO3 — the login-page markers
-  and the 404-means-deleted assumption shipped in V1.5 are best-effort, not yet pinned to a
-  captured fixture the way the rest of the parser is.
+**Now owned by a plan — do these first:**
+
+- **Three silent-failure bugs** → [01-correctness-and-durability.md](01-correctness-and-durability.md):
+  reading positions lost to `SQLITE_BUSY` (no WAL, `busyMode = .immediateError`, `try?`);
+  `deleted_on_ao3_at` is an **unrecoverable latch** that permanently stops archiving a work
+  after one 404; and the sync actually runs **on the main actor**, contrary to the code
+  comments and ARCHITECTURE §7.
+- **Live-verify cookie-expiry + deleted-work detection** → now
+  [02-verification-and-hardening.md](02-verification-and-hardening.md) §1–§2, with the exact
+  capture procedure. Still the same gap: both markers shipped without a captured fixture.
+- **Multi-device, peer-to-peer, no servers** (Mac ↔ Android, later Windows/Linux/headless) →
+  [03](03-p2p-sync-foundation.md) (data model — *irreversible, land first*),
+  [04](04-p2p-transport.md) (transport), [05](05-cross-platform-core.md) (other platforms).
+  A side effect worth naming: with peer file-pull, each work is fetched from AO3 **once
+  across the whole fleet, ever**.
+
+**Still optional, still unowned:**
+
 - **Scheduled background sync** (opt-in), politeness-respecting.
-- **Export / import** the archive folder; backup integrity checks.
-- **Local file-size / download-status sort** — the one deferred sort (needs epub byte size stored
-  at download).
+- **Export / import** the archive folder; backup integrity checks. (Partly subsumed by
+  [04 §7](04-p2p-transport.md#7-sneakernet-fallback--and-the-syncthing-question)'s op bundles.)
+- **Local file-size / download-status sort** — the one deferred sort (needs epub byte size
+  stored at download; [03 §3.4](03-p2p-sync-foundation.md#34-archive-state--replace-it-with-per-device-possession)'s
+  `work_copy.bytes` provides it for free).
 
 ---
 

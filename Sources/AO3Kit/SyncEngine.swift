@@ -9,7 +9,12 @@ import Foundation
 /// re-fetching finished work. `maxPages` is a hard bound (politeness + a guard against a
 /// pathological listing); this user alone has ~91 bookmark pages, so an unbounded crawl is
 /// never an implicit default.
-public final class SyncEngine: @unchecked Sendable {
+/// An `actor`, not a class: `chapterGains` below is mutated across `await` boundaries, and
+/// the previous `final class … @unchecked Sendable` made "no overlapping runs" a promise in a
+/// comment that the compiler never checked. Actor isolation makes it real, and it also stops
+/// the whole engine from silently inheriting the caller's actor — the GUI's sync task used to
+/// inherit `@MainActor`, so every HTML parse, DB write, and EPUB write ran on the main thread.
+public actor SyncEngine {
     let client: AO3Client
     let store: Store
     let files: FileStore
@@ -17,9 +22,8 @@ public final class SyncEngine: @unchecked Sendable {
 
     /// workID → chapters gained since the last sync, recorded during ingest and consumed by
     /// the following download pass to report "gained N chapters" instead of a bare file-size
-    /// line. Scoped to one `run`/`incrementalSync` call (reset at its start) — SyncEngine
-    /// doesn't support overlapping runs (SyncController already guards against starting a
-    /// second one while the first is in flight).
+    /// line. Scoped to one `run`/`incrementalSync` call (reset at its start); actor isolation
+    /// is what guarantees two runs can't interleave over it.
     private var chapterGains: [Int: Int] = [:]
 
     /// AO3's logged-out page chrome plausibly carries its own `action="/users/login"` form
@@ -362,14 +366,24 @@ public final class SyncEngine: @unchecked Sendable {
                     onEvent(.message("\(work.title) gained \(gained) chapter\(gained == 1 ? "" : "s") — saved"))
                 }
             } catch AO3Error.http(404) {
-                try? store.markDeletedOnAO3(workID: work.id)
+                // A 404 is evidence, not proof — AO3 also 404s during deploys and for works
+                // flipped to registered-users-only. Only a corroborated sighting latches the
+                // work out of the download queues, and the log line says which we have.
+                let confirmed = (try? store.recordDeletedSighting(workID: work.id)) ?? false
                 failed += 1
-                deleted += 1
-                let msg = work.hasDownload
-                    ? "\(work.title) was deleted on AO3 — your saved copy is the only one left"
-                    : "\(work.title) was deleted on AO3 before you could save it"
+                let msg: String
+                if confirmed {
+                    deleted += 1
+                    msg = work.hasDownload
+                        ? "\(work.title) was deleted on AO3 — your saved copy is the only one left"
+                        : "\(work.title) was deleted on AO3 before you could save it"
+                } else {
+                    msg = "\(work.title) wasn't found on AO3 — will re-check next sync before "
+                        + "marking it deleted"
+                }
                 onEvent(.message(msg))
-                onEvent(.downloadFailed(workID: work.id, reason: "deleted on AO3"))
+                onEvent(.downloadFailed(workID: work.id,
+                                        reason: confirmed ? "deleted on AO3" : "not found (unconfirmed)"))
             } catch {
                 // Park ANY failure on one work so the rest of the batch still runs: restricted/
                 // locked works (no cookie, an AO3Error), but also a disk-write failure or a DB

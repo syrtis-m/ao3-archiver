@@ -462,12 +462,22 @@ import Foundation
         #expect(pending.first { $0.id == neverDownloaded.workID }?.hasDownload == false)
         #expect(try store.worksNeedingRedownload().map(\.id) == [work.workID])
 
-        try store.markDeletedOnAO3(workID: work.workID)
+        // ONE sighting must NOT latch: a 404 is evidence, not proof (AO3 also 404s during
+        // deploys / for registered-users-only works), and latching permanently retired the
+        // work from every future sync with no way back.
+        #expect(try store.recordDeletedSighting(workID: work.workID, source: "run-1") == false)
+        #expect(try store.worksNeedingRedownload().map(\.id) == [work.workID])
+        #expect(try store.fetchAllListItems().first { $0.itemID == work.workID }?.deletedOnAO3 == false)
+
+        // A SECOND, independent sighting corroborates it — now it latches and drops out.
+        #expect(try store.recordDeletedSighting(workID: work.workID, source: "run-2") == true)
         #expect(try store.worksNeedingRedownload().isEmpty)
         #expect(!(try store.worksNeedingDownload().contains { $0.id == work.workID }))
         #expect(try store.worksNeedingDownload().contains { $0.id == neverDownloaded.workID })
 
-        try store.markDeletedOnAO3(workID: work.workID)   // idempotent re-mark must not throw
+        // Idempotent re-sighting from a known source must not throw or double-count.
+        #expect(try store.recordDeletedSighting(workID: work.workID, source: "run-2") == true)
+        #expect(try store.deletedSightingCount(workID: work.workID) == 2)
         let after = try store.fetchAllListItems().first { $0.itemID == work.workID }
         #expect(after?.deletedOnAO3 == true)
         // A deleted-but-already-saved work must stay 'downloaded' — overwriting it to 'failed'
@@ -475,10 +485,89 @@ import Foundation
         // the work worth being able to find).
         #expect(after?.downloadState == "downloaded")
 
-        // A never-downloaded work that 404s has nothing to preserve — it becomes 'failed'.
-        try store.markDeletedOnAO3(workID: neverDownloaded.workID)
+        // The escape hatch: "Check again on AO3" clears the verdict and re-arms both queues.
+        try store.clearDeletedOnAO3(workID: work.workID)
+        #expect(try store.deletedSightingCount(workID: work.workID) == 0)
+        #expect(try store.fetchAllListItems().first { $0.itemID == work.workID }?.deletedOnAO3 == false)
+        #expect(try store.worksNeedingRedownload().map(\.id) == [work.workID])
+
+        // A never-downloaded work that 404s has nothing to preserve — it becomes 'failed',
+        // but still only once corroborated.
+        try store.recordDeletedSighting(workID: neverDownloaded.workID, source: "run-1")
+        #expect(try store.fetchAllListItems()
+            .first { $0.itemID == neverDownloaded.workID }?.downloadState != "failed")
+        try store.recordDeletedSighting(workID: neverDownloaded.workID, source: "run-2")
         let neverAfter = try store.fetchAllListItems().first { $0.itemID == neverDownloaded.workID }
         #expect(neverAfter?.downloadState == "failed")
+    }
+
+    /// The confirmed-deleted exclusion must **expire**. A misclassified 404 would otherwise
+    /// retire a work from every future sync permanently — the worst failure mode for a tool
+    /// whose job is not losing works.
+    @Test func deletedExclusionExpiresAfterRecheckWindow() throws {
+        let card = try #require(try BlurbParser.parseListing(html: fixture("bookmarks_page"))
+            .first { $0.kind == .work })
+        let store = try Store(inMemory: true)
+        try store.upsertWork(card)
+        try store.upsertBookmark(card, itemKind: .work, itemID: card.workID)
+
+        try store.recordDeletedSighting(workID: card.workID, source: "a")
+        #expect(try store.recordDeletedSighting(workID: card.workID, source: "b") == true)
+        #expect(!(try store.worksNeedingDownload().contains { $0.id == card.workID }))
+
+        // Backdate the confirmation past the recheck window — the work earns one more chance.
+        let stale = ISO8601DateFormatter().string(
+            from: Date().addingTimeInterval(-Double(Store.deletedRecheckDays + 1) * 86_400))
+        try store.backdateDeletedConfirmation(workID: card.workID, to: stale)
+        #expect(try store.worksNeedingDownload().contains { $0.id == card.workID })
+    }
+
+    /// F1: the app opens one Store for the gallery and one per reader window on the SAME file.
+    /// Without WAL + a busy timeout, GRDB's default `.immediateError` busy mode meant a
+    /// reader's resume write during a sync failed instantly with SQLITE_BUSY — and the
+    /// caller's `try?` discarded it, silently losing the reading position.
+    @Test func readingPositionSurvivesAConcurrentWriter() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("ao3-wal-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let path = dir.appendingPathComponent("archive.sqlite").path
+
+        // Two independent handles on one file — exactly the gallery + reader-window shape.
+        let gallery = try Store(path: path)
+        let reader = try Store(path: path)
+        #expect(try gallery.journalMode().lowercased() == "wal")
+
+        let card = try #require(try BlurbParser.parseListing(html: fixture("bookmarks_page"))
+            .first { $0.kind == .work })
+        try gallery.upsertWork(card)
+
+        // Hold the write lock on the gallery handle for a beat on a background thread — the
+        // shape of a sync transaction in flight — then release it. (It must be released:
+        // WAL gives one writer + many readers, so two *concurrent* writers still serialise;
+        // what the busy timeout buys is waiting for a short transaction instead of dying.)
+        let holding = DispatchSemaphore(value: 0)
+        let released = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            try? gallery.holdingWriteTransaction {
+                holding.signal()
+                Thread.sleep(forTimeInterval: 0.4)
+            }
+            released.signal()
+        }
+        holding.wait()
+
+        // The reader window saves its place while that transaction is open. Under the stock
+        // rollback journal + GRDB's default `.immediateError` this threw SQLITE_BUSY at once
+        // and ReaderModel's `try?` silently discarded it.
+        let started = Date()
+        try reader.saveReadingPosition(workID: card.workID, spineIndex: 41, progress: 0.9)
+        let waited = Date().timeIntervalSince(started)
+        released.wait()
+
+        #expect(waited > 0.1, "expected to contend for the lock, not sail through uncontended")
+        #expect(try reader.readingPosition(workID: card.workID)?.spineIndex == 41)
+        #expect(try gallery.readingPosition(workID: card.workID)?.spineIndex == 41)
     }
 
     @Test func seriesExpansionLinksMembers() throws {
