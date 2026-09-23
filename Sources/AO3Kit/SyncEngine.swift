@@ -381,6 +381,19 @@ public actor SyncEngine {
         try await download(store.worksNeedingRedownload(limit: limit), onEvent: onEvent)
     }
 
+    /// Download, save and record ONE work — the single path both the sync loop and the detail
+    /// view's Download button use (the button used to carry its own copy of these steps).
+    /// Removes the file a re-download under a new title supersedes. Throws on any failure;
+    /// the caller decides how to surface it. Returns the EPUB's size in bytes.
+    @discardableResult
+    public func downloadWork(_ work: Store.PendingWork) async throws -> Int {
+        let data = try await downloader.downloadEPUB(workID: work.id)
+        let rel = try files.writeEPUB(data, workID: work.id, title: work.title)
+        try store.markDownloaded(workID: work.id, epubPath: rel, updatedAt: work.updatedAt)
+        files.removeSupersededEPUB(previous: work.epubPath, current: rel, workID: work.id)
+        return data.count
+    }
+
     /// Shared download loop for a pre-computed pending list. A genuine 404 means the work was
     /// deleted by its author (not a transient/auth failure) — recorded distinctly so we stop
     /// re-requesting it and the UI can flag "your saved copy is the only one left".
@@ -390,12 +403,9 @@ public actor SyncEngine {
         for work in pending {
             try Task.checkCancellation()
             do {
-                let data = try await downloader.downloadEPUB(workID: work.id)
-                let rel = try files.writeEPUB(data, workID: work.id, title: work.title)
-                try store.markDownloaded(workID: work.id, epubPath: rel, updatedAt: work.updatedAt)
-                files.removeSupersededEPUB(previous: work.epubPath, current: rel, workID: work.id)
+                let bytes = try await downloadWork(work)
                 downloaded += 1
-                onEvent(.downloaded(workID: work.id, bytes: data.count, title: work.title))
+                onEvent(.downloaded(workID: work.id, bytes: bytes, title: work.title))
                 if let gained = chapterGains.removeValue(forKey: work.id) {
                     onEvent(.message("\(work.title) gained \(gained) chapter\(gained == 1 ? "" : "s") — saved"))
                 }

@@ -33,11 +33,11 @@ private struct WindowConfigurator: NSViewRepresentable {
     func updateNSView(_ nsView: NSView, context: Context) {}
 }
 
-// M2 SwiftUI gallery — dark, Liquid Glass, snappy. The views are a thin skin over AO3Kit's
+// The SwiftUI app — dark, Liquid Glass, snappy. The views are a thin skin over AO3Kit's
 // tested gallery model (load → filter → sort → facets all happen below this line).
 //
-// Reads the same SQLite DB the CLI sync writes (AO3_ARCHIVE_DIR, default ./archive). This
-// is a read-only browser in M2; syncing stays in the `ao3archiver` CLI for now.
+// Browses, syncs, downloads and reads against one archive folder (see `RootView` for how it's
+// resolved); the `ao3archiver` CLI reads and writes the same folder.
 @main
 struct AO3ArchiverApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
@@ -151,15 +151,15 @@ struct RootView: View {
     private func open() {
         openedRoot = archiveRoot
         do {
-            // Create the archive folder first — when double-clicked there's no
-            // AO3_ARCHIVE_DIR and the default Application Support path won't exist yet,
-            // so SQLite can't create the db file (error 14).
+            // Create the archive folder first — on first launch the default
+            // ~/Documents/ao3archive won't exist yet, so SQLite can't create the db (error 14).
             try FileManager.default.createDirectory(at: archiveRoot, withIntermediateDirectories: true)
             let s = try Store(path: archiveRoot.appendingPathComponent("archive.sqlite").path)
-            vm.load(from: s)   // populate BEFORE presenting the sidebar list, so the
-            store = s          // NSTableView-backed List renders once with data in place
+            try? s.closeStaleSyncRuns()   // bookkeeping only; never blocks opening
+            vm.load(from: s)   // populate BEFORE presenting the gallery, so it renders once
+            store = s          // with data in place instead of empty-then-reloaded
             openError = nil
-        } catch {              // (an empty-then-reload cascade triggers a reentrancy warning)
+        } catch {
             openError = String(describing: error)
         }
     }

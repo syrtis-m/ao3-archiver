@@ -390,11 +390,6 @@ public final class EpubDocument {
         directory.appendingPathComponent(spine[index].path)
     }
 
-    /// The on-disk URL for a TOC chapter after `extractAll(to:)`.
-    public func fileURL(for chapter: EpubChapter, extractedTo directory: URL) -> URL {
-        directory.appendingPathComponent(chapter.path)
-    }
-
     // MARK: - Nav / NCX parsing
 
     private static func parseNav(_ data: Data, navPath: String,
@@ -490,11 +485,7 @@ public final class EpubDocument {
     }
 }
 
-/// nil if the optional string is nil/empty, else the trimmed-of-nothing value.
-private func nonEmpty(_ s: String??) -> String? {
-    guard let s = s ?? nil, !s.isEmpty else { return nil }
-    return s
-}
+/// nil if the optional string is nil/empty.
 private func nonEmpty(_ s: String?) -> String? {
     guard let s, !s.isEmpty else { return nil }
     return s

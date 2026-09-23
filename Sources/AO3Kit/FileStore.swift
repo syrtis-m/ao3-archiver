@@ -10,10 +10,8 @@ import Foundation
 ///   works/<work_id> - <sanitized title>.epub
 /// ```
 ///
-/// > **Scope note (M1):** this is plain directory management. The security-scoped folder
-/// > **bookmark** that lets a sandboxed app retain access to a user-chosen folder across
-/// > launches is an *app-sandbox* concern (entitlements + `NSURL` bookmark data) and is
-/// > deferred to M2, where the SwiftUI app picks the folder. A SwiftPM CLI can't hold one.
+/// Plain paths: the app is deliberately non-sandboxed, so no security-scoped bookmark is
+/// needed to reopen a user-chosen folder.
 public struct FileStore {
     public let root: URL
 

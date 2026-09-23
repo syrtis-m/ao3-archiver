@@ -572,6 +572,19 @@ public final class Store: @unchecked Sendable {
         }
     }
 
+    /// One work as a download-queue entry (regardless of whether it currently *needs* a
+    /// download) — for an explicit, user-initiated download of that work. nil for an unknown
+    /// id or a non-AO3 (external) work.
+    public func pendingWork(workID: Int) throws -> PendingWork? {
+        try dbQueue.read { db in
+            guard let row = try Row.fetchOne(db, sql: """
+                SELECT id, title, updated_at, epub_path FROM work WHERE id = ? AND kind = 'work'
+                """, arguments: [workID]) else { return nil }
+            return PendingWork(id: row["id"], title: row["title"], updatedAt: row["updated_at"],
+                               hasDownload: (row["epub_path"] as String?) != nil, epubPath: row["epub_path"])
+        }
+    }
+
     /// Of the given AO3 bookmark ids, the subset already recorded — so the incremental index
     /// can tell which cards on a listing page are new. Empty input → empty set (no query).
     public func knownBookmarkIDs(among ids: [Int]) throws -> Set<Int> {
@@ -725,6 +738,21 @@ public final class Store: @unchecked Sendable {
         try dbQueue.write { db in
             try db.execute(sql: "INSERT INTO sync_run (started_at) VALUES (?)", arguments: [now])
             return db.lastInsertedRowID
+        }
+    }
+
+    /// A run whose process died (crash, force-quit) stays `'running'` forever. Mark ones older
+    /// than `olderThanHours` as `'interrupted'` — never all of them: a CLI sync may genuinely be
+    /// running against the same archive right now. Returns how many were closed.
+    @discardableResult
+    public func closeStaleSyncRuns(olderThanHours hours: Int = 6, now: Date = Date()) throws -> Int {
+        let cutoff = ISO8601DateFormatter().string(from: now.addingTimeInterval(-Double(hours) * 3600))
+        return try dbQueue.write { db in
+            try db.execute(sql: """
+                UPDATE sync_run SET status = 'interrupted', finished_at = COALESCE(finished_at, ?)
+                WHERE status = 'running' AND started_at < ?
+                """, arguments: [ISO8601DateFormatter().string(from: now), cutoff])
+            return db.changesCount
         }
     }
 

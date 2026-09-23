@@ -24,3 +24,12 @@ import AO3KitTestSupport
         }
     }
 }
+
+@Suite struct ModelCheckTests {
+    @Test func presentation() {
+        for check in ModelChecks.presentation() { #expect(check.ok, "\(check.name)") }
+    }
+    @Test func staleSyncRuns() throws {
+        for check in try ModelChecks.staleSyncRuns() { #expect(check.ok, "\(check.name)") }
+    }
+}

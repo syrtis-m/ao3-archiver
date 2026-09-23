@@ -39,7 +39,7 @@ struct FilterSidebar: View {
                 // Single-select segmented controls. Kept to a few short labels so they fit
                 // the sidebar without overflowing.
                 segmentedGroup("Completion", selection: $vm.filter.completion,
-                               cases: CompletionFilter.allCases, label: completionLabel)
+                               cases: CompletionFilter.allCases, label: { $0.label })
                 segmentedGroup("Download", selection: $vm.filter.download,
                                cases: [.any, .saved, .notDownloaded], label: { $0.label })
 
@@ -289,12 +289,6 @@ struct FilterSidebar: View {
         case .neutral: Image(systemName: "square").foregroundStyle(.secondary)
         case .include: Image(systemName: "checkmark.square.fill").foregroundStyle(.green)
         case .exclude: Image(systemName: "minus.square.fill").foregroundStyle(.red)
-        }
-    }
-
-    private func completionLabel(_ c: CompletionFilter) -> String {
-        switch c {
-        case .any: return "Any"; case .complete: return "Complete"; case .wip: return "WIP"
         }
     }
 }

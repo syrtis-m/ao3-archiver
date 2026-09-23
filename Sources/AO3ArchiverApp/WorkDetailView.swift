@@ -39,12 +39,12 @@ struct WorkDetailView: View {
                 }
                 if item.deletedOnAO3 { deletedBanner }
                 actions
-                if let line = nonEmpty(item.statsLine) {
+                if let line = item.statsLine.nonBlank {
                     Text(line).font(.callout.monospacedDigit()).foregroundStyle(.secondary)
                 }
                 if item.kind == .series, !seriesMembers.isEmpty { seriesSection }
                 metaGrid
-                if let summary = nonEmpty(item.summary) {
+                if let summary = item.summary.nonBlank {
                     labeled("Summary") { Text(summary) }
                 }
                 if !item.fandoms.isEmpty { labeled("Fandoms") { wrap(item.fandoms) } }
@@ -52,7 +52,7 @@ struct WorkDetailView: View {
                 if !item.characters.isEmpty { labeled("Characters") { wrap(item.characters) } }
                 if !item.freeforms.isEmpty { labeled("Additional tags") { wrap(item.freeforms) } }
                 if !item.bookmarkTags.isEmpty { labeled("Your tags") { wrap(item.bookmarkTags) } }
-                if let notes = nonEmpty(item.bookmarkerNotes) {
+                if let notes = item.bookmarkerNotes.nonBlank {
                     labeled("Your notes") { Text(notes).italic() }
                 }
             }
@@ -69,7 +69,7 @@ struct WorkDetailView: View {
     /// Open the in-app reader for a downloaded item (a work, or a series member row) in its
     /// own independent window — open as many as you like, resize/fullscreen each freely.
     private func read(_ work: WorkListItem) {
-        guard work.downloadState == "downloaded", let rel = work.epubPath else { return }
+        guard work.isSaved, let rel = work.epubPath else { return }
         openWindow(id: "reader", value: ReaderWindowValue(
             workID: work.itemID, title: work.title,
             epubPath: archiveRoot.appendingPathComponent(rel).path,
@@ -85,12 +85,12 @@ struct WorkDetailView: View {
                         Text("\(index + 1).").font(.callout.monospacedDigit()).foregroundStyle(.secondary)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(work.title).fontWeight(.medium)
-                            if let line = nonEmpty(work.statsLine) {
+                            if let line = work.statsLine.nonBlank {
                                 Text(line).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                             }
                         }
                         Spacer(minLength: 4)
-                        if work.downloadState == "downloaded" {
+                        if work.isSaved {
                             Button { read(work) } label: { Label("Read", systemImage: "book.pages") }
                                 .buttonStyle(.glass).controlSize(.small)
                             Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
@@ -105,11 +105,7 @@ struct WorkDetailView: View {
     /// the only one left; if we never got to save it, say so instead of claiming a copy exists.
     private var deletedBanner: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label(
-                item.epubPath != nil
-                    ? "This work was deleted from AO3 — your saved copy is the only one left."
-                    : "This work was deleted from AO3 before you could save it.",
-                systemImage: "exclamationmark.shield.fill")
+            Label(item.deletedBannerText ?? "", systemImage: "exclamationmark.shield.fill")
                 .font(.callout).foregroundStyle(.red)
             // The escape hatch. "Deleted" is inferred from AO3 returning 404, which it also
             // does during deploys and for works flipped to registered-users-only — so the
@@ -135,7 +131,7 @@ struct WorkDetailView: View {
         // FlowLayout (not HStack) so the buttons wrap to a second line in a narrow inspector
         // instead of overflowing its right edge.
         FlowLayout(spacing: 10) {
-            if item.downloadState == "downloaded", let rel = item.epubPath {
+            if item.isSaved, let rel = item.epubPath {
                 let url = archiveRoot.appendingPathComponent(rel)
                 // Primary action: read in-app. Open-in-Books/Reveal demote to secondary.
                 Button { read(item) } label: { Label("Read", systemImage: "book.pages") }
@@ -253,8 +249,7 @@ struct WorkDetailView: View {
             }
         }
         let cookie = typed ?? CredentialStore.cookie
-        let workID = item.itemID, title = item.title, updatedAt = item.updatedAt
-        let previousPath = item.epubPath
+        let workID = item.itemID
         let root = archiveRoot, store = store
         Task {
             do {
@@ -264,11 +259,11 @@ struct WorkDetailView: View {
                 let client = AO3Client(config: AO3Config(
                     userAgent: AO3Config.defaultUserAgent(ao3User: CredentialStore.username),
                     sessionCookie: cookie, maxRetries: 8))
-                let data = try await WorkDownloader(client: client).downloadEPUB(workID: workID)
-                let files = FileStore(root: root)
-                let rel = try files.writeEPUB(data, workID: workID, title: title)
-                try store.markDownloaded(workID: workID, epubPath: rel, updatedAt: updatedAt)
-                files.removeSupersededEPUB(previous: previousPath, current: rel, workID: workID)
+                guard let work = try store.pendingWork(workID: workID) else {
+                    throw AO3Error.badURL("/works/\(workID)")
+                }
+                let engine = SyncEngine(client: client, store: store, files: FileStore(root: root))
+                try await engine.downloadWork(work)
                 downloading = false
                 cookieInput = ""
                 onChanged()
@@ -312,10 +307,6 @@ struct WorkDetailView: View {
         FlowLayout(spacing: 6) { ForEach(values, id: \.self) { TagPill(text: $0) } }
     }
 
-    private func nonEmpty(_ s: String?) -> String? {
-        guard let s, !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-        return s
-    }
 }
 
 /// Minimal wrapping layout for tag pills (a thin, dependency-free flow).

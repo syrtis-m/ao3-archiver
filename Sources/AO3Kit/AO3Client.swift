@@ -28,6 +28,10 @@ public struct AO3Config: Sendable {
         self.baseURL = baseURL
     }
 
+    /// The app/CLI version — the ONE place it's defined. The User-Agent reports it, and
+    /// `Packaging/make-app.sh` stamps it into the bundle's Info.plist, so they can't drift.
+    public static let toolVersion = "1.6.0"
+
     /// Honest, descriptive User-Agent. Includes the requester's AO3 username when known, so AO3
     /// can identify whose account is making the (polite) requests; `contact` stays the tool
     /// maintainer's address. Anonymous runs omit the user clause.
@@ -35,7 +39,7 @@ public struct AO3Config: Sendable {
                                         contact: String = "syrtis@sysd.info") -> String {
         let user = ao3User?.trimmingCharacters(in: .whitespacesAndNewlines)
         let who = (user?.isEmpty == false) ? "AO3 user: \(user!); " : ""
-        return "ao3-archiver/0.1 (personal bookmark backup; \(who)contact \(contact))"
+        return "ao3-archiver/\(toolVersion) (personal bookmark backup; \(who)contact \(contact))"
     }
 
     /// Normalize a pasted `_otwarchive_session` cookie down to the bare value the `Cookie`

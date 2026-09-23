@@ -26,18 +26,6 @@ struct TagPill: View {
     }
 }
 
-/// A compact "icon: value" stat used in the card's stats row.
-struct StatLabel: View {
-    let systemImage: String
-    let value: String
-
-    var body: some View {
-        Label(value, systemImage: systemImage)
-            .font(.caption.monospacedDigit())
-            .foregroundStyle(.secondary)
-    }
-}
-
 // AO3 corner-symbol colour coding (classification lives in AO3Kit; colours map here).
 
 extension RatingLevel {
@@ -55,12 +43,6 @@ extension RatingLevel {
         switch self {
         case .general: return "G"; case .teen: return "T"; case .mature: return "M"
         case .explicit: return "E"; case .notRated: return "—"
-        }
-    }
-    var label: String {
-        switch self {
-        case .general: return "General"; case .teen: return "Teen"; case .mature: return "Mature"
-        case .explicit: return "Explicit"; case .notRated: return "Not rated"
         }
     }
 }
@@ -147,38 +129,5 @@ extension BookmarkKind {
         case .external: return ("External", "link")
         case .series:   return ("Series", "books.vertical")
         }
-    }
-}
-
-/// Human-friendly grouping for download state.
-extension WorkListItem {
-    var downloadBadge: (label: String, systemImage: String, tint: Color)? {
-        switch downloadState {
-        case "downloaded":  return ("Saved", "checkmark.circle.fill", .green)
-        case "pending":     return ("Not downloaded", "arrow.down.circle", .secondary)
-        case "failed":      return ("Failed", "exclamationmark.triangle.fill", .orange)
-        case "unavailable": return ("Off-site", "link", .secondary)
-        case "series":      return nil
-        default:            return nil
-        }
-    }
-
-    /// "12,328 words · 4/? chapters" style summary line.
-    var statsLine: String {
-        var parts: [String] = []
-        if let w = wordCount { parts.append("\(w.formatted()) words") }
-        if let h = chaptersHave {
-            parts.append("\(h)/\(chaptersTotal.map(String.init) ?? "?") chapters")
-        }
-        if let n = worksCount { parts.append("\(n) works") }
-        return parts.joined(separator: " · ")
-    }
-}
-
-extension Int {
-    /// "1,234" with grouping separators.
-    func formatted() -> String {
-        let f = NumberFormatter(); f.numberStyle = .decimal
-        return f.string(from: NSNumber(value: self)) ?? String(self)
     }
 }

@@ -124,10 +124,11 @@ import Foundation
         #expect(BlurbParser.parseInt("—") == nil)
     }
 
-    @Test func workIDFromHrefVariants() {
-        #expect(BlurbParser.workID(fromWorkHref: "/works/85487886") == 85487886)
-        #expect(BlurbParser.workID(fromWorkHref: "/works/123/chapters/456") == 123)
-        #expect(BlurbParser.workID(fromWorkHref: "/users/foo") == nil)
+    @Test func classifyHrefVariants() {
+        // `classify` is the live path (the old `workID(fromWorkHref:)` was test-only and is gone).
+        #expect(BlurbParser.classify(href: "/works/85487886")?.1 == 85487886)
+        #expect(BlurbParser.classify(href: "/works/123/chapters/456")?.1 == 123)
+        #expect(BlurbParser.classify(href: "/users/foo") == nil)
     }
 
     @Test func sanitizeFilename() {

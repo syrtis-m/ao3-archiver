@@ -1,8 +1,8 @@
 // swift-tools-version: 5.10
 import PackageDescription
 
-// AO3Kit holds the testable core (client, parser, store, sync, and the gallery read/
-// filter/sort model). `ao3archiver` is the CLI; `AO3ArchiverApp` is the M2 SwiftUI gallery.
+// AO3Kit holds the testable core (client, parser, store, sync, gallery model, reader,
+// Kindle export). `ao3archiver` is the CLI; `AO3ArchiverApp` is the SwiftUI app.
 //
 // Platform is macOS 26 ("Tahoe"): one deployment boundary so the real Liquid Glass
 // materials (`.glassEffect`) and the Observation framework are available everywhere with
@@ -39,9 +39,9 @@ let package = Package(
             name: "ao3archiver",
             dependencies: ["AO3Kit"]
         ),
-        // M2 SwiftUI gallery. A SwiftPM executable (not a shippable .app bundle yet — no
-        // Info.plist/icon/entitlements/sandbox; that packaging + the security-scoped folder
-        // bookmark are deferred). Views are a thin skin over AO3Kit's tested gallery model.
+        // The SwiftUI app. A SwiftPM executable; Packaging/make-app.sh wraps it into a
+        // double-clickable, ad-hoc-signed, non-sandboxed "AO3 Archiver.app". Views are a thin
+        // skin over AO3Kit's tested model.
         .executableTarget(
             name: "AO3ArchiverApp",
             dependencies: ["AO3Kit"]

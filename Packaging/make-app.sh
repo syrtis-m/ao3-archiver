@@ -27,6 +27,15 @@ rm -rf "${APP}"
 mkdir -p "${CONTENTS}/MacOS" "${CONTENTS}/Resources"
 cp "${BIN}" "${CONTENTS}/MacOS/AO3ArchiverApp"
 cp "${ROOT}/Packaging/Info.plist" "${CONTENTS}/Info.plist"
+# Version comes from AO3Config.toolVersion (the single source — the User-Agent uses it too).
+VERSION="$(sed -n 's/.*static let toolVersion = "\([^"]*\)".*/\1/p' "${ROOT}/Sources/AO3Kit/AO3Client.swift")"
+if [ -n "${VERSION}" ]; then
+    /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${VERSION}" \
+                            -c "Set :CFBundleVersion ${VERSION}" "${CONTENTS}/Info.plist"
+    echo "  version ${VERSION}"
+else
+    echo "  (couldn't read AO3Config.toolVersion — keeping Info.plist's version)"
+fi
 
 # App icon (Info.plist already references AppIcon via CFBundleIconFile). Regenerate it with
 # ./Packaging/make-icon.sh; bundled here if present.

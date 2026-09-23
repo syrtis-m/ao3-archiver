@@ -239,13 +239,6 @@ public enum BlurbParser {
         return (have, total)
     }
 
-    /// From "/works/85487886" or "/works/85487886/chapters/229369871".
-    /// (Kept for the test suite; `classify` is the primary path now.)
-    static func workID(fromWorkHref href: String) -> Int? {
-        guard let range = href.range(of: #"/works/(\d+)"#, options: .regularExpression) else { return nil }
-        return Int(href[range].dropFirst("/works/".count))
-    }
-
     /// AO3 embeds `<!-- updated_at=1781388945 -->` inside each card's header.
     static func updatedAtTimestamp(inOuterHTML html: String) -> Int? {
         guard let range = html.range(of: #"updated_at=(\d+)"#, options: .regularExpression) else { return nil }

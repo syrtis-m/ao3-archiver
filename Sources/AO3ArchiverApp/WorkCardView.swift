@@ -13,15 +13,15 @@ struct WorkCardView: View {
             titleAndAuthor
             badgeRow
             tagBlocks
-            if let line = nonEmpty(item.statsLine) {
+            if let line = item.statsLine.nonBlank {
                 Text(line).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
             }
-            if let summary = nonEmpty(item.summary) {
+            if let summary = item.summary.nonBlank {
                 // Show the full summary when comfortable; only clamp in compact density.
                 Text(summary).font(.callout).foregroundStyle(.secondary)
                     .lineLimit(compact ? 2 : nil)
             }
-            if !item.bookmarkTags.isEmpty || nonEmpty(item.bookmarkerNotes) != nil {
+            if !item.bookmarkTags.isEmpty || item.bookmarkerNotes.nonBlank != nil {
                 bookmarkerSection
             }
         }
@@ -41,9 +41,8 @@ struct WorkCardView: View {
     // with the title for width: rating · category(ies) · warnings · completion.
     private var badgeRow: some View {
         FlowLayout(spacing: 6) {
-            if item.deletedOnAO3 {
-                ColorBadge(text: item.epubPath != nil ? "Only copy" : "Deleted on AO3",
-                          systemImage: "exclamationmark.shield.fill", color: .red)
+            if let deleted = item.deletedBadgeText {
+                ColorBadge(text: deleted, systemImage: "exclamationmark.shield.fill", color: .red)
             }
             if item.kind == .series {
                 ColorBadge(text: "Series", systemImage: "books.vertical", color: .purple)
@@ -92,14 +91,10 @@ struct WorkCardView: View {
         VStack(alignment: .leading, spacing: 6) {
             Divider().opacity(0.4)
             if !item.bookmarkTags.isEmpty { pillBlock(item.bookmarkTags) }
-            if let notes = nonEmpty(item.bookmarkerNotes) {
+            if let notes = item.bookmarkerNotes.nonBlank {
                 Text(notes).font(.caption).italic().foregroundStyle(.secondary).lineLimit(3)
             }
         }
     }
 
-    private func nonEmpty(_ s: String?) -> String? {
-        guard let s, !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-        return s
-    }
 }

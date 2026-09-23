@@ -1271,6 +1271,11 @@ limiterTask.cancel()
 limiterDone.wait()
 check("rate limiter throws when cancelled (no unspaced requests)", limiterProbe.threw)
 
+print("Presentation (model-level view decisions)")
+for (n, ok) in ModelChecks.presentation() { check(n, ok) }
+do { for (n, ok) in try ModelChecks.staleSyncRuns() { check(n, ok) } }
+catch { check("stale sync-run checks ran (\(error))", false) }
+
 // SyncEngine end-to-end against a stub AO3 — the same scenarios EngineTests runs.
 print("SyncEngine — end-to-end (stub AO3)")
 final class ScenarioResults: @unchecked Sendable { var checks: [(String, Bool)] = [] }

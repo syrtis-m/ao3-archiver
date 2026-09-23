@@ -2,7 +2,7 @@ import Foundation
 import AO3Kit
 
 // ─────────────────────────────────────────────────────────────────────────────
-// M1 CLI: a real, bounded backup run.
+// The CLI: a real, bounded backup run (same engine and archive folder as the app).
 //
 //   1. authenticate (with or without a session cookie),
 //   2. page through bookmarks (bounded by AO3_MAX_PAGES), ingesting every card into
@@ -45,7 +45,7 @@ let listPath: String = {
     return demoPath
 }()
 
-stderr("AO3 Archiver — M1 sync")
+stderr("AO3 Archiver \(AO3Config.toolVersion) — sync")
 stderr("  source:    \(listPath)")
 stderr("  auth:      \(cookie != nil ? "session cookie present" : "anonymous (public only)")")
 stderr("  rate:      1 request / \(interval)s")
@@ -103,7 +103,6 @@ do {
     ──────────────────────────────────────────────────────────
       database:          \(files.databaseURL.path)
     """)
-    stderr("\nM1 OK — paginated index sync + series expansion + content download all working.")
 } catch let e as AO3Error {
     stderr("✗ \(e)")
     exit(1)

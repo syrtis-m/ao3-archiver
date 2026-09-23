@@ -99,9 +99,7 @@ struct GalleryView: View {
                 .toolbar { toolbarContent }
                 .inspector(isPresented: inspectorColumn) {
                     if let item = selectedItem {
-                        WorkDetailView(item: item, store: store, archiveRoot: archiveRoot,
-                                       onChanged: { vm.load(from: store) })
-                            .id(item.id)   // fresh per-work state (no stale error/cookie bleed)
+                        detail(for: item)
                             .inspectorColumnWidth(min: 280, ideal: 360, max: 460)
                     } else {
                         ContentUnavailableView("No selection", systemImage: "sidebar.right")
@@ -148,9 +146,7 @@ struct GalleryView: View {
                 FilterSidebar(vm: vm, store: store)
             case .details:
                 if let item = selectedItem {
-                    WorkDetailView(item: item, store: store, archiveRoot: archiveRoot,
-                                   onChanged: { vm.load(from: store) })
-                        .id(item.id)   // fresh per-work state (no stale error/cookie bleed)
+                    detail(for: item)
                 } else {
                     ContentUnavailableView("No selection", systemImage: "sidebar.right")
                 }
@@ -183,6 +179,13 @@ struct GalleryView: View {
         return .handled
     }
 
+    /// The details panel for one item — shared by the inspector column and the narrow sheet.
+    private func detail(for item: WorkListItem) -> some View {
+        WorkDetailView(item: item, store: store, archiveRoot: archiveRoot,
+                       onChanged: { vm.load(from: store) })
+            .id(item.id)   // fresh per-work state (no stale error/cookie bleed)
+    }
+
     @ViewBuilder
     private var gallery: some View {
         if let err = vm.loadError {
@@ -192,7 +195,7 @@ struct GalleryView: View {
             ContentUnavailableView {
                 Label("No bookmarks yet", systemImage: "bookmark")
             } description: {
-                Text("Sync from the CLI, or point at an existing archive folder.")
+                Text("Use Sync to fetch your AO3 bookmarks, or point at an existing archive folder.")
             } actions: {
                 Button("Choose Archive Folder…", action: onChooseFolder)
             }
