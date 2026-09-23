@@ -828,19 +828,23 @@ do {
       <li><a href="/downloads/9/T.epub?updated_at=1">EPUB</a></li>
     </ul></li>
     """
-    check("extracts epub href", try WorkDownloader.epubHref(fromWorkHTML: menu) == "/downloads/9/T.epub?updated_at=1")
-    check("nil when no menu", try WorkDownloader.epubHref(fromWorkHTML: "<p>locked</p>") == nil)
+    check("extracts epub href", try WorkDownloader.epubHref(fromWorkHTML: menu, workID: 9) == "/downloads/9/T.epub?updated_at=1")
+    check("nil when no menu", try WorkDownloader.epubHref(fromWorkHTML: "<p>locked</p>", workID: 9) == nil)
+    let planted = #"<blockquote class="summary"><a href="/downloads/999/Other.epub">x</a></blockquote>"#
+    check("ignores another work's planted download link (F7)",
+          try WorkDownloader.epubHref(fromWorkHTML: planted, workID: 123) == nil
+          && WorkDownloader.epubHref(fromWorkHTML: planted, workID: 999) == "/downloads/999/Other.epub")
     check("epub magic true", WorkDownloader.looksLikeEPUB(Data([0x50, 0x4B, 0x03, 0x04])))
     check("epub magic false", !WorkDownloader.looksLikeEPUB(Data("<htm".utf8)))
     // Security: a hostile work page with no real download menu must NOT yield an off-site
     // absolute href — the anchored `^=/downloads/` selector skips it.
     let evilMenu = #"<p>locked</p><a href="https://evil.example/downloads/x.epub">grab</a>"#
-    check("ignores absolute off-site /downloads/ link", try WorkDownloader.epubHref(fromWorkHTML: evilMenu) == nil)
+    check("ignores absolute off-site /downloads/ link", try WorkDownloader.epubHref(fromWorkHTML: evilMenu, workID: 9) == nil)
     // L3: an absolute href injected inside a `li.download` wrapper must be skipped by the
     // primary selector too (also anchored `^=/downloads/`), not just the fallback.
     let evilWrapper = #"<li class="download"><a href="https://evil.example/downloads/x.epub">EPUB</a></li>"#
     check("ignores absolute href inside li.download wrapper (L3)",
-          try WorkDownloader.epubHref(fromWorkHTML: evilWrapper) == nil)
+          try WorkDownloader.epubHref(fromWorkHTML: evilWrapper, workID: 9) == nil)
 } catch {
     FileHandle.standardError.write(Data("threw: \(error)\n".utf8))
     exit(1)
@@ -1279,6 +1283,24 @@ for (name, run) in EngineScenarios.all {
     }
     done.wait()
     for (n, ok) in results.checks { check(n, ok) }
+}
+
+// Reader — off-main extraction + surfaced failures (same scenario as ReaderScenarioTests).
+// ReaderModel is @MainActor, so spin the main run loop instead of blocking it on a semaphore.
+print("Reader — extraction")
+if let readerEpub = try? makeSyntheticEpub(useNCX: false) {
+    let results = ScenarioResults()
+    var finished = false
+    Task { @MainActor in
+        do { results.checks = try await ReaderScenarios.extraction(epubURL: readerEpub).map { ($0.name, $0.ok) } }
+        catch { results.checks = [("reader scenario ran without throwing (\(error))", false)] }
+        finished = true
+    }
+    while !finished { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+    for (n, ok) in results.checks { check(n, ok) }
+    try? FileManager.default.removeItem(at: readerEpub)
+} else {
+    check("reader scenario fixture", false)
 }
 
 print("")

@@ -12,6 +12,7 @@ struct SyncSheet: View {
 
     @State private var username = ""
     @State private var cookie = ""
+    @State private var keychainUnreadable = false
     @AppStorage("syncDownloadEPUBs") private var downloadEPUBs = false
     @AppStorage("syncInterval") private var interval = 5.0
 
@@ -22,6 +23,13 @@ struct SyncSheet: View {
             VStack(alignment: .leading, spacing: 8) {
                 TextField("AO3 username", text: $username)
                 SecureField("_otwarchive_session cookie (optional)", text: $cookie)
+                if keychainUnreadable {
+                    Label("Couldn't read your saved details from the Keychain — they're kept, "
+                          + "but paste them again to use them for this sync.",
+                          systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption).foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 Text("""
                     A cookie unlocks private/restricted works; leave it blank for public \
                     bookmarks. Get it from your browser: DevTools → Application → Cookies → \
@@ -88,6 +96,8 @@ struct SyncSheet: View {
         .onAppear {
             username = CredentialStore.username ?? ""
             cookie = CredentialStore.cookie ?? ""
+            keychainUnreadable = CredentialStore.isUnreadable(account: CredentialStore.cookieAccount)
+                || CredentialStore.isUnreadable(account: CredentialStore.usernameAccount)
             refreshResume()
         }
     }

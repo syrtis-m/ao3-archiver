@@ -169,12 +169,12 @@ import Foundation
           </li>
         </ul>
         """
-        let href = try WorkDownloader.epubHref(fromWorkHTML: html)
+        let href = try WorkDownloader.epubHref(fromWorkHTML: html, workID: 85487886)
         #expect(href == "/downloads/85487886/Sarcasm_and_Sanctuary.epub?updated_at=1781388945")
     }
 
     @Test func noDownloadMenuReturnsNil() throws {
-        #expect(try WorkDownloader.epubHref(fromWorkHTML: "<html><body>locked</body></html>") == nil)
+        #expect(try WorkDownloader.epubHref(fromWorkHTML: "<html><body>locked</body></html>", workID: 1) == nil)
     }
 
     @Test func epubMagicDetection() {
@@ -187,7 +187,15 @@ import Foundation
         // No legit `li.download` menu; the anchored `^=/downloads/` fallback must skip an
         // attacker-supplied absolute href so we never form an off-AO3 request.
         let html = #"<p>locked</p><a href="https://evil.example/downloads/x.epub">grab</a>"#
-        #expect(try WorkDownloader.epubHref(fromWorkHTML: html) == nil)
+        #expect(try WorkDownloader.epubHref(fromWorkHTML: html, workID: 1) == nil)
+    }
+
+    @Test func ignoresAnotherWorksDownloadLink() throws {
+        // F7: the whole-page fallback also sees author content — a planted link to a
+        // *different* work's EPUB must not be archived under this work.
+        let html = #"<blockquote class="summary"><a href="/downloads/999/Other.epub">x</a></blockquote>"#
+        #expect(try WorkDownloader.epubHref(fromWorkHTML: html, workID: 123) == nil)
+        #expect(try WorkDownloader.epubHref(fromWorkHTML: html, workID: 999) == "/downloads/999/Other.epub")
     }
 
     @Test func ignoresAbsoluteHrefInsideDownloadWrapper() throws {
@@ -195,7 +203,7 @@ import Foundation
         // the *primary* selector too (now anchored `^=/downloads/`), not rely on the host
         // allowlist one layer down.
         let html = #"<li class="download"><a href="https://evil.example/downloads/x.epub">EPUB</a></li>"#
-        #expect(try WorkDownloader.epubHref(fromWorkHTML: html) == nil)
+        #expect(try WorkDownloader.epubHref(fromWorkHTML: html, workID: 1) == nil)
     }
 }
 

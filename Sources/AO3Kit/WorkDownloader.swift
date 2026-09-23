@@ -16,7 +16,12 @@ public struct WorkDownloader {
 
     /// Parse the EPUB href out of a work page's download menu. Returns a site-relative
     /// path (e.g. "/downloads/123/Title.epub?updated_at=...").
-    public static func epubHref(fromWorkHTML html: String) throws -> String? {
+    ///
+    /// The link must also be **this work's**: `/downloads/<workID>/…`. The whole-page fallback
+    /// scans author-controlled content too, so without the id check a work whose own menu
+    /// didn't parse could archive whatever `/downloads/<otherID>/x.epub` link its author
+    /// planted in the summary or notes — silently saving the wrong work under this one's name.
+    public static func epubHref(fromWorkHTML html: String, workID: Int) throws -> String? {
         let doc = try SwiftSoup.parse(html)
         // Real AO3 hrefs are ".../Title.epub?updated_at=<ts>", so an ends-with selector
         // would miss them — match on the *path* (before "?") ending in .epub. Prefer the
@@ -27,10 +32,11 @@ public struct WorkDownloader {
         // backstop, but anchoring here avoids even forming the request.
         let candidates = try doc.select("li.download a[href^=/downloads/]").array()
                        + doc.select("a[href^=/downloads/]").array()
+        let ownPrefix = "/downloads/\(workID)/"
         for a in candidates {
             let href = try a.attr("href")
             let path = href.split(separator: "?", maxSplits: 1).first.map(String.init) ?? href
-            if path.lowercased().hasSuffix(".epub") { return href }
+            if path.hasPrefix(ownPrefix), path.lowercased().hasSuffix(".epub") { return href }
         }
         return nil
     }
@@ -39,7 +45,7 @@ public struct WorkDownloader {
     /// EPUB download path, or nil if none is present (e.g. login required).
     public func resolveEPUBHref(workID: Int) async throws -> String? {
         let html = try await client.getHTML(path: "/works/\(workID)?view_adult=true")
-        return try Self.epubHref(fromWorkHTML: html)
+        return try Self.epubHref(fromWorkHTML: html, workID: workID)
     }
 
     /// Download the EPUB bytes for a work. Throws `AO3Error.requiresLogin` when the work page
@@ -48,7 +54,7 @@ public struct WorkDownloader {
     /// network blip isn't mistaken for an auth problem.
     public func downloadEPUB(workID: Int) async throws -> Data {
         let html = try await client.getHTML(path: "/works/\(workID)?view_adult=true")
-        guard let href = try Self.epubHref(fromWorkHTML: html) else {
+        guard let href = try Self.epubHref(fromWorkHTML: html, workID: workID) else {
             if let shieldsUp = AO3Client.cloudflareWallKind(inBody: Data(html.utf8)) {
                 throw AO3Error.cloudflare(status: 0, shieldsUp: shieldsUp)
             }

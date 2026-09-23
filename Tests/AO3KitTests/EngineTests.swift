@@ -14,3 +14,13 @@ import AO3KitTestSupport
         }
     }
 }
+
+@Suite struct ReaderScenarioTests {
+    @MainActor @Test func extractionIsOffMainAndFailuresSurface() async throws {
+        let url = try SyntheticEpub.make(flavour: .nav)
+        defer { try? FileManager.default.removeItem(at: url) }
+        for check in try await ReaderScenarios.extraction(epubURL: url) {
+            #expect(check.ok, "\(check.name)")
+        }
+    }
+}

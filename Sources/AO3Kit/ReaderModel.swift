@@ -34,7 +34,7 @@ public final class ReaderModel {
     }
 
     private let store: Store?
-    private let settingsKey = "readerSettings"
+    private static let settingsKey = "readerSettings"
     @ObservationIgnored private var extractedDirectory: URL?
     @ObservationIgnored private var readerDocURL: URL?
     /// The content key last written to disk, so we only regenerate when something changed.
@@ -82,9 +82,51 @@ public final class ReaderModel {
 
     // MARK: - Rendering
 
-    /// True while scroll mode still needs its bodies sanitized off-main (show a spinner). Chapter
-    /// mode parses a single section on demand, so it's never "preparing".
-    public var isPreparing: Bool { isScroll && !bodiesPrepared }
+    /// True while resources are still being extracted, or scroll mode still needs its bodies
+    /// sanitized off-main (show a spinner).
+    public var isPreparing: Bool { extractedDirectory == nil || (isScroll && !bodiesPrepared) }
+
+    /// Why the reader can't render (e.g. the EPUB's resources couldn't be extracted), or nil.
+    /// Previously a failed extraction returned nil forever and the window just stayed blank.
+    public private(set) var renderError: String?
+
+    /// Extract the EPUB's resources (images/fonts) **off the main thread** — for an
+    /// image-heavy work this was a visible freeze on open. Uses its own archive handle (see
+    /// `EpubDocument.extractResources`). Idempotent; records `renderError` on failure.
+    public func prepareExtractionIfNeeded() async {
+        guard extractedDirectory == nil, renderError == nil else { return }
+        // Two rebuilds can race here (initial load + a settings change); share one extraction
+        // rather than unpacking twice and orphaning the loser's temp directory.
+        if let extracting { return await extracting.value }
+        let job = Task { await extract() }
+        extracting = job
+        await job.value
+        extracting = nil
+    }
+
+    @ObservationIgnored private var extracting: Task<Void, Never>?
+
+    private func extract() async {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ao3-reader", isDirectory: true)
+            .appendingPathComponent("\(workID)-\(UUID().uuidString)", isDirectory: true)
+        // The generated doc lives next to the content (the OPF directory) so relative
+        // resource refs (`images/x.png`) resolve against the right base.
+        let docDir = document.opfDirectory.isEmpty ? base
+            : base.appendingPathComponent(document.opfDirectory, isDirectory: true)
+        let source = document.url
+        do {
+            try await Task.detached(priority: .userInitiated) {
+                try EpubDocument.extractResources(from: source, to: base)
+                try FileManager.default.createDirectory(at: docDir, withIntermediateDirectories: true)
+            }.value
+            readerDocURL = docDir.appendingPathComponent("__ao3reader.html")
+            extractedDirectory = base
+        } catch {
+            try? FileManager.default.removeItem(at: base)
+            renderError = "Couldn't prepare this work for reading: \(error)"
+        }
+    }
 
     /// Sanitize all the work's bodies **off the main thread** (the SwiftSoup parse is the cost —
     /// ~2.6s for a 247-chapter work) and seed the cache, so scroll mode can build instantly and
@@ -105,14 +147,15 @@ public final class ReaderModel {
     /// Generate (if needed) and return the document the WebView should load. Returns `nil` while
     /// scroll mode is still preparing (see `isPreparing`) — call `prepareScrollBodiesIfNeeded()`.
     public func renderTarget() -> RenderTarget? {
-        guard let dir = ensureExtracted(), let docURL = readerDocURL else { return nil }
+        guard let dir = extractedDirectory, let docURL = readerDocURL else { return nil }
         if isScroll && !bodiesPrepared { return nil }
         let key = renderKey
         if writtenKey != key {
             let html = isScroll
                 ? document.wholeWorkHTML(css: settings.injectedCSS)
                 : document.chapterHTML(sectionIndex: session.index, css: settings.injectedCSS)
-            guard (try? Data(html.utf8).write(to: docURL, options: .atomic)) != nil else { return nil }
+            do { try Data(html.utf8).write(to: docURL, options: .atomic) }
+            catch { renderError = "Couldn't write the reader page: \(error)"; return nil }
             writtenKey = key
         }
         // In scroll mode, land on (or jump to) the current section's anchor.
@@ -145,28 +188,6 @@ public final class ReaderModel {
 
     // MARK: - Private
 
-    private func ensureExtracted() -> URL? {
-        if let dir = extractedDirectory { return dir }
-        let base = FileManager.default.temporaryDirectory
-            .appendingPathComponent("ao3-reader", isDirectory: true)
-            .appendingPathComponent("\(workID)-\(UUID().uuidString)", isDirectory: true)
-        do {
-            // Resources only (CSS/images); the reader doc is generated, so skip the EPUB's
-            // own (X)HTML — keeps raw, unsanitized markup off disk.
-            try document.extractAll(to: base, includeHTML: false)
-            // The generated doc lives next to the content (the OPF directory) so relative
-            // resource refs (`images/x.png`) resolve against the right base.
-            let docDir = document.opfDirectory.isEmpty ? base
-                : base.appendingPathComponent(document.opfDirectory, isDirectory: true)
-            try FileManager.default.createDirectory(at: docDir, withIntermediateDirectories: true)
-            readerDocURL = docDir.appendingPathComponent("__ao3reader.html")
-            extractedDirectory = base
-            return base
-        } catch {
-            return nil
-        }
-    }
-
     /// Why the last resume write failed, or nil if the last one succeeded. Non-fatal but
     /// deliberately **not silent**: a dropped reading position is a user-visible feature
     /// failing, and the bare `try?` this replaces is exactly what let it fail invisibly when
@@ -190,11 +211,11 @@ public final class ReaderModel {
 
     private func persistSettings() {
         guard let data = try? JSONEncoder().encode(settings) else { return }
-        UserDefaults.standard.set(data, forKey: settingsKey)
+        UserDefaults.standard.set(data, forKey: Self.settingsKey)
     }
 
     private static func loadSettings() -> ReaderSettings {
-        guard let data = UserDefaults.standard.data(forKey: "readerSettings"),
+        guard let data = UserDefaults.standard.data(forKey: settingsKey),
               let s = try? JSONDecoder().decode(ReaderSettings.self, from: data) else {
             return ReaderSettings()
         }

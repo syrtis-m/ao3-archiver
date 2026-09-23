@@ -12,6 +12,16 @@ enum CredentialStore {
     static let usernameAccount = "username"
     static let cookieAccount = "session_cookie"
 
+    /// Accounts whose stored item exists but couldn't be read this session (access denied after
+    /// an ad-hoc re-sign, keychain locked, …). `read` used to report those as plain "nothing
+    /// stored", so the sheet showed an empty field — and starting a sync then saved that empty
+    /// field, which **deleted** the real cookie. `set` now refuses to delete an item we
+    /// couldn't read; only an explicit new value replaces it.
+    nonisolated(unsafe) private static var unreadable: Set<String> = []
+    private static let lock = NSLock()
+
+    static func isUnreadable(account: String) -> Bool { lock.withLock { unreadable.contains(account) } }
+
     @discardableResult
     static func set(_ value: String?, account: String) -> Bool {
         let base: [String: Any] = [
@@ -21,13 +31,13 @@ enum CredentialStore {
         ]
         let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let trimmed, !trimmed.isEmpty, let data = trimmed.data(using: .utf8) else {
+            guard !isUnreadable(account: account) else { return false }   // see `unreadable`
             SecItemDelete(base as CFDictionary)   // empty → clear any stored value
             return true
         }
         var add = base
         add[kSecValueData as String] = data
-        // Local to this device, readable only after first unlock — never synced to iCloud
-        // Keychain and never available while the device is locked.
+        // Local to this device and only while unlocked — never synced to iCloud Keychain.
         add[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
         let status = SecItemAdd(add as CFDictionary, nil)
         if status == errSecDuplicateItem {
@@ -37,7 +47,9 @@ enum CredentialStore {
             return SecItemUpdate(base as CFDictionary,
                                  [kSecValueData as String: data] as CFDictionary) == errSecSuccess
         }
-        return status == errSecSuccess
+        let ok = status == errSecSuccess
+        if ok { lock.withLock { _ = unreadable.remove(account) } }
+        return ok
     }
 
     static func read(account: String) -> String? {
@@ -49,9 +61,17 @@ enum CredentialStore {
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
         var result: AnyObject?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-              let data = result as? Data, let string = String(data: data, encoding: .utf8)
-        else { return nil }
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        guard status == errSecSuccess, let data = result as? Data,
+              let string = String(data: data, encoding: .utf8)
+        else {
+            // "Not found" is a genuine empty; anything else means an item we can't see.
+            lock.withLock {
+                if status == errSecItemNotFound { unreadable.remove(account) } else { unreadable.insert(account) }
+            }
+            return nil
+        }
+        lock.withLock { _ = unreadable.remove(account) }
         return string
     }
 

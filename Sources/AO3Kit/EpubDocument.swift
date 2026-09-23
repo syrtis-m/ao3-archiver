@@ -333,6 +333,24 @@ public final class EpubDocument {
     /// path would escape `directory` (zip-slip guard). Returns `directory`.
     @discardableResult
     public func extractAll(to directory: URL, sanitizeHTML: Bool = true, includeHTML: Bool = true) throws -> URL {
+        try Self.extract(archive, to: directory, sanitizeHTML: sanitizeHTML, includeHTML: includeHTML)
+    }
+
+    /// Extract the reader's **resources only** (images/fonts — no (X)HTML) from the EPUB at
+    /// `url` into `directory`, opening a *separate* archive handle. Static and URL-based so the
+    /// reader can run it off the main thread: ZIPFoundation's `Archive` isn't thread-safe, so
+    /// the document's own handle stays on the main actor and this one lives and dies on the
+    /// background task.
+    public static func extractResources(from url: URL, to directory: URL) throws {
+        let archive: Archive
+        do { archive = try Archive(url: url, accessMode: .read) }
+        catch { throw EpubError.cannotOpen(String(describing: error)) }
+        try extract(archive, to: directory, sanitizeHTML: false, includeHTML: false)
+    }
+
+    @discardableResult
+    private static func extract(_ archive: Archive, to directory: URL, sanitizeHTML: Bool,
+                                includeHTML: Bool) throws -> URL {
         let fm = FileManager.default
         try fm.createDirectory(at: directory, withIntermediateDirectories: true)
         let rootPath = directory.standardizedFileURL.path
@@ -351,7 +369,7 @@ public final class EpubDocument {
                 try fm.createDirectory(at: dest.deletingLastPathComponent(),
                                        withIntermediateDirectories: true)
                 if fm.fileExists(atPath: dest.path) { try? fm.removeItem(at: dest) }
-                if sanitizeHTML, isHTML, let data = Self.entryData(entry.path, in: archive) {
+                if sanitizeHTML, isHTML, let data = entryData(entry.path, in: archive) {
                     let clean = EpubSanitizer.sanitize(String(decoding: data, as: UTF8.self))
                     try Data(clean.utf8).write(to: dest, options: .atomic)
                 } else {

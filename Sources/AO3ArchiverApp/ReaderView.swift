@@ -49,6 +49,8 @@ struct ReaderView: View {
             if let target {
                 EpubWebView(target: target) { model.recordVisibleSection($0) }
                     .ignoresSafeArea(edges: .bottom)
+            } else if let renderError = model.renderError {
+                errorState(renderError)
             } else {
                 // Scroll mode sanitizes the whole work off-main before its first render.
                 ProgressView("Preparing…").controlSize(.large)
@@ -201,8 +203,10 @@ struct ReaderView: View {
 
     private func rebuild(_ m: ReaderModel) { Task { await buildTarget(m) } }
 
-    /// Prepare scroll-mode bodies off-main (no-op in chapter mode / once prepared), then build.
+    /// Extract resources and (scroll mode) sanitize bodies off-main — both no-ops once done —
+    /// then build.
     private func buildTarget(_ m: ReaderModel) async {
+        await m.prepareExtractionIfNeeded()
         await m.prepareScrollBodiesIfNeeded()
         target = m.renderTarget()
     }
