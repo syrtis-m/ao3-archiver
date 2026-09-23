@@ -49,6 +49,23 @@ public enum ModelChecks {
         ]
     }
 
+    /// A pre-existing dangling row (seen in a real archive) must not stop the migrations —
+    /// before the fix, GRDB's post-migration FK check aborted and the app couldn't open the DB.
+    public static func migrationSurvivesDanglingRows() throws -> [EngineScenarios.Check] {
+        let path = NSTemporaryDirectory() + "legacy-\(UUID()).sqlite"
+        defer { for s in ["", "-wal", "-shm"] { try? FileManager.default.removeItem(atPath: path + s) } }
+        try Store.makeLegacyV5Database(atPath: path, thenExecute: [
+            "INSERT INTO tag (type, name) VALUES ('fandom', 'Demo Fandom')",
+            "INSERT INTO work_tag (work_id, tag_id) VALUES (-1001, last_insert_rowid())",
+        ])
+        let store = try Store(path: path)
+        let applied = try store.appliedMigrations()
+        return [
+            ("opens and migrates past v6/v7", applied.contains("v6-deleted-sightings") && applied.contains("v7-bookmark-removed")),
+            ("dangling row repaired", try store.count("work_tag") == 0),
+        ]
+    }
+
     /// The orphan sweep removes only works nothing refers to.
     public static func orphanSweep() throws -> [EngineScenarios.Check] {
         let store = try Store(inMemory: true)

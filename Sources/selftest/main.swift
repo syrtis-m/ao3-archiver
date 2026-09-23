@@ -1274,6 +1274,8 @@ check("rate limiter throws when cancelled (no unspaced requests)", limiterProbe.
 print("Presentation (model-level view decisions)")
 for (n, ok) in ModelChecks.presentation() { check(n, ok) }
 for (n, ok) in ModelChecks.saveVisiblePlan() { check("save visible — \(n)", ok) }
+do { for (n, ok) in try ModelChecks.migrationSurvivesDanglingRows() { check("legacy DB — \(n)", ok) } }
+catch { check("legacy DB migration ran (\(error))", false) }
 for (n, ok) in ModelChecks.pruneGuards() { check("prune guard — \(n)", ok) }
 do { for (n, ok) in try ModelChecks.orphanSweep() { check(n, ok) } }
 catch { check("orphan sweep checks ran (\(error))", false) }

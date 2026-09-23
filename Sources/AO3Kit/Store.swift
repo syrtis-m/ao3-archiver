@@ -46,6 +46,23 @@ public final class Store: @unchecked Sendable {
         try Self.migrator.migrate(dbQueue)
     }
 
+    /// The migration identifiers applied to this database, in order (for tests/diagnostics).
+    public func appliedMigrations() throws -> [String] {
+        try dbQueue.read { try Self.migrator.appliedIdentifiers($0) }.sorted()
+    }
+
+    /// Test hook: create a database migrated only up to v5 (the schema the Jul 2026 builds
+    /// shipped), then run `sql` with foreign keys OFF — so both runners can reproduce a legacy
+    /// archive carrying a dangling row and prove the current migrations still open it.
+    public static func makeLegacyV5Database(atPath path: String, thenExecute sql: [String]) throws {
+        let q = try DatabaseQueue(path: path)
+        try migrator.migrate(q, upTo: "v5-deleted-on-ao3")
+        try q.writeWithoutTransaction { db in
+            try db.execute(sql: "PRAGMA foreign_keys = OFF")
+            for statement in sql { try db.execute(sql: statement) }
+        }
+    }
+
     /// In-memory store, for tests.
     public init(inMemory: Bool) throws {
         dbQueue = try DatabaseQueue(configuration: Self.makeConfiguration())
@@ -216,7 +233,13 @@ public final class Store: @unchecked Sendable {
             // otherwise, so the UI can flag "your saved copy is the only one left".
             try db.execute(sql: "ALTER TABLE work ADD COLUMN deleted_on_ao3_at TEXT")
         }
-        m.registerMigration("v6-deleted-sightings") { db in
+        // v6 onward use `.immediate` foreign-key checks: every statement is still FK-checked,
+        // but GRDB skips its whole-database `foreign_key_check` after the migration. That check
+        // aborts on ANY pre-existing dangling row anywhere — and a real archive had one (a
+        // `work_tag` pointing at a work that no longer existed), which made v6 fail and the app
+        // unable to open the archive at all. v7 repairs such rows. Keep new migrations
+        // `.immediate` unless they genuinely need deferred checks.
+        m.registerMigration("v6-deleted-sightings", foreignKeyChecks: .immediate) { db in
             // A 404 is EVIDENCE of deletion, not proof — the premise is not pinned to a
             // captured fixture, and AO3 can 404 for other reasons (a deploy window, a work
             // flipped to registered-users-only, a CDN blip). Previously a single sighting
@@ -244,7 +267,16 @@ public final class Store: @unchecked Sendable {
                 SELECT id, 'legacy', deleted_on_ao3_at FROM work WHERE deleted_on_ao3_at IS NOT NULL
                 """)
         }
-        m.registerMigration("v7-bookmark-removed") { db in
+        m.registerMigration("v7-bookmark-removed", foreignKeyChecks: .immediate) { db in
+            // Repair dangling references first (see the note above v6): rows whose parent is
+            // gone carry nothing recoverable.
+            try db.execute(sql: "DELETE FROM work_tag WHERE work_id NOT IN (SELECT id FROM work)")
+            try db.execute(sql: "DELETE FROM work_tag WHERE tag_id NOT IN (SELECT id FROM tag)")
+            try db.execute(sql: "DELETE FROM series_work WHERE work_id NOT IN (SELECT id FROM work)")
+            try db.execute(sql: "DELETE FROM series_work WHERE series_id NOT IN (SELECT id FROM series)")
+            try db.execute(sql: "DELETE FROM bookmark_tag WHERE bookmark_id NOT IN (SELECT bookmark_id FROM bookmark)")
+            try db.execute(sql: "DELETE FROM reading_position WHERE work_id NOT IN (SELECT id FROM work)")
+            try db.execute(sql: "DELETE FROM deleted_sighting WHERE work_id NOT IN (SELECT id FROM work)")
             // Set when a complete, verified Full-sync index no longer lists this bookmark (you
             // removed it on AO3) but we must keep the row because the work is *yours* locally —
             // a saved EPUB, a reading position, or a series link. Bookmarks with nothing local
