@@ -59,4 +59,16 @@ public struct FileStore {
         try data.write(to: url(forRelativePath: rel), options: .atomic)
         return rel
     }
+
+    /// After a successful re-download, delete the file it supersedes. The filename embeds the
+    /// title, so a work renamed on AO3 lands at a *new* path and the old one used to be
+    /// orphaned in `works/` forever. Deliberately narrow: only a different path, only inside
+    /// `works/`, only a file named for this same work id — never anything the user put there.
+    public func removeSupersededEPUB(previous: String?, current: String, workID: Int) {
+        guard let previous, previous != current,
+              previous.hasPrefix("works/"), !previous.contains(".."),
+              (previous as NSString).lastPathComponent.hasPrefix("\(workID) - ")
+        else { return }
+        try? FileManager.default.removeItem(at: url(forRelativePath: previous))
+    }
 }

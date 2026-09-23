@@ -140,9 +140,10 @@ On-disk layout:
 
 ## 4. Networking & sync
 
-**`AO3Client`** is the only networked component: a single-flight token-slot `RateLimiter`
-(default ~1 req / 4s, user-tunable), 429/503 `Retry-After` backoff with jitter and exponential
-growth on repeats, 5xx + timeout retries, explicit cookie injection, an honest User-Agent (the requester's AO3
+**`AO3Client`** is the only networked component: a **process-wide** token-slot `RateLimiter`
+(`RateLimiter.shared` — every client, including each single-work Download, queues on the same
+slot clock; default ~1 req / 4s, user-tunable), 429/503 `Retry-After` backoff with jitter and
+exponential growth on repeats (never shorter than the polite interval), 5xx + timeout retries, explicit cookie injection, an honest User-Agent (the requester's AO3
 username when known + contact `syrtis@sysd.info`, built by `AO3Config.defaultUserAgent`), and
 automatic following of the EPUB download redirect. It exposes
 `onRateLimit` so the UI can surface a backoff instead of looking stalled.
@@ -168,7 +169,10 @@ AO3, and the EPUB-link parser is anchored to site-relative `/downloads/` paths. 
 large account by accident. **Resumable:** the next-page URL is persisted in `meta`
 (`SyncEngine.resumeKey`), so a run throttled at page 15 of ~130 resumes there, not at page 1.
 A failed download stays in the queue (retryable across runs — run anonymously, add a cookie,
-re-run to pick up works that needed login). A listing fetch that bounces to AO3's login form
+re-run to pick up works that needed login). A failed *refresh* of a work we already hold keeps it
+`'downloaded'` (the file is still there). Cancellation propagates as `CancellationError` — the
+download loop stops rather than parking every remaining work as failed. The resume cursor is only
+followed when it belongs to the listing being indexed. A listing fetch that bounces to AO3's login form
 (cookie expired) throws `AO3Error.sessionExpired` and pauses the run instead of silently
 completing as if the index were caught up — see [§13](#13-cookie-expiry-mid-sync--deleted-work-detection-v15).
 
@@ -236,7 +240,7 @@ blocking, and no input debounce. The fix keeps the tested in-memory engine and m
 | **Parallel facet passes** | the 9 independent faceted-count passes run via `DispatchQueue.concurrentPerform` (each writes its own result slot — no locking); wall-clock collapses toward one pass | `GalleryViewModel.derived` |
 | **Coalesced sync reloads** | the live "grow the gallery" reload (a full `fetchAllListItems` + recompute) is throttled to ≤1 / ~1.2s during sync, with an immediate flush at end-of-run | `SyncController` |
 
-**Measured (debug, 20k synthetic items):** a full recompute (visible list + all 9 facets) went
+**Measured (debug, 20k synthetic items):** a full recompute (visible list + all 10 facets) went
 **349ms → 135ms (~2.6×)**; first compute 121ms → 52ms. These are guarded by a regression
 assertion in the scale test, so later changes can't silently regress them. A "parallel facets ==
 serial facets" check proves the concurrency stays deterministic.
@@ -522,21 +526,24 @@ at the point that's true, not at index time when it'd be a promise.
 the author deleted it — a stronger, more specific signal than the prior behavior of lumping every
 download failure (including this one) under `.requiresLogin`/"needs a cookie", which was actively
 misleading for a deleted work. `download(_:onEvent:)` catches `AO3Error.http(404)` specifically,
-calls `Store.markDeletedOnAO3(workID:)`, and logs a message that names what we hold: "your saved copy
-is the only one left" when `Store.PendingWork.hasDownload` is true, "deleted before you could save
-it" otherwise. `markDeletedOnAO3` sets `deleted_on_ao3_at` (`COALESCE`d, so a repeat sighting keeps
-the *first* detection time) and is the kind of thing this codebase calls **never proactively
-probed** — it only ever fires when the existing download/redownload flow happens to hit the 404 on
-its own.
+calls `Store.recordDeletedSighting(workID:source:)` with the **run's own source**
+(`SyncEngine.sightingSource(runID:)` — sightings from one source collapse to one row, so a fixed
+source could never reach the 2-sighting threshold), and logs a message that names what we hold:
+"your saved copy is the only one left" when `Store.PendingWork.hasDownload` is true, "deleted before
+you could save it" otherwise. On confirmation it sets `deleted_on_ao3_at` (keeping the first
+confirmation time, but refreshed once the recheck window has lapsed so the exclusion re-applies).
+A successful download clears all sightings. It is **never proactively probed** — it only ever fires
+when the existing download/redownload flow happens to hit the 404 on its own.
 
-A subtlety caught by the real-archive demo run, not the test suite: `markDeletedOnAO3` must **not**
+A subtlety caught by the real-archive demo run, not the test suite: confirming deletion must **not**
 unconditionally overwrite `download_state` to `'failed'`. A work that's already `'downloaded'` (we
 hold a perfectly good prior copy) staying `'downloaded'` is what keeps it in the **Saved** filter
 facet — exactly the work worth being able to find. The SQL is conditional:
 `download_state = CASE WHEN epub_path IS NOT NULL THEN download_state ELSE 'failed' END`. The UI
 badge mirrors this by checking `epubPath != nil` directly rather than `downloadState == "downloaded"`,
-so it can't regress the same way again. `worksNeedingDownload`/`worksNeedingRedownload` both exclude
-`deleted_on_ao3_at IS NOT NULL`, so a confirmed-gone work stops being re-requested on every future
+so it can't regress the same way again. (`markFailed` follows the same rule: a failed refresh of a
+saved work leaves it `'downloaded'`.) `worksNeedingDownload`/`worksNeedingRedownload` both exclude
+a recently-confirmed `deleted_on_ao3_at`, so a confirmed-gone work stops being re-requested on every future
 sync — a politeness win, not just bookkeeping.
 
 **Caveat — unverified against live AO3.** The 404-means-deleted assumption hasn't been confirmed
@@ -546,7 +553,7 @@ no-download-link path and throw `.requiresLogin` — silently missing the new cl
 than breaking anything. Capture a real deleted-work response into `Tests/AO3KitTests/Fixtures/` to
 close this gap, the same way the cookie-expiry markers need a real fixture.
 
-**Verification.** `WorkUpsertChange` (new/gain detection), `markDeletedOnAO3` (the `download_state`
+**Verification.** `WorkUpsertChange` (new/gain detection), `recordDeletedSighting` (the `download_state`
 preservation + queue exclusion), and `looksLikeLoginPage` (marker matching + the empty-listing gate)
 are unit-tested in both the swift-testing suite and the headless `selftest`. What isn't — and can't
 be, without a captured fixture — is whether AO3's actual markup matches the assumptions above; see

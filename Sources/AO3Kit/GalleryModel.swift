@@ -97,7 +97,7 @@ public struct WorkListItem: Sendable, Identifiable, Equatable, Hashable {
         self.downloadState = downloadState; self.epubPath = epubPath; self.deletedOnAO3 = deletedOnAO3
         // Derived, computed once (see field docs).
         self.searchHaystack = ([title, author, summary ?? "", bookmarkerNotes ?? ""]
-            + fandoms + relationships + characters + freeforms + bookmarkTags)
+            + fandoms + warnings + relationships + characters + freeforms + bookmarkTags)
             .joined(separator: " ").lowercased()
         self.titleSortKey = title.lowercased()
         self.authorSortKey = author.lowercased()

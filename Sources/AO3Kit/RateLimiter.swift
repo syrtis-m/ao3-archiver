@@ -6,21 +6,29 @@ import Foundation
 /// point of this tool existing without getting the user's IP throttled. The limiter
 /// hands out time *slots*: each `waitTurn()` reserves the next slot and sleeps until it
 /// arrives, so even highly concurrent callers are serialized to one-every-`minInterval`.
+///
+/// **One limiter per process (`shared`), not per client.** The app builds a fresh
+/// `AO3Client` for every sync *and* for every single-work Download click; with a limiter
+/// per client, clicking Download on three works (or on one during a sync) sent concurrent
+/// requests to AO3. Each caller passes its own interval, and all of them queue on the same
+/// slot clock.
 public actor RateLimiter {
-    private let minInterval: TimeInterval
+    public static let shared = RateLimiter()
+
     private var nextSlot: Date = .distantPast
 
-    public init(minInterval: TimeInterval) {
-        self.minInterval = max(0, minInterval)
-    }
+    public init() {}
 
-    public func waitTurn() async {
+    /// Reserve the next slot and sleep until it. **Throws on cancellation** — previously the
+    /// sleep was `try?`, so a cancelled task sailed straight through with no spacing at all.
+    public func waitTurn(minInterval: TimeInterval) async throws {
+        try Task.checkCancellation()
         let now = Date()
         let slot = max(now, nextSlot)
-        nextSlot = slot.addingTimeInterval(minInterval)
+        nextSlot = slot.addingTimeInterval(max(0, minInterval))
         let delay = slot.timeIntervalSince(now)
         if delay > 0 {
-            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
         }
     }
 

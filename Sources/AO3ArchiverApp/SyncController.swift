@@ -35,6 +35,19 @@ final class SyncController {
     private var pendingResume: ResumeParams?
 
     private var task: Task<Void, Never>?
+    /// Identifies the current run. Every event and terminal callback from a run carries the
+    /// generation it was started with and is dropped if that's no longer current — `cancel()`
+    /// frees the UI immediately, so without this a cancelled run still winding down could
+    /// overwrite a *new* run's phase ("Done" mid-sync, Cancel button gone) and leak its log
+    /// lines and counters into the new run's feed.
+    private var runGeneration = 0
+
+    /// What flows from the detached sync task to the main actor, in order: engine progress,
+    /// and AO3 rate-limit notices (previously a separate unordered `Task` per notice).
+    private enum Update: Sendable {
+        case engine(SyncEngine.Event)
+        case rateLimit(TimeInterval, attempt: Int, max: Int)
+    }
     /// Refreshes the gallery from the store. Called live as pages index (so the list builds
     /// up before your eyes) and whenever a run ends — even partial/cancelled, so whatever got
     /// indexed is shown.
@@ -80,22 +93,39 @@ final class SyncController {
         guard phase != .running else { return }
         self.reload = reload
         pendingResume = nil
-        phase = .running; statusLine = downloadEPUBs ? "Starting…" : "Building bookmark list…"
         currentPage = 0; totalPages = nil; downloaded = 0; failed = 0
         lastError = nil; rateLimit = nil; activity = []
 
+        // No username → nothing of *yours* to sync. This used to fall back to crawling a
+        // hardcoded public fandom tag (up to 999 pages), filling the archive with works you
+        // never bookmarked — the opposite of "never crawl by accident".
+        guard let username = username?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !username.isEmpty else {
+            lastError = "Enter your AO3 username to sync your bookmarks."
+            statusLine = "No username"
+            phase = .failed
+            return
+        }
+        runGeneration += 1
+        let gen = runGeneration
+        phase = .running; statusLine = downloadEPUBs ? "Starting…" : "Building bookmark list…"
+
         let userAgent = AO3Config.defaultUserAgent(ao3User: username)
-        let listPath = username.flatMap {
-            $0.isEmpty ? nil : "/users/\(AO3Config.encodePathComponent($0))/bookmarks?page=1"
-        } ?? "/tags/Good%20Omens%20(TV)/works"   // anonymous demo when no username
+        let listPath = "/users/\(AO3Config.encodePathComponent(username))/bookmarks?page=1"
 
         // A single ordered channel for progress events. Previously each event spawned its own
         // `Task { @MainActor in … }`; independent tasks hopping to an actor have no FIFO
         // guarantee, so the activity feed could render out of order. One consumer draining a
         // stream fixes that and drops ~40 task allocations per page.
-        let (events, continuation) = AsyncStream<SyncEngine.Event>.makeStream()
+        let (events, continuation) = AsyncStream<Update>.makeStream()
         let consumer = Task { @MainActor [weak self] in
-            for await event in events { self?.apply(event) }
+            for await update in events {
+                guard let self, self.runGeneration == gen else { continue }
+                switch update {
+                case .engine(let event): self.apply(event)
+                case let .rateLimit(secs, attempt, max): self.noteRateLimit(secs, attempt: attempt, max: max)
+                }
+            }
         }
 
         // `Task.detached`, NOT `Task {}`: `start` is @MainActor-isolated, so an unstructured
@@ -112,17 +142,16 @@ final class SyncController {
                 let client = AO3Client(config: AO3Config(
                     userAgent: userAgent, sessionCookie: cookie,
                     minRequestInterval: interval, maxRetries: 8))
-                // Bind once: `self` here is a captured *var* from the outer [weak self], and
-                // referencing it inside a second concurrently-executing closure is an error
-                // under the Swift 6 language mode.
-                let controller = self
+                // Through the same ordered stream as progress events — no strong `self` capture
+                // (which kept an abandoned controller and its sync alive) and no unordered
+                // per-notice Task that could land after the run ended.
                 client.onRateLimit = { secs, attempt, max in
-                    Task { @MainActor in controller?.noteRateLimit(secs, attempt: attempt, max: max) }
+                    continuation.yield(.rateLimit(secs, attempt: attempt, max: max))
                 }
                 let files = FileStore(root: archiveRoot)
                 try files.ensureDirectories()
                 let engine = SyncEngine(client: client, store: store, files: files)
-                let onEvent: @Sendable (SyncEngine.Event) -> Void = { continuation.yield($0) }
+                let onEvent: @Sendable (SyncEngine.Event) -> Void = { continuation.yield(.engine($0)) }
                 let result: SyncEngine.Result
                 if incremental {
                     // Quick sync: bounded two-pass catch-up. expandSeries OFF (one query per
@@ -140,33 +169,35 @@ final class SyncController {
                 }
                 continuation.finish()
                 await consumer.value            // drain the feed before writing the final state
-                await self?.finish(result: result)
+                await self?.finish(result: result, gen: gen)
             } catch is CancellationError {
                 continuation.finish(); await consumer.value
-                await self?.endRun(.cancelled)
+                await self?.endRun(.cancelled, gen: gen)
             } catch AO3Error.sessionExpired {
                 continuation.finish(); await consumer.value
-                await self?.pauseForCookie(ResumeParams(
+                await self?.pauseForCookie(gen: gen, ResumeParams(
                     store: store, username: username, archiveRoot: archiveRoot, interval: interval,
                     downloadEPUBs: downloadEPUBs, maxPages: maxPages, resumeIndex: resumeIndex,
                     incremental: incremental, reload: reload))
             } catch {
                 continuation.finish(); await consumer.value
-                await self?.fail(with: error)
+                await self?.fail(with: error, gen: gen)
             }
         }
     }
 
     /// Cookie expired mid-run: capture how the run was started so `resumeWithCookie` can
     /// re-invoke it unchanged, and pause rather than fail.
-    private func pauseForCookie(_ params: ResumeParams) {
+    private func pauseForCookie(gen: Int, _ params: ResumeParams) {
+        guard gen == runGeneration else { return }
         pendingResume = params
         lastError = String(describing: AO3Error.sessionExpired)
         push("Paused — re-paste your session cookie above to continue.")
         endRun(.needsCookie)
     }
 
-    private func fail(with error: Error) {
+    private func fail(with error: Error, gen: Int) {
+        guard gen == runGeneration else { return }
         lastError = String(describing: error)
         push("Stopped: \(error)")
         endRun(.failed)
@@ -186,10 +217,15 @@ final class SyncController {
 
     func cancel() {
         task?.cancel()
-        if phase == .running { statusLine = "Cancelled"; endRun(.cancelled) }
+        guard phase == .running else { return }
+        runGeneration += 1          // detach the winding-down run from the UI (see runGeneration)
+        statusLine = "Cancelled"
+        push("Cancelled")
+        endRun(.cancelled)
     }
 
-    private func finish(result: SyncEngine.Result) {
+    private func finish(result: SyncEngine.Result, gen: Int) {
+        guard gen == runGeneration else { return }
         downloaded = result.epubsDownloaded
         failed = result.downloadsFailed
         // worksDeleted is a SUBSET of downloadsFailed (a deletion is one kind of download
@@ -201,6 +237,11 @@ final class SyncController {
             + (otherFailures > 0 ? " (\(otherFailures) failed)" : "")
         push(statusLine)
         endRun(.done)
+    }
+
+    private func endRun(_ phase: Phase, gen: Int) {
+        guard gen == runGeneration else { return }
+        endRun(phase)
     }
 
     private func endRun(_ phase: Phase) {

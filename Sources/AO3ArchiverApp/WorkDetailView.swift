@@ -254,6 +254,7 @@ struct WorkDetailView: View {
         }
         let cookie = typed ?? CredentialStore.cookie
         let workID = item.itemID, title = item.title, updatedAt = item.updatedAt
+        let previousPath = item.epubPath
         let root = archiveRoot, store = store
         Task {
             do {
@@ -264,8 +265,10 @@ struct WorkDetailView: View {
                     userAgent: AO3Config.defaultUserAgent(ao3User: CredentialStore.username),
                     sessionCookie: cookie, maxRetries: 8))
                 let data = try await WorkDownloader(client: client).downloadEPUB(workID: workID)
-                let rel = try FileStore(root: root).writeEPUB(data, workID: workID, title: title)
+                let files = FileStore(root: root)
+                let rel = try files.writeEPUB(data, workID: workID, title: title)
                 try store.markDownloaded(workID: workID, epubPath: rel, updatedAt: updatedAt)
+                files.removeSupersededEPUB(previous: previousPath, current: rel, workID: workID)
                 downloading = false
                 cookieInput = ""
                 onChanged()

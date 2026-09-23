@@ -79,12 +79,21 @@ public enum KindleCover {
         let ct = CTFontCreateWithName(font as CFString, size, nil)
         var align = CTTextAlignment.center
         var ls = lineSpacing, sa = spacingAfter
-        let settings = [
-            CTParagraphStyleSetting(spec: .alignment, valueSize: MemoryLayout<CTTextAlignment>.size, value: &align),
-            CTParagraphStyleSetting(spec: .lineSpacingAdjustment, valueSize: MemoryLayout<CGFloat>.size, value: &ls),
-            CTParagraphStyleSetting(spec: .paragraphSpacing, valueSize: MemoryLayout<CGFloat>.size, value: &sa),
-        ]
-        let para = CTParagraphStyleCreate(settings, settings.count)
+        // The setting values are raw pointers read by `CTParagraphStyleCreate`, so they must stay
+        // valid until that call — an inline `&x` argument is only valid for the settings'
+        // initializer (undefined behaviour; the compiler warns). Nest the pointer scopes instead.
+        let para = withUnsafePointer(to: &align) { alignP in
+            withUnsafePointer(to: &ls) { lsP in
+                withUnsafePointer(to: &sa) { saP in
+                    let settings = [
+                        CTParagraphStyleSetting(spec: .alignment, valueSize: MemoryLayout<CTTextAlignment>.size, value: alignP),
+                        CTParagraphStyleSetting(spec: .lineSpacingAdjustment, valueSize: MemoryLayout<CGFloat>.size, value: lsP),
+                        CTParagraphStyleSetting(spec: .paragraphSpacing, valueSize: MemoryLayout<CGFloat>.size, value: saP),
+                    ]
+                    return CTParagraphStyleCreate(settings, settings.count)
+                }
+            }
+        }
         let attrs: [NSAttributedString.Key: Any] = [
             .init(kCTFontAttributeName as String): ct,
             .init(kCTForegroundColorAttributeName as String): color,

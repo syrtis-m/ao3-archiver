@@ -16,11 +16,21 @@ public enum EpubSanitizer {
     /// Elements removed outright (active content / embeddings). `<style>` is here because its CSS
     /// can `@import`/`url()` a remote resource that loads on render — and a denylist regex over CSS
     /// is trivially obfuscated, so we drop the element wholesale (the reader supplies its own theme).
-    private static let strippedTags = ["script", "style", "iframe", "frame", "object", "embed", "noscript", "base"]
-    /// Attributes that can trigger a resource load when they hold a remote URL.
-    private static let resourceAttrs = ["src", "srcset", "poster", "background", "data-src", "data-original"]
+    /// `<link>` goes wholesale too: the reader inlines its own stylesheet, and a *local*
+    /// stylesheet link could still `@import` a remote one. SVG `<set>`/`<animate>` can rewrite
+    /// an `href` to a remote or `javascript:` value after sanitizing, so they're dropped as well.
+    private static let strippedTags = ["script", "style", "iframe", "frame", "object", "embed", "noscript",
+                                       "base", "link", "set", "animate"]
+    /// Attributes that can trigger a resource load (or a ping) when they hold a remote URL.
+    private static let resourceAttrs: Set<String> = ["src", "poster", "background", "data-src",
+                                                     "data-original", "ping", "manifest"]
+    /// Candidate lists (`url descriptor, url descriptor, …`) — every candidate is checked.
+    private static let srcsetAttrs: Set<String> = ["srcset", "imagesrcset"]
     /// Navigation/submission targets — dropped when remote or carrying a script-executing scheme.
-    private static let navAttrs = ["href", "action", "formaction"]
+    /// Any attribute *ending* in `href` is treated the same (catches SVG `xlink:href`).
+    private static let navAttrs: Set<String> = ["action", "formaction"]
+    /// Schemes that never touch the network. Anything else with a scheme counts as remote.
+    private static let localSchemes: Set<String> = ["data", "mailto", "about", "blob", "cid", "tel"]
 
     /// Sanitize one document's HTML. Falls back to the input if parsing fails (the WebView's
     /// own delegate is the backstop), but in practice AO3 XHTML parses cleanly.
@@ -42,20 +52,24 @@ public enum EpubSanitizer {
     static func sanitize(_ doc: Document) {
         for tag in strippedTags { _ = try? doc.select(tag).remove() }
 
-        // Remote stylesheet/preload/prefetch links can't resolve offline — drop them.
-        for link in (try? doc.select("link").array()) ?? [] where isRemote((try? link.attr("href")) ?? "") {
-            _ = try? link.remove()
-        }
-
         for el in (try? doc.getAllElements().array()) ?? [] {
-            for attr in resourceAttrs where isRemote((try? el.attr(attr)) ?? "") {
-                _ = try? el.removeAttr(attr)
-            }
-            // href/action/formaction: remote target, or a script-executing scheme (a
-            // `javascript:` link evaluates in-page and never reaches the WebView's nav delegate).
-            for attr in navAttrs {
-                let val = (try? el.attr(attr)) ?? ""
-                if isRemote(val) || hasDangerousScheme(val) { _ = try? el.removeAttr(attr) }
+            // Walk the element's *actual* attributes rather than probing a fixed list, so
+            // namespaced ones (`xlink:href`) can't slip past.
+            for attr in el.getAttributes()?.asList() ?? [] {
+                let key = attr.getKey(), k = key.lowercased(), val = attr.getValue()
+                let drop: Bool
+                if srcsetAttrs.contains(k) {
+                    drop = srcsetIsRemote(val)
+                } else if resourceAttrs.contains(k) {
+                    drop = isRemote(val)
+                } else if navAttrs.contains(k) || k.hasSuffix("href") {
+                    // Remote target, or a script-executing scheme (a `javascript:` link
+                    // evaluates in-page and never reaches the WebView's nav delegate).
+                    drop = isRemote(val) || hasDangerousScheme(val)
+                } else {
+                    drop = false
+                }
+                if drop { _ = try? el.removeAttr(key) }
             }
             // Inline `style="…"` that could pull in a resource (`url(…)` / `@import`) loads on
             // render with no click — drop the whole attribute.
@@ -67,14 +81,39 @@ public enum EpubSanitizer {
         }
     }
 
-    /// A URL/attribute value that would load over the network: absolute `http(s):`,
-    /// protocol-relative `//host/…`, or other remote schemes. Relative paths, `#fragments`,
-    /// and `data:`/`mailto:` (no network) are treated as safe and kept.
+    /// A URL/attribute value that could load over the network. Classified the way WebKit will
+    /// *resolve* it (WHATWG URL parsing), not by string prefix — the parser drops tabs/newlines
+    /// anywhere, trims C0/space, and treats `\` like `/`, so `https:evil.com`, `ht<TAB>tps://…`
+    /// and `https:\\evil.com` all load remotely even though none starts with `https://`.
+    /// Rule: protocol-relative (`//…`) or **any scheme** other than the no-network ones
+    /// (`data:`, `mailto:`, …) is remote; everything else is a relative path and is kept —
+    /// including a local href that merely *contains* `https://` in its query string.
     public static func isRemote(_ value: String) -> Bool {
-        let v = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        // WHATWG: strip ASCII tab/LF/CR anywhere, then leading/trailing C0 controls and space.
+        let noTabs = String.UnicodeScalarView(value.lowercased().unicodeScalars.filter {
+            $0 != "\t" && $0 != "\n" && $0 != "\r" })
+        let v = String(noTabs).trimmingCharacters(in: CharacterSet(charactersIn: Unicode.Scalar(0)...Unicode.Scalar(0x20)))
+            .replacingOccurrences(of: "\\", with: "/")
         guard !v.isEmpty else { return false }
-        return v.hasPrefix("http://") || v.hasPrefix("https://") || v.hasPrefix("//")
-            || v.hasPrefix("ftp:") || v.contains("https://") || v.contains("http://")
+        if v.hasPrefix("//") { return true }
+        guard let colon = v.firstIndex(of: ":") else { return false }
+        let scheme = v[..<colon]
+        // A scheme is ASCII: a letter, then letters/digits/`+-.`. Anything else before the
+        // first ":" (e.g. "ch 1:2.html", "1:2.html") isn't a scheme, so it's a relative path.
+        guard let first = scheme.unicodeScalars.first, first.isASCII,
+              CharacterSet.lowercaseLetters.contains(first),
+              scheme.unicodeScalars.allSatisfy({ $0.isASCII
+                  && (CharacterSet.alphanumerics.contains($0) || "+-.".unicodeScalars.contains($0)) })
+        else { return false }
+        return !localSchemes.contains(String(scheme))
+    }
+
+    /// `srcset`: a comma-separated list of `url [descriptor]` candidates — remote if any is.
+    static func srcsetIsRemote(_ value: String) -> Bool {
+        value.split(separator: ",").contains { candidate in
+            let url = candidate.split(whereSeparator: \.isWhitespace).first.map(String.init) ?? ""
+            return isRemote(url)
+        }
     }
 
     /// A scheme that *executes* rather than navigates — `javascript:`/`vbscript:` in an `href`

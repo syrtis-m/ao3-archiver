@@ -115,6 +115,10 @@ struct GalleryView: View {
         // Narrow: panels take over as a sheet rather than splitting the gallery.
         .sheet(item: narrowPanel) { panel in narrowTakeover(panel) }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { availableWidth = $0 }
+        // The gallery (and its `syncController`) is torn down when the archive folder changes.
+        // A sync still running there would keep hitting AO3 against the *old* archive with no
+        // way to cancel it — stop it with the view that owns it.
+        .onDisappear { syncController.cancel() }
         .onChange(of: isWide) { _, nowWide in
             // Leaving wide can't show both columns → keep filters, step the details aside.
             if !nowWide, showFilters, showInspector { showInspector = false }

@@ -513,6 +513,9 @@ public final class Store: @unchecked Sendable {
         /// is gone before we ever saved it" from "your saved copy is now the only one left"
         /// without a second query when the download loop hits a deleted work.
         public let hasDownload: Bool
+        /// The file we currently hold (relative to the archive root), if any — so a re-download
+        /// under a changed title can remove the superseded file instead of orphaning it.
+        public var epubPath: String? = nil
     }
 
     /// Works that still need an EPUB: AO3 works (not external) with no file yet, or whose
@@ -541,7 +544,8 @@ public final class Store: @unchecked Sendable {
                 ORDER BY id\(lim)
                 """)
             return rows.map { PendingWork(id: $0["id"], title: $0["title"], updatedAt: $0["updated_at"],
-                                          hasDownload: ($0["epub_path"] as String?) != nil) }
+                                          hasDownload: ($0["epub_path"] as String?) != nil,
+                                          epubPath: $0["epub_path"]) }
         }
     }
 
@@ -563,7 +567,8 @@ public final class Store: @unchecked Sendable {
                 ORDER BY id\(lim)
                 """)
             return rows.map { PendingWork(id: $0["id"], title: $0["title"], updatedAt: $0["updated_at"],
-                                          hasDownload: ($0["epub_path"] as String?) != nil) }
+                                          hasDownload: ($0["epub_path"] as String?) != nil,
+                                          epubPath: $0["epub_path"]) }
         }
     }
 
@@ -587,37 +592,42 @@ public final class Store: @unchecked Sendable {
         }
     }
 
+    /// A successful download is proof the work exists on AO3, so it also forgets any
+    /// deletion sightings and clears a stale `deleted_on_ao3_at` — otherwise two unrelated
+    /// transient 404s years apart would still add up to "confirmed deleted".
     public func markDownloaded(workID: Int, epubPath: String, updatedAt: Int?,
                                now: String = Store.nowISO()) throws {
         try dbQueue.write { db in
             try db.execute(sql: """
                 UPDATE work SET epub_path = ?, epub_updated_at = ?, download_state = 'downloaded',
-                    last_error = NULL, last_synced_at = ? WHERE id = ?
+                    last_error = NULL, deleted_on_ao3_at = NULL, last_synced_at = ? WHERE id = ?
                 """, arguments: [epubPath, updatedAt, now, workID])
+            try db.execute(sql: "DELETE FROM deleted_sighting WHERE work_id = ?", arguments: [workID])
         }
     }
 
+    /// Record a failed download. A work we **already hold a file for** stays `'downloaded'`:
+    /// a failed *refresh* (Cloudflare blip, expired cookie, cancelled run) doesn't make the
+    /// saved copy go away, and flipping it to `'failed'` hid the Read / Open / Kindle actions
+    /// and dropped the work out of the Saved filter while the file sat on disk. `last_error`
+    /// still records why the refresh failed.
     public func markFailed(workID: Int, error: String, now: String = Store.nowISO()) throws {
         try dbQueue.write { db in
             try db.execute(sql: """
-                UPDATE work SET download_state = 'failed', last_error = ?, last_synced_at = ?
+                UPDATE work SET
+                    download_state = CASE WHEN epub_path IS NOT NULL THEN 'downloaded' ELSE 'failed' END,
+                    last_error = ?, last_synced_at = ?
                 WHERE id = ?
                 """, arguments: [error, now, workID])
         }
     }
 
-    /// Record that a work's page now genuinely 404s on AO3 — the author deleted it. Only ever
-    /// called from the download loop when this happens to be hit (never a proactive probe).
-    /// `COALESCE` keeps the *first* detection timestamp on a repeat sighting. `download_state`
-    /// is left at `'downloaded'` when we already hold a copy — overwriting it to `'failed'`
-    /// would silently drop a "your saved copy is the only one left" work out of the Saved
-    /// filter facet, which is exactly backwards (these are the works worth finding).
     /// Record one 404 sighting for a work, latching `deleted_on_ao3_at` **only once
     /// `deletedConfirmThreshold` independent sightings agree**. Returns whether the work is
     /// now considered deleted, so the caller can word its log line honestly ("might be gone"
     /// vs. "is gone").
     ///
-    /// `COALESCE` keeps the *first* confirmation timestamp on a repeat sighting.
+    /// A repeat confirmation keeps the *first* timestamp (until the recheck window lapses).
     /// `download_state` is left alone when we already hold a copy — overwriting it to
     /// `'failed'` would drop a "your saved copy is the only one left" work out of the Saved
     /// filter facet, which is exactly backwards (these are the works worth finding).
@@ -633,8 +643,15 @@ public final class Store: @unchecked Sendable {
                 sql: "SELECT count(*) FROM deleted_sighting WHERE work_id = ?",
                 arguments: [workID]) ?? 0
             guard count >= Self.deletedConfirmThreshold else { return false }
+            // Keep the first confirmation timestamp — unless the recheck window has lapsed. A
+            // work re-confirmed after its window must get a *fresh* timestamp, or the queue
+            // exclusion (keyed on this column's age) would never re-apply and the work would be
+            // re-requested on every sync forever.
             try db.execute(sql: """
-                UPDATE work SET deleted_on_ao3_at = COALESCE(deleted_on_ao3_at, ?),
+                UPDATE work SET deleted_on_ao3_at = CASE
+                        WHEN deleted_on_ao3_at IS NULL
+                          OR deleted_on_ao3_at < datetime('now', '-\(Self.deletedRecheckDays) days')
+                        THEN ? ELSE deleted_on_ao3_at END,
                     download_state = CASE WHEN epub_path IS NOT NULL THEN download_state ELSE 'failed' END,
                     last_error = 'deleted on AO3', last_synced_at = ?
                 WHERE id = ?

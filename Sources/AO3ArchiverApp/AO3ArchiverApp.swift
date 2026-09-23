@@ -114,6 +114,8 @@ struct RootView: View {
 
     @State private var store: Store?
     @State private var openError: String?
+    /// The folder `store` (or `openError`) belongs to — see `chooseFolder`.
+    @State private var openedRoot: URL?
 
     private var archiveRoot: URL {
         if let env = ProcessInfo.processInfo.environment["AO3_ARCHIVE_DIR"], !env.isEmpty {
@@ -147,6 +149,7 @@ struct RootView: View {
     }
 
     private func open() {
+        openedRoot = archiveRoot
         do {
             // Create the archive folder first — when double-clicked there's no
             // AO3_ARCHIVE_DIR and the default Application Support path won't exist yet,
@@ -172,8 +175,16 @@ struct RootView: View {
         panel.allowsMultipleSelection = false
         panel.prompt = "Choose"
         if panel.runModal() == .OK, let url = panel.url {
-            store = nil            // show the spinner while the new folder opens
             storedPath = url.path
+            // Only blank the store (spinner) when the *effective* folder actually changes —
+            // `.task(id: archiveRoot)` is what re-opens it, and it doesn't fire for the same
+            // folder (or when AO3_ARCHIVE_DIR overrides the pick), which left "Opening
+            // archive…" spinning forever.
+            if archiveRoot.standardizedFileURL != openedRoot?.standardizedFileURL {
+                store = nil
+            } else if store == nil {
+                open()     // same folder after a failed open: retry instead of doing nothing
+            }
         }
     }
 }

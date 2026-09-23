@@ -8,7 +8,7 @@ gotchas that bite.
 
 ## What this is
 
-A native macOS app (**V1.2 shipped**) for browsing your AO3 bookmarks in a dark, liquid-glass
+A native macOS app (**V1.5 shipped**) for browsing your AO3 bookmarks in a dark, liquid-glass
 gallery with full local filtering — synced, browsed, and **read** entirely from the GUI — and
 selectively archiving the works you want to keep as `.epub` files. The core (parser, store, sync
 engine, gallery model, EPUB reader) is a tested Swift package; the SwiftUI app is a thin skin over
@@ -22,8 +22,8 @@ chapter/scroll modes, off-main prep, independent windows). See [ARCHITECTURE.md]
 
 ```sh
 swift build                 # build library + CLI + app
-swift run selftest          # headless parser + Store + gallery + reader checks (292 checks)
-swift test                  # swift-testing suite (77 tests, 6 suites) — run this; Xcode is installed
+swift run selftest          # headless parser + Store + gallery + reader checks (380 checks)
+swift test                  # swift-testing suite (108 tests, 8 suites) — run this; Xcode is installed
 swift run ao3archiver       # bounded CLI sync: paginate → ingest → expand series → download
 swift run AO3ArchiverApp    # SwiftUI gallery over the synced DB (reads AO3_ARCHIVE_DIR)
 ./Packaging/make-icon.sh    # render the liquid-glass app icon → Packaging/AppIcon.icns
@@ -47,7 +47,7 @@ politeness is a hard requirement.
 ```
 Sources/AO3Kit/        reusable, tested core the app sits on
   AO3Client.swift      THE ONLY networked component (rate limiter, 429/5xx backoff, cookie, UA)
-  RateLimiter.swift    single-flight token-slot limiter
+  RateLimiter.swift    process-wide (`.shared`) token-slot limiter — one slot clock for every client
   BlurbParser.swift    listing HTML → [WorkBlurb]; classifies work/external/series; pagination
   WorkDownloader.swift resolve + fetch the server-rendered EPUB; validates ZIP magic
   Store.swift          GRDB schema/migrations + FTS5; idempotent upserts; queues; presets; meta
@@ -58,11 +58,14 @@ Sources/AO3Kit/        reusable, tested core the app sits on
   EpubSanitizer.swift  strip remote refs / scripts / handlers from chapter bodies (no-network)
   ReaderSession.swift  pure reader state: section nav + bounds + progress; ReaderSettings + CSS
   ReaderModel.swift    @Observable reader coordinator: document + session + resume + off-main prep
+  KindleExport.swift   Send to Kindle: rewrite an EPUB with cover + info page + title badge
+  KindleCover.swift    render the Kindle cover JPEG (CoreText)
   Models.swift         WorkBlurb, BookmarkKind
-  ArchivePaths.swift   on-disk epub filename/sanitization
+  ArchivePaths.swift   on-disk epub filename/sanitization (length-bounded for APFS)
 Sources/ao3archiver/   CLI driver (bounded SyncEngine pass; top-level code, not @main)
 Sources/AO3ArchiverApp/  SwiftUI gallery + in-app sync + reader (thin Views over the tested model)
                          ReaderView.swift = WKWebView reader skin + independent reader windows
+                         SyncController/SyncSheet = GUI sync driver + sheet; CredentialStore = Keychain
 Sources/selftest/      headless assertions (parser + Store + gallery model) without XCTest
 Tests/AO3KitTests/     swift-testing suite + Fixtures/ (real captured AO3 HTML)
 Packaging/             make-app.sh, Info.plist, IconGen.swift + make-icon.sh
@@ -99,7 +102,7 @@ Packaging/             make-app.sh, Info.plist, IconGen.swift + make-icon.sh
 - **Faceted counts are computed against the set filtered by all OTHER dimensions** (a dimension
   never hides its own values).
 - **Perf invariants (V1.1):** `searchHaystack` and `titleSortKey`/`authorSortKey` are stored
-  (computed once in `init`) — don't make them computed again. The 9 facet passes run in parallel
+  (computed once in `init`) — don't make them computed again. The 10 facet passes run in parallel
   via `concurrentPerform` writing per-dimension slots; keep them deterministic (a test asserts
   parallel == serial). The memo (`MemoKey(filter, sort, gen)`) must stay correct — don't re-add
   per-dimension stored properties.

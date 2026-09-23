@@ -244,6 +244,18 @@ public final class EpubDocument {
     /// XHTML entities like `&nbsp;` no longer truncate the chapter, and there are no remote
     /// references because each body is `EpubSanitizer`-cleaned. Each section is wrapped in an
     /// anchored `<section>` so the TOC can scroll to it in scroll mode.
+    /// `dc:language` comes out of the OPF entity-*decoded*, so interpolating it raw into
+    /// `<html lang="…">` let a crafted value close the attribute and inject markup that never
+    /// passed through `EpubSanitizer`. A BCP 47 tag is only letters, digits and hyphens —
+    /// allowlist those and fall back to "en" otherwise.
+    public static func safeLanguageTag(_ raw: String?) -> String {
+        guard let raw else { return "en" }
+        let tag = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let ok = !tag.isEmpty && tag.count <= 35
+            && tag.unicodeScalars.allSatisfy { ($0.isASCII && CharacterSet.alphanumerics.contains($0)) || $0 == "-" }
+        return ok ? tag : "en"
+    }
+
     public func readerHTML(sectionIndices: [Int], css: String, scrollReporter: Bool = false) -> String {
         let body = sectionIndices.compactMap { s -> String? in
             guard sections.indices.contains(s) else { return nil }
@@ -255,7 +267,7 @@ public final class EpubDocument {
 
         return """
         <!DOCTYPE html>
-        <html lang="\(metadata.language ?? "en")">
+        <html lang="\(Self.safeLanguageTag(metadata.language))">
         <head>
         <meta charset="utf-8"/>
         <meta name="viewport" content="width=device-width, initial-scale=1"/>
@@ -275,16 +287,13 @@ public final class EpubDocument {
         readerHTML(sectionIndices: [sectionIndex], css: css)
     }
 
-    /// The whole work, all sections concatenated (infinite-scroll mode). Lazy *rendering* is via
-    /// the `content-visibility` CSS on each section (the browser skips off-screen layout/paint);
-    /// the reporter script posts the topmost-visible section index back for scroll-position resume.
+    /// The whole work, all sections concatenated (infinite-scroll mode). The reporter script
+    /// posts the topmost-visible section index back for scroll-position resume. (No
+    /// `content-visibility` here — it makes WebKit jump scroll position when scrolling up.)
     public func wholeWorkHTML(css: String) -> String {
         readerHTML(sectionIndices: Array(sections.indices), css: css, scrollReporter: true)
     }
 
-    /// One-way, debounced (250ms) scroll reporter: posts `{i: topmostVisibleSectionIndex}` to the
-    /// native `reader` message handler so the reader can persist where you actually scrolled to
-    /// (section-granular — robust across font changes, unlike a pixel fraction).
     /// WASD keyboard scrolling, mirroring the arrow keys the WebView already handles natively
     /// (w/s = up/down, a/d = left/right). Operates only on the already-clean, locally-generated
     /// document — pure `scrollBy`, no navigation, no message posting. Ignored while a text field
@@ -302,6 +311,9 @@ public final class EpubDocument {
     </script>
     """
 
+    /// One-way, debounced (250ms) scroll reporter: posts `{i: topmostVisibleSectionIndex}` to the
+    /// native `reader` message handler so the reader can persist where you actually scrolled to
+    /// (section-granular — robust across font changes, unlike a pixel fraction).
     static let scrollReporterScript = """
     <script>
     (function(){var t;function r(){var s=document.querySelectorAll('section.ao3-chapter'),b=0;

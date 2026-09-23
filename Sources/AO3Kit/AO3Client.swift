@@ -155,9 +155,9 @@ public final class AO3Client: @unchecked Sendable {
     /// stalled. (seconds, attempt, max)
     public var onRateLimit: @Sendable (TimeInterval, Int, Int) -> Void = { _, _, _ in }
 
-    public init(config: AO3Config) {
+    public init(config: AO3Config, limiter: RateLimiter = .shared) {
         self.config = config
-        self.limiter = RateLimiter(minInterval: config.minRequestInterval)
+        self.limiter = limiter
         let cfg = URLSessionConfiguration.ephemeral
         cfg.timeoutIntervalForRequest = config.requestTimeout
         cfg.httpShouldSetCookies = false          // we set the session cookie explicitly
@@ -210,7 +210,7 @@ public final class AO3Client: @unchecked Sendable {
             throw AO3Error.disallowedHost(request.url?.host ?? request.url?.absoluteString ?? "?")
         }
 
-        await limiter.waitTurn()
+        try await limiter.waitTurn(minInterval: config.minRequestInterval)
 
         var req = request
         if let cookie = AO3Config.sanitizeCookie(config.sessionCookie) {
@@ -237,7 +237,9 @@ public final class AO3Client: @unchecked Sendable {
                 return (data, http)
 
             case 429:
-                let wait = Self.retryAfter(http) ?? Self.backoff(attempt)
+                // A 429 must never retry *sooner* than the steady-state polite interval —
+                // bare backoff at attempt 0 is 1–2s, a quarter of the default 4s spacing.
+                let wait = max(config.minRequestInterval, Self.retryAfter(http) ?? Self.backoff(attempt))
                 await limiter.penalize(seconds: wait)
                 guard attempt < config.maxRetries else {
                     throw AO3Error.rateLimited(retryAfter: wait)
@@ -255,7 +257,7 @@ public final class AO3Client: @unchecked Sendable {
                         ? AO3Error.cloudflare(status: http.statusCode, shieldsUp: false)
                         : AO3Error.http(http.statusCode)
                 }
-                let wait = Self.backoff(attempt)
+                let wait = max(config.minRequestInterval, Self.backoff(attempt))
                 log("HTTP \(http.statusCode) — retrying in \(Int(wait))s (attempt \(attempt + 1)/\(config.maxRetries))")
                 onRateLimit(wait, attempt + 1, config.maxRetries)
                 try await sleep(wait)
@@ -267,9 +269,16 @@ public final class AO3Client: @unchecked Sendable {
         } catch let error as AO3Error {
             throw error
         } catch {
+            // Cancellation is not a network failure: surface it as `CancellationError` so
+            // callers (the download loop) can stop, instead of retrying it or — once retries
+            // run out — mis-reporting it as `AO3Error.network`. URLSession reports a cancelled
+            // task as `URLError.cancelled`, and our own sleeps throw `CancellationError`.
+            if error is CancellationError || (error as? URLError)?.code == .cancelled || Task.isCancelled {
+                throw CancellationError()
+            }
             // Transient network failure (e.g. timeout) — retry with backoff.
             guard attempt < config.maxRetries else { throw AO3Error.network(String(describing: error)) }
-            let wait = Self.backoff(attempt)
+            let wait = max(config.minRequestInterval, Self.backoff(attempt))
             log("network error (\(error.localizedDescription)) — retrying in \(Int(wait))s (attempt \(attempt + 1)/\(config.maxRetries))")
             try await sleep(wait)
             return try await perform(request, attempt: attempt + 1)

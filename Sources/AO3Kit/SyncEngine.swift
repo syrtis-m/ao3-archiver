@@ -26,6 +26,17 @@ public actor SyncEngine {
     /// is what guarantees two runs can't interleave over it.
     private var chapterGains: [Int: Int] = [:]
 
+    /// Identity recorded with each 404 sighting. Deletion needs `Store.deletedConfirmThreshold`
+    /// sightings from *distinct* sources, so every sync run must record under its own id —
+    /// with one fixed source the second sighting just overwrote the first and the threshold
+    /// could never be reached. Set per run in `run`/`incrementalSync`.
+    private var sightingSource = "local"
+    public static func sightingSource(runID: Int64) -> String { "run-\(runID)" }
+
+    /// Hard cap on pages fetched per series during expansion (AO3 paginates series at 20
+    /// works per page), so one enormous series can't turn into an unbounded crawl.
+    public static let maxSeriesPages = 10
+
     /// AO3's logged-out page chrome plausibly carries its own `action="/users/login"` form
     /// (it's site-wide navigation), so an anonymous sync hitting a legitimately-empty page
     /// must never be misread as "your cookie expired" — gate the login-page check on a
@@ -105,6 +116,7 @@ public actor SyncEngine {
                     onEvent: @Sendable (Event) -> Void = { _ in }) async throws -> Result {
         let runID = try store.beginSyncRun()
         chapterGains = [:]
+        sightingSource = Self.sightingSource(runID: runID)
         var result = Result()
         do {
             result = try await indexSync(listPath: listPath, options: options, onEvent: onEvent)
@@ -156,6 +168,7 @@ public actor SyncEngine {
                                 onEvent: @Sendable (Event) -> Void = { _ in }) async throws -> Result {
         let runID = try store.beginSyncRun()
         chapterGains = [:]
+        sightingSource = Self.sightingSource(runID: runID)
         let runStart = Int(Date().timeIntervalSince1970)
         let watermark = (try? store.getMeta(Self.lastIncrementalSyncKey)).flatMap { $0 }.flatMap { Int($0) }
         var result = Result()
@@ -261,7 +274,8 @@ public actor SyncEngine {
         var result = Result()
         // Resume from the saved page if asked and present; else start at page 1.
         var nextPath: String? = listPath
-        if options.resumeIndex, let saved = try store.getMeta(Self.resumeKey), !saved.isEmpty {
+        if options.resumeIndex, let saved = try store.getMeta(Self.resumeKey), !saved.isEmpty,
+           Self.sameListing(saved, listPath) {
             nextPath = saved
         }
         var total: Int?
@@ -294,6 +308,14 @@ public actor SyncEngine {
         return result
     }
 
+    /// Whether a saved resume cursor belongs to the listing we're about to index. The cursor
+    /// used to be followed verbatim, so after a run over a different list (the anonymous
+    /// demo tag, or another username) a Full sync silently resumed *that* list instead.
+    public static func sameListing(_ a: String, _ b: String) -> Bool {
+        func base(_ p: String) -> Substring { p.split(separator: "?", maxSplits: 1).first ?? "" }
+        return base(a) == base(b)
+    }
+
     /// Persist one parsed card: the item row (work/external/series) plus its bookmark row.
     /// A work whose chapter count grew since we last saw it is recorded in `chapterGains`, so
     /// the download pass that follows can report "gained N chapters" once the file is actually
@@ -318,16 +340,25 @@ public actor SyncEngine {
                              onEvent: @Sendable (Event) -> Void = { _ in }) async throws -> Result {
         var result = base
         for seriesID in try store.bookmarkedSeriesIDs().prefix(maxSeries) {
-            let html = try await client.getHTML(path: "/series/\(seriesID)?view_adult=true")
-            let members = try BlurbParser.parseListing(html: html)
-            for (i, member) in members.enumerated() where member.kind == .work {
-                try store.upsertWork(member)
-                try store.linkSeriesWork(seriesID: seriesID, workID: member.workID, part: i + 1)
+            // AO3 paginates a series' works; follow "Next" (bounded) so parts past the first
+            // page aren't silently dropped. `part` keeps counting across pages.
+            var nextPath: String? = "/series/\(seriesID)?view_adult=true"
+            var part = 0, pages = 0
+            while let path = nextPath, pages < Self.maxSeriesPages {
+                let html = try await client.getHTML(path: path)
+                for member in try BlurbParser.parseListing(html: html) {
+                    part += 1
+                    guard member.kind == .work else { continue }
+                    try store.upsertWork(member)
+                    try store.linkSeriesWork(seriesID: seriesID, workID: member.workID, part: part)
+                }
+                pages += 1
+                nextPath = try BlurbParser.nextPagePath(html: html)
             }
             result.seriesExpanded += 1
             // Member works land in the store (and the download queue); they're not folded
             // into the page-card breakdown, which counts only what the listing pages showed.
-            onEvent(.expandingSeries(id: seriesID, members: members.count))
+            onEvent(.expandingSeries(id: seriesID, members: part))
         }
         return result
     }
@@ -356,20 +387,27 @@ public actor SyncEngine {
                           onEvent: @Sendable (Event) -> Void) async throws -> (Int, Int, Int) {
         var downloaded = 0, failed = 0, deleted = 0
         for work in pending {
+            try Task.checkCancellation()
             do {
                 let data = try await downloader.downloadEPUB(workID: work.id)
                 let rel = try files.writeEPUB(data, workID: work.id, title: work.title)
                 try store.markDownloaded(workID: work.id, epubPath: rel, updatedAt: work.updatedAt)
+                files.removeSupersededEPUB(previous: work.epubPath, current: rel, workID: work.id)
                 downloaded += 1
                 onEvent(.downloaded(workID: work.id, bytes: data.count, title: work.title))
                 if let gained = chapterGains.removeValue(forKey: work.id) {
                     onEvent(.message("\(work.title) gained \(gained) chapter\(gained == 1 ? "" : "s") — saved"))
                 }
+            } catch is CancellationError {
+                // The user pressed Cancel. Stop the batch — the catch-all below used to park
+                // this as a per-work failure and carry on, marking every remaining queued work
+                // failed and then reporting the run "ok"/"Done".
+                throw CancellationError()
             } catch AO3Error.http(404) {
                 // A 404 is evidence, not proof — AO3 also 404s during deploys and for works
                 // flipped to registered-users-only. Only a corroborated sighting latches the
                 // work out of the download queues, and the log line says which we have.
-                let confirmed = (try? store.recordDeletedSighting(workID: work.id)) ?? false
+                let confirmed = (try? store.recordDeletedSighting(workID: work.id, source: sightingSource)) ?? false
                 failed += 1
                 let msg: String
                 if confirmed {

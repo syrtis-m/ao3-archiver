@@ -10,7 +10,10 @@ Date: 2026-08-10. Reviewed against `main` @ `bf6c583`, with a full read of `Sour
 > [01-correctness-and-durability.md](01-correctness-and-durability.md) §1–§3 for what shipped.
 > The new regression test for F1 was verified to **fail** without the fix
 > (`SQLite error 5: database is locked` on the `reading_position` INSERT) and pass with it.
-> F4–F13 remain open.
+> **Update 2026-09-22:** F5, F9, F10, F11 (GUI; the CLI keeps its explicit, env-bounded demo
+> listing), F12 and F13 are also fixed. F4, F6, F7 and F8 remain open. A follow-up review found
+> and fixed that the F2 fix's confirmation threshold was unreachable in production (every sighting
+> used the same `"local"` source) — see the commit that carries this note.
 
 **The headline.** This is a genuinely well-built codebase — the invariants in
 [ARCHITECTURE.md](../ARCHITECTURE.md) are real, enforced, and mostly tested, and the

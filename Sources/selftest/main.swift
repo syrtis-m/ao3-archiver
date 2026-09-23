@@ -1131,6 +1131,130 @@ if let kSrc = try? makeSyntheticEpub(useNCX: true),
     check("KindleExport round-trip", false)
 }
 
+// Review fixes (Sept 2026) — mirrors Tests/AO3KitTests/ReviewFixesTests.swift.
+print("Review fixes")
+do {
+    let bmURL = repoRoot.appendingPathComponent("Tests/AO3KitTests/Fixtures/bookmarks_page.html")
+    let card = try BlurbParser.parseListing(html: String(contentsOf: bmURL, encoding: .utf8))
+        .first { $0.kind == .work }!
+    func fresh() throws -> Store {
+        let st = try Store(inMemory: true)
+        try st.upsertWork(card)
+        try st.upsertBookmark(card, itemKind: .work, itemID: card.workID)
+        return st
+    }
+    func state(_ st: Store) throws -> String? {
+        try st.fetchAllListItems().first { $0.itemID == card.workID }?.downloadState
+    }
+
+    var st = try fresh()
+    try st.markFailed(workID: card.workID, error: "HTTP 525")
+    check("markFailed on an unsaved work → failed", try state(st) == "failed")
+    try st.markDownloaded(workID: card.workID, epubPath: "works/x.epub", updatedAt: card.updatedAt)
+    try st.markFailed(workID: card.workID, error: "HTTP 525")
+    check("a failed refresh keeps a saved work 'downloaded'", try state(st) == "downloaded")
+    check("…so it stays in the Saved filter", DownloadFilter.saved.matches(try state(st) ?? ""))
+
+    st = try fresh()
+    let s1 = SyncEngine.sightingSource(runID: 1), s2 = SyncEngine.sightingSource(runID: 2)
+    check("sighting sources differ per run", s1 != s2)
+    let a = try st.recordDeletedSighting(workID: card.workID, source: s1)
+    let b = try st.recordDeletedSighting(workID: card.workID, source: s1)
+    let c = try st.recordDeletedSighting(workID: card.workID, source: s2)
+    check("two 404s in one run don't confirm; a second run does", !a && !b && c)
+
+    st = try fresh()
+    try st.recordDeletedSighting(workID: card.workID, source: "run-1")
+    try st.markDownloaded(workID: card.workID, epubPath: "works/x.epub", updatedAt: card.updatedAt)
+    check("a successful download clears sightings", try st.deletedSightingCount(workID: card.workID) == 0)
+    check("…so one later 404 doesn't confirm", try st.recordDeletedSighting(workID: card.workID, source: "run-9") == false)
+
+    st = try fresh()
+    try st.recordDeletedSighting(workID: card.workID, source: "run-1")
+    try st.recordDeletedSighting(workID: card.workID, source: "run-2")
+    let stale = ISO8601DateFormatter().string(
+        from: Date().addingTimeInterval(-Double(Store.deletedRecheckDays + 1) * 86_400))
+    try st.backdateDeletedConfirmation(workID: card.workID, to: stale)
+    check("expired exclusion re-queues the work", try st.worksNeedingDownload().contains { $0.id == card.workID })
+    try st.recordDeletedSighting(workID: card.workID, source: "run-3")
+    check("re-confirmation after the window re-excludes it",
+          !(try st.worksNeedingDownload().contains { $0.id == card.workID }))
+} catch {
+    check("review-fix Store checks ran without throwing (\(error))", false)
+}
+
+check("resume cursor applies to the same listing",
+      SyncEngine.sameListing("/users/a/bookmarks?page=7", "/users/a/bookmarks?page=1"))
+check("resume cursor ignored for a different listing",
+      !SyncEngine.sameListing("/tags/Good%20Omens%20(TV)/works?page=7", "/users/a/bookmarks?page=1")
+      && !SyncEngine.sameListing("/users/b/bookmarks?page=7", "/users/a/bookmarks?page=1"))
+
+let zalgo = String(repeating: "a\u{0301}\u{0302}\u{0303}\u{0304}", count: 120)
+check("combining-mark title stays within 255 UTF-16 units",
+      ArchivePaths.epubFilename(workID: 123456789, title: zalgo).utf16.count <= 255)
+check("leading dots don't make a hidden file", !ArchivePaths.sanitize(".hack//SIGN").hasPrefix("."))
+check("all-dots title → untitled", ArchivePaths.sanitize("...") == "untitled")
+
+do {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("rf-\(UUID())")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let files = FileStore(root: root)
+    let old = try files.writeEPUB(Data("PK\u{3}\u{4}".utf8), workID: 7, title: "Old Name")
+    let new = try files.writeEPUB(Data("PK\u{3}\u{4}".utf8), workID: 7, title: "New Name")
+    let other = try files.writeEPUB(Data("PK\u{3}\u{4}".utf8), workID: 8, title: "Old Name")
+    files.removeSupersededEPUB(previous: other, current: new, workID: 7)
+    files.removeSupersededEPUB(previous: new, current: new, workID: 7)
+    files.removeSupersededEPUB(previous: old, current: new, workID: 7)
+    check("superseded EPUB removed after a title change", !files.fileExists(relativePath: old))
+    check("current EPUB and other works' files kept",
+          files.fileExists(relativePath: new) && files.fileExists(relativePath: other))
+} catch {
+    check("superseded-file checks ran without throwing (\(error))", false)
+}
+
+check("search matches warnings",
+      WorkListItem(itemID: 1, kind: .work, sourcePath: "/works/1", title: "T", author: "A",
+                   warnings: ["Major Character Death"]).searchHaystack.contains("major character death"))
+
+check("isRemote catches WHATWG-resolved remote forms",
+      ["https:evil.com/x.png", "ht\ttps://evil.com/x", "https:\\\\evil.com\\x",
+       "  HTTPS://evil.com", "ftp://x", "wss://x"].allSatisfy(EpubSanitizer.isRemote))
+check("isRemote keeps local refs (incl. a query containing https://)",
+      !["images/a.png", "ch2.xhtml?from=https://x", "#top", "data:image/png;base64,AA",
+        "mailto:a@b.c", "ch 1:2.html", ""].contains(where: EpubSanitizer.isRemote))
+let svgClean = EpubSanitizer.sanitize("""
+    <html><body>
+    <svg><image xlink:href="https://evil.example/a.png"/><a xlink:href="javascript:alert(1)">x</a>
+    <set attributeName="href" to="https://evil.example/s"/><animate attributeName="href" values="javascript:x"/></svg>
+    <img srcset="local.png 1x, https:evil.example/b.png 2x"/><img srcset="local.png 1x, local@2x.png 2x"/>
+    <link rel="stylesheet" href="local.css"/><a ping="https://evil.example/p" href="ch2.xhtml">n</a>
+    </body></html>
+    """)
+check("sanitizer strips SVG xlink:href / set / animate / srcset / ping remotes",
+      !svgClean.contains("evil.example") && !svgClean.lowercased().contains("javascript:"))
+check("sanitizer drops every <link>", !svgClean.lowercased().contains("<link"))
+check("sanitizer keeps local srcset + local href", svgClean.contains("local@2x.png") && svgClean.contains("ch2.xhtml"))
+
+check("language tag passes a real BCP 47 tag", EpubDocument.safeLanguageTag("en-GB") == "en-GB")
+check("language tag defaults when missing", EpubDocument.safeLanguageTag(nil) == "en")
+check("language tag can't inject markup", EpubDocument.safeLanguageTag("en\"><script>fetch(1)</script>") == "en")
+
+// Semaphore rather than a top-level `await`: an `await` here would turn all of main.swift
+// into an async context and break the DispatchSemaphore waits in the WAL check above.
+final class LimiterProbe: @unchecked Sendable { var threw = false }
+let limiterProbe = LimiterProbe(), limiterDone = DispatchSemaphore(value: 0)
+let limiterTask = Task {
+    defer { limiterDone.signal() }
+    let limiter = RateLimiter()
+    do {
+        try await limiter.waitTurn(minInterval: 10)
+        try await limiter.waitTurn(minInterval: 10)   // must sleep ~10s — cancellation cuts it
+    } catch { limiterProbe.threw = true }
+}
+limiterTask.cancel()
+limiterDone.wait()
+check("rate limiter throws when cancelled (no unspaced requests)", limiterProbe.threw)
+
 print("")
 if failures == 0 {
     print("ALL CHECKS PASSED")
