@@ -1,135 +1,169 @@
 # CLAUDE.md
 
-Contributor guide for working in this repo. **Architecture lives in
-[ARCHITECTURE.md](ARCHITECTURE.md)** (the single source of design truth — read it first);
-[README.md](README.md) is user-facing; [plans/](plans/README.md) holds the roadmap and forward-looking plans. This file is the
-day-to-day operational guide: how to build/test/run, where things are, and the conventions and
-gotchas that bite.
+The day-to-day guide for working in this repo: how to build, test and run it, where things live,
+and the rules and gotchas that matter. For *why* things are built the way they are, read
+[ARCHITECTURE.md](ARCHITECTURE.md) (the design source of truth). [README.md](README.md) is for
+users; [plans/](plans/README.md) holds the roadmap.
 
 ## What this is
 
-A native macOS app (**V1.5 shipped**) for browsing your AO3 bookmarks in a dark, liquid-glass
-gallery with full local filtering — synced, browsed, and **read** entirely from the GUI — and
-selectively archiving the works you want to keep as `.epub` files. The core (parser, store, sync
-engine, gallery model, EPUB reader) is a tested Swift package; the SwiftUI app is a thin skin over
-it. V1.1 added the performance pass (scaled to ~20k
-bookmarks: stored haystack, debounced search, parallel facet passes, coalesced sync reloads) and a
-responsive layout. **V1.2 added the in-app Liquid-Glass EPUB reader** (TOC-section navigation,
-chapter/scroll modes, off-main prep, independent windows). See [ARCHITECTURE.md](ARCHITECTURE.md)
-§10 for the reader's design.
+A native macOS app (currently **1.6.1**) for browsing your AO3 bookmarks in a dark Liquid Glass
+gallery with full local filtering, reading them in a built-in EPUB reader, and saving the works you
+want to keep as `.epub` files. Syncing, browsing, downloading and reading all happen in the app;
+a bounded CLI shares the same engine and archive folder.
 
-## Build / test / run
+The core (client, parser, store, sync engine, gallery model, reader, Kindle export) is the tested
+`AO3Kit` package. The SwiftUI app is a thin skin over it.
+
+## Build, test, run
 
 ```sh
-swift build                 # build library + CLI + app
-swift run selftest          # headless parser + Store + gallery + reader checks (443 checks)
-swift test                  # swift-testing suite (119 tests, 11 suites) — run this; Xcode is installed
-swift run ao3archiver       # bounded CLI sync: paginate → ingest → expand series → download
-swift run AO3ArchiverApp    # SwiftUI gallery over the synced DB (reads AO3_ARCHIVE_DIR)
-./Packaging/make-icon.sh    # render the liquid-glass app icon → Packaging/AppIcon.icns
-./Packaging/make-app.sh     # assemble a real, double-clickable "AO3 Archiver.app"
+swift build                 # library + CLI + app
+swift test                  # swift-testing suite (Xcode is installed here)
+swift run selftest          # the same checks, framework-free
+swift run ao3archiver       # bounded CLI sync — talks to the real AO3; don't run it as a check
+./Packaging/make-icon.sh    # render the app icon → Packaging/AppIcon.icns
+./Packaging/make-app.sh     # build "AO3 Archiver.app" into build/ (version from AO3Config.toolVersion)
 ```
 
-**Run `swift test` — Xcode is installed in this environment, so the swift-testing suite works.**
-Engine-level behaviour goes in `AO3KitTestSupport` scenarios (run by both runners against a stub
-AO3 — never the network).
-`swift run selftest` is the **framework-free** equivalent (same assertions, same fixtures) for
-toolchains without Xcode (Command-Line-Tools only, where `swift test` fails with "no such module
-'Testing'"). Here, run **both**: `swift test` for the full suite and `swift run selftest` as the
-lockstep mirror. **Keep the two in lockstep** when changing the parser, store, or model.
+**Run both test runners and treat either failing as a failure.** `selftest` exists for toolchains
+without Xcode (where `swift test` fails with "no such module 'Testing'"), and the two must stay in
+lockstep. The easy way to keep them there: put new checks in **`Sources/AO3KitTestSupport/`**
+(`EngineScenarios`, `ModelChecks`, `ReaderScenarios`), which both runners execute. Anything that
+spans the sync engine belongs there, run against **`StubAO3`**, a `URLProtocol` fake of AO3. Tests
+never touch the network.
 
-Config is via environment variables (see README's developer section): `AO3_USERNAME`,
-`AO3_SESSION_COOKIE`, `AO3_ARCHIVE_DIR`, `AO3_MIN_INTERVAL`, `AO3_USER_AGENT`, `AO3_LIST_PATH`,
-and sync bounds `AO3_MAX_PAGES`, `AO3_MAX_DOWNLOADS`, `AO3_EXPAND_SERIES`, `AO3_MAX_SERIES`.
-**Bounds default low** (2 pages / 3 downloads / 50 series) — never crawl all pages by accident;
-politeness is a hard requirement.
+When you pipe test output through `grep`, check the exit status of the test run itself; a
+matching `grep` will happily report success on a failing suite.
+
+The CLI is configured by environment variables: `AO3_USERNAME`, `AO3_SESSION_COOKIE`,
+`AO3_ARCHIVE_DIR`, `AO3_MIN_INTERVAL`, `AO3_USER_AGENT`, `AO3_LIST_PATH`, and the bounds
+`AO3_MAX_PAGES`, `AO3_MAX_DOWNLOADS`, `AO3_EXPAND_SERIES`, `AO3_MAX_SERIES`. **Bounds default
+low** (2 pages, 3 downloads, 50 series). Politeness to AO3 is a hard requirement.
 
 ## Layout
 
 ```
-Sources/AO3Kit/        reusable, tested core the app sits on
-  AO3Client.swift      THE ONLY networked component (rate limiter, 429/5xx backoff, cookie, UA)
-  RateLimiter.swift    process-wide (`.shared`) token-slot limiter — one slot clock for every client
-  BlurbParser.swift    listing HTML → [WorkBlurb]; classifies work/external/series; pagination
-  WorkDownloader.swift resolve + fetch the server-rendered EPUB; validates ZIP magic
-  Store.swift          GRDB schema/migrations + FTS5; idempotent upserts; queues; presets; meta
-  FileStore.swift      archive folder + works/<id> - title.epub layout
-  SyncEngine.swift     orchestration: bounded paginate → ingest → expand series → download
-  GalleryModel.swift   read/filter/sort/facet engine + @Observable view model (below the SwiftUI line)
-  EpubDocument.swift   .epub (ZIPFoundation) → spine + TOC sections + generated reader text/html
-  EpubSanitizer.swift  strip remote refs / scripts / handlers from chapter bodies (no-network)
-  ReaderSession.swift  pure reader state: section nav + bounds + progress; ReaderSettings + CSS
-  ReaderModel.swift    @Observable reader coordinator: document + session + resume + off-main prep
-  KindleExport.swift   Send to Kindle: rewrite an EPUB with cover + info page + title badge
-  KindleCover.swift    render the Kindle cover JPEG (CoreText)
-  Presentation.swift   display decisions (isSaved, badge/banner wording, statsLine, SaveVisiblePlan)
-  Models.swift         WorkBlurb, BookmarkKind
-  ArchivePaths.swift   on-disk epub filename/sanitization (length-bounded for APFS)
-Sources/ao3archiver/   CLI driver (bounded SyncEngine pass; top-level code, not @main)
-Sources/AO3ArchiverApp/  SwiftUI gallery + in-app sync + reader (thin Views over the tested model)
-                         ReaderView.swift = WKWebView reader skin + independent reader windows
-                         SyncController/SyncSheet = GUI sync driver + sheet; CredentialStore = Keychain
-Sources/AO3KitTestSupport/  StubAO3 (URLProtocol fake AO3) + scenarios shared by BOTH runners
-Sources/selftest/      headless assertions (parser + Store + gallery model) without XCTest
-Tests/AO3KitTests/     swift-testing suite + Fixtures/ (real captured AO3 HTML)
-Packaging/             make-app.sh, Info.plist, IconGen.swift + make-icon.sh
+Sources/AO3Kit/            the tested core
+  AO3Client.swift          the ONLY networked component: host allowlist, cookie, UA, retries/backoff
+  RateLimiter.swift        one process-wide slot clock (`.shared`) for every client
+  BlurbParser.swift        listing HTML → [WorkBlurb]; work/external/series; pagination; totals
+  WorkDownloader.swift     find this work's EPUB link, fetch it, check it's a ZIP
+  Store.swift              GRDB schema + migrations; upserts; download queues; pruning; presets; meta
+  FileStore.swift          archive folder layout: archive.sqlite + works/<id> - <title>.epub
+  SyncEngine.swift         (actor) index → reconcile → expand series → download
+  GalleryModel.swift       load/filter/sort/facets + the @Observable gallery view model
+  Presentation.swift       display decisions the views would otherwise make (isSaved, badges, …)
+  EpubDocument.swift       .epub → spine, TOC sections, generated reader HTML
+  EpubSanitizer.swift      strips anything that could make the reader touch the network
+  ReaderSession.swift      pure reader state (section, bounds, progress) + ReaderSettings/CSS
+  ReaderModel.swift        @MainActor reader coordinator: resume, off-main extraction and prep
+  KindleExport.swift       Send to Kindle: cover + info page + title badge
+  KindleCover.swift        renders the cover JPEG (CoreText)
+  Models.swift             WorkBlurb, BookmarkKind
+  ArchivePaths.swift       safe EPUB filenames (bounded for APFS)
+Sources/AO3ArchiverApp/    SwiftUI app: gallery, sidebar, detail panel, sync sheet, reader windows
+                           SyncController = GUI sync driver; CredentialStore = Keychain
+Sources/ao3archiver/       CLI (top-level code, one bounded SyncEngine.run)
+Sources/AO3KitTestSupport/ StubAO3 + scenarios shared by both test runners
+Sources/selftest/          framework-free test runner
+Tests/AO3KitTests/         swift-testing suite + Fixtures/ (real captured AO3 HTML)
+Packaging/                 make-app.sh, Info.plist, icon generation
 ```
 
-## Conventions (the rules the codebase leans on)
+## Rules the codebase leans on
 
-- **Built from scratch.** `ao3_api` / `ao3downloader` document AO3 *behaviour* only — no vendored
-  code.
-- **All network access goes through `AO3Client`.** Nothing else constructs URLSession requests;
-  that's where politeness/backoff/cookie/UA live.
-- **All branching logic lives below the SwiftUI line, in `AO3Kit`.** Anything with an `if` belongs
-  in the model, not a View — that's what keeps it testable in a headless environment.
-- **Parser fails soft per-field;** selectors are pinned to fixtures. When AO3 markup drifts, update
-  the fixture + expectations together. One bad card must never abort a whole page.
-- **Honest User-Agent** (`AO3Config.defaultUserAgent`): the requester's AO3 username when known +
-  contact `syrtis@sysd.info`; no forged browser UA.
-- **The cookie/UA never leave AO3.** `AO3Client.perform` refuses any request whose host isn't AO3
-  (`isAO3Host`: exact apex or `.`-prefixed subdomain — *not* a bare suffix) before forming it, the
-  redirect delegate cancels off-AO3 hops, and the EPUB-link selector is anchored to
-  `a[href^=/downloads/]`. A hostile work page must never be able to exfiltrate the session cookie.
+- **Built from scratch.** `ao3_api` and `ao3downloader` were used to learn how AO3 *behaves*;
+  no code is vendored.
+- **All network access goes through `AO3Client`.** Politeness, backoff, the cookie and the
+  User-Agent live there and nowhere else.
+- **Branching logic lives in `AO3Kit`, not in views.** If it has an `if`, it belongs in the model
+  (often `Presentation.swift`), where it can be tested headlessly.
+- **The parser fails soft, field by field.** Selectors are pinned to captured fixtures; when AO3's
+  markup changes, update the fixture and the expectations together. One bad card must never abort
+  a page.
+- **An honest User-Agent**: `ao3-archiver/<toolVersion>`, the user's AO3 username when known, and
+  the contact address. Never a fake browser UA.
+- **The cookie never leaves AO3.** `AO3Client.perform` refuses any non-AO3 host before building
+  the request (`isAO3Host` matches the apex or a `.`-prefixed subdomain, not a bare suffix), the
+  redirect delegate cancels off-AO3 hops, and an EPUB link must be `/downloads/<thisWorkID>/…`.
+- **The version lives in one place**, `AO3Config.toolVersion`. The User-Agent reports it and
+  `make-app.sh` stamps it into the bundle.
 
-## Invariants you must not break (full rationale in ARCHITECTURE.md)
+## Invariants you must not break
 
-- **Idempotent upserts preserve archive state:** `upsertWork` never touches `epub_path` /
-  `epub_updated_at` / `download_state`. "Needs download" is a query, not a flag. `updated_at` is
-  the unix ts (the download cache key), not ISO.
-- **`bookmark` has two unique constraints** (`bookmark_id` PK + `UNIQUE(item_kind, item_id)`):
-  `upsertBookmark` drops any stale row for the same item before insert, so a re-bookmark (new id,
-  same work) can't abort a sync.
-- **Filter dimensions: an emptied dimension drops its key** (never an empty `Set`) — `setInclude` /
-  `setExclude` / `cycle` / `setBound` enforce it, so `isActive` / `==` / the memo key / preset
-  round-trips stay honest. Adding a dimension is one `FacetDimension` case + one `values(for:)` line.
-- **Faceted counts are computed against the set filtered by all OTHER dimensions** (a dimension
-  never hides its own values).
-- **Perf invariants (V1.1):** `searchHaystack` and `titleSortKey`/`authorSortKey` are stored
-  (computed once in `init`) — don't make them computed again. The 10 facet passes run in parallel
-  via `concurrentPerform` writing per-dimension slots; keep them deterministic (a test asserts
-  parallel == serial). The memo (`MemoKey(filter, sort, gen)`) must stay correct — don't re-add
-  per-dimension stored properties.
-- **Reader invariants (V1.2):** the reader navigates **TOC sections, not raw spine** (front
-  matter / title page fold into the first unit). It renders a **generated `text/html`** doc, never
-  the EPUB's own `.xhtml` (lenient parser → `&nbsp;` doesn't truncate the chapter). The
-  no-remote-requests guarantee is enforced by **`EpubSanitizer` in the DOM**, not the WebView nav
-  delegate (which can't see subresource loads). Resume is **section-granular** (a pixel fraction
-  drifts). The reader reloads on a content **version**, not the file path (the path is reused). The
-  `WKScriptMessageHandler` must be removed in `dismantleNSView`. Don't reintroduce
-  `content-visibility` — it makes WebKit jump scroll position when scrolling up.
+The rationale for each is in ARCHITECTURE.md.
+
+**Data**
+- **The archive is one file.** `archive.sqlite` uses SQLite's rollback journal, not WAL, so the
+  folder never grows `-wal`/`-shm` sidecars. The whole app shares **one connection**
+  (`Store.shared(atPath:)`); the 5-second busy timeout covers the CLI running alongside it.
+- **Upserts never touch archive state.** `upsertWork` leaves `epub_path`, `epub_updated_at` and
+  `download_state` alone. "Needs download" is a query, never a stored flag. `updated_at` is the
+  unix timestamp AO3 embeds in each card and is the download cache key.
+- **A saved work stays saved.** `markFailed` and deletion confirmation never demote a work that has
+  an `epub_path`; the UI decides "saved" from the file (`WorkListItem.isSaved`), not from
+  `download_state`.
+- **Ingest is one transaction per card** (`upsertWorkAndBookmark`, `upsertSeriesMember`), so the
+  orphan sweep can never catch a half-written card.
+- **`bookmark` has two unique constraints** (the `bookmark_id` key and `(item_kind, item_id)`).
+  `upsertBookmark` deletes a stale row for the same item first, so a re-bookmark can't abort a
+  sync.
+- **Migrations from v6 on use `foreignKeyChecks: .immediate`.** GRDB's default whole-database check
+  after a migration aborts on any pre-existing dangling row, and a real archive had one.
+
+**Sync**
+- **Cancellation propagates.** `AO3Client` turns a cancelled request into `CancellationError`, the
+  limiter's wait throws, and the download loop rethrows it. Never let a catch-all record
+  cancellation as a per-work failure.
+- **Deletion needs two separate runs to agree.** Each run records its sighting under its own
+  source (`SyncEngine.sightingSource(runID:)`); a successful download clears sightings; the
+  exclusion expires after 90 days.
+- **Removing bookmarks is guarded by `SyncEngine.pruneDecision`.** It only prunes after a Full
+  sync that had a cookie, read from page 1 to the last page, saw exactly as many bookmarks as AO3's
+  own total, saw private bookmarks if you have any, and would remove no more than 5% (or 25,
+  whichever is larger).
+  Works with a saved file, reading position or series link are flagged, never deleted.
+- **One download path.** The sync loop, Save Visible and the detail panel's Download button all go
+  through `SyncEngine.downloadWork`.
+
+**Gallery**
+- **An emptied filter dimension drops its key** (never an empty `Set`), so `isActive`, `==`, the
+  memo key and preset round-trips stay honest. Adding a dimension is one `FacetDimension` case plus
+  one `values(for:)` line.
+- **Facet counts are computed against everything filtered by the *other* dimensions**, so a
+  dimension never hides its own values.
+- **Performance:** `searchHaystack` and the sort keys are computed once in `init`. The 10 facet
+  passes run in parallel into per-dimension slots (a test checks parallel equals serial). Keep the
+  memo key `MemoKey(filter, sort, gen)` correct.
+
+**Reader**
+- Navigate **TOC sections, not raw spine items** (front matter folds into the first section).
+- Render a **generated `text/html` document**, never the EPUB's own XHTML (the lenient parser keeps
+  `&nbsp;` from truncating chapters).
+- The no-network guarantee is enforced by **`EpubSanitizer` in the DOM**; the WebView's navigation
+  delegate can't see subresource loads.
+- Resume is **section-granular**, and the view reloads on a content **version** (the file path is
+  reused).
+- Remove the `WKScriptMessageHandler` in `dismantleNSView`. Don't reintroduce `content-visibility`;
+  it makes WebKit jump when scrolling up.
+- ZIPFoundation's `Archive` isn't thread-safe: off-main work opens its own handle
+  (`EpubDocument.extractResources`) instead of sharing the document's.
 
 ## Gotchas
 
-- **Verification ceiling is `swift build` for the views.** The headless env compiles SwiftUI but
-  can't render it — the view layer is compile-verified only; the user runs it and reports back.
-  **Don't `swift run AO3ArchiverApp` as a check** — it needs a window server and hangs headlessly.
-  Keep anything with an `if` in the model (tested), not the View.
-- **The sidebar is a `ScrollView`, not a `List`** — a List is NSTableView-backed and reloads
-  mid-event when a filter row mutates the model → reentrancy crash.
-- **Archive folder resolution** (where `archive.sqlite` + `works/*.epub` live), highest priority
-  first: `AO3_ARCHIVE_DIR` → the picked folder (UserDefaults `archiveFolderPath`) → default
-  `~/Documents/ao3archive`. Plain on-disk path (non-sandboxed) — never store real data in `/tmp`.
-- **Bare-`swift run` runtime nudges:** without a `.app` bundle the app needs
-  `NSApp.setActivationPolicy(.regular)` + activate (else keystrokes go to the terminal) and a
-  forced `.resizable` `NSWindow`. The bundle (`make-app.sh`) makes these unnecessary.
+- **Views are compile-checked only.** The headless environment builds SwiftUI but can't render it,
+  so the user click-tests the UI. Don't `swift run AO3ArchiverApp` as a check; it needs a window
+  server and hangs.
+- **The user's real archive is `~/Documents/ao3archive`.** Read it with `sqlite3 -readonly` to
+  ground decisions in real data. Anything that changes it (a migration, a new on-disk format, a
+  cleanup) gets a dry run on a copy in the scratchpad first, with a backup, and with the app quit.
+  A migration once passed every test and still failed on the real archive.
+- **The sidebar is a `ScrollView`, not a `List`.** A `List` is NSTableView-backed and reloads
+  mid-event when a filter row changes the model, which crashes.
+- **Archive folder resolution**, highest priority first: `AO3_ARCHIVE_DIR`, then the folder picked
+  in the app (UserDefaults `archiveFolderPath`), then `~/Documents/ao3archive`. The app isn't
+  sandboxed, so these are plain paths. Never keep real data in `/tmp`.
+- **Running without the `.app` bundle** (`swift run AO3ArchiverApp`) needs
+  `NSApp.setActivationPolicy(.regular)`, an explicit activate, and a forced `.resizable` window.
+  The bundle built by `make-app.sh` needs none of that.

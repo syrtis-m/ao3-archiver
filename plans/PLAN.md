@@ -1,137 +1,104 @@
 # Roadmap
 
-What's shipped and what's next. For **how it's built**, see [ARCHITECTURE.md](../ARCHITECTURE.md).
-For **how to use it**, see [README.md](../README.md).
+What's shipped and what's next. For how it's built, see [ARCHITECTURE.md](../ARCHITECTURE.md); for
+how to use it, [README.md](../README.md).
 
 ---
 
-## Goals & non-goals
+## Goals and non-goals
 
 **Goals**
-- A dark, liquid-glass gallery that mirrors AO3's bookmarks UI, with **better, fully-local
-  filtering** — instant, multi-facet, combinable — plus an in-app reader.
-- **Selectively archive** the works you want to keep as real `.epub` files in a folder you control
-  — saved as you browse or in a batch, never an all-or-nothing crawl.
-- Work **with** a session cookie (private/restricted bookmarks) and **without** one (public only).
-- Snappy at real scale: designed for ~20k bookmarks.
+- A dark Liquid Glass gallery modelled on AO3's bookmarks page, with **better, fully local
+  filtering**: instant, multi-facet and combinable, plus a built-in reader.
+- **Selective archiving:** save the works you want as real `.epub` files in a folder you control,
+  one at a time or in batches, never as an all-or-nothing crawl.
+- Work with a session cookie (private and restricted bookmarks) and without one (public only).
+- Stay fast at real scale: designed for about 20,000 bookmarks.
 
 **Non-goals**
-- Not a general AO3 reader/commenter/poster — read-only browse + selective backup.
-- Not a scraper of other people's libraries or a bulk-dataset tool (against AO3 policy). Scope is
-  **your own bookmarks**.
-- No EPUB construction — AO3 renders EPUBs server-side; we download them as-is.
+- Not a general AO3 client. No reading comments, posting or kudos; just browsing and backing up.
+- Not a scraper of other people's libraries or a dataset tool, which AO3's policies rule out. The
+  scope is **your own bookmarks**.
+- No EPUB building. AO3 renders EPUBs itself; we download them as they are.
 
 ---
 
-## Status: V1.5 shipped
+## Shipped
 
-The tool meets its goal — browse and filter your AO3 bookmarks locally, offline, and snappily, and
-selectively save the works you want to keep as EPUBs. You **sync, browse, and read entirely from
-the GUI**, no terminal required.
+### 1.6.1: reliability and staying in step (current)
 
-**V1.5 (this release) — cookie-expiry mid-sync + deleted-work detection:**
-- **Cookie-expiry mid-sync.** A bookmarks/series listing fetch that bounces to AO3's login form
-  (cookie missing, malformed, or expired) is now detected and **pauses the sync** instead of
-  silently completing as if nothing was wrong — the previous failure mode looked like "no new
-  bookmarks" with zero indication anything was off. The sync sheet shows a re-paste-cookie prompt;
-  resuming continues from exactly where it paused (the full-sync resume cursor is already
-  persisted; a Quick sync just re-walks its cheap, idempotent catch-up). Gated on a cookie having
-  actually been supplied, so an anonymous sync of a legitimately-empty page is never misread as
-  "expired."
-- **Sync activity log tells you what changed**, not just page counts: a work whose chapter count
-  grew is logged as "gained N chapters — saved" once the file is actually re-downloaded; a work
-  that now 404s on AO3 is logged as deleted, distinct from an auth/transient failure.
-- **"Only copy" badge.** A work confirmed gone from AO3 (`deleted_on_ao3_at`, set only when the
-  normal download/redownload flow happens to hit a 404 — never proactively probed) gets a red
-  badge on its card and a banner on its detail page: "your saved copy is the only one left" if you
-  have it, "deleted before you could save it" if you don't.
-- **Caveat:** the login-page markers and the "404 means deleted" assumption are best-effort,
-  unverified against a real expired cookie / a real deleted work — unlike the rest of the parser,
-  they aren't pinned to a captured fixture. Update them if AO3's behavior turns out to differ.
+1.6.0 was pulled after a day and replaced by 1.6.1, which keeps its features but stores the archive
+as a single file again (see [ARCHITECTURE §3](../ARCHITECTURE.md#3-data-layer-store-filestore)).
 
-**V1.4 — Send to Kindle:**
-- A one-button **Send to Kindle** on any saved work: generates a cover (AO3 ships none), prepends
-  an info page (fandom/ship/rating/stats), and folds a compact badge into the Kindle library title.
-  See [ARCHITECTURE.md §12](../ARCHITECTURE.md#12-send-to-kindle-kindleexport-kindlecover--v14).
+- **Save Visible:** download the unsaved works in the current filtered view, up to 100 at a time,
+  after a confirmation with a time estimate.
+- **Series without a Full sync:** a per-series **Fetch works** button, Quick sync fills in three new
+  series per run, and series longer than 20 works are fetched in full.
+- **Removed bookmarks are reconciled** on Full sync, behind strict guards; works you saved stay,
+  marked **Un-bookmarked**.
+- **Newest bookmarks download first.**
+- **Fixes:** saved works no longer lose their Read / Kindle buttons after a failed refresh; Cancel
+  really cancels; deleted-work detection can actually confirm a deletion; an unreadable Keychain
+  item is no longer overwritten; downloads share one polite schedule; no accidental crawling
+  without a username; renamed works don't leave old files behind; the reader no longer freezes or
+  shows a blank window; Send to Kindle runs off the main thread; a stray row in older archives no
+  longer blocks the database upgrade.
+- **Under the hood:** a fake-AO3 test harness runs the sync engine end to end in both test runners.
 
-**V1.3 — Quick sync + ratio sorts:**
-- **Quick sync** — a bounded, two-pass incremental catch-up (new bookmarks + re-download of works
-  that gained chapters) for fast day-to-day syncing, instead of always walking the whole account.
-- **Ratio sorts** — five derived sorts (Acclaim, Keeper, Conversation, Density, Collector) that
-  rank by a *relationship* between two metrics, surfacing fics the single-metric sorts bury. See
-  [ARCHITECTURE.md §11](../ARCHITECTURE.md#11-derived-ratio-sorts-gallerysort).
+### Earlier releases
 
-**V1.2 — the in-app reader:**
-- A dark, Liquid-Glass **EPUB reader** that opens any saved work in its **own window** (resizable,
-  fullscreen, many at once) instead of handing off to Apple Books — purely local, no new network
-  or ToS surface.
-- Navigates **TOC sections, not raw spine** (AO3's front matter / title page fold into "Preface",
-  so no more "Chapter 3 of 27"); **chapter** and **continuous-scroll** modes; theme / font / size;
-  **section-granular resume**.
-- Renders a **generated `text/html`** doc (fixes the `&nbsp;`-truncates-the-chapter XML bug);
-  remote refs / scripts stripped by `EpubSanitizer`; whole-work sanitize runs **off the main
-  thread** with a spinner and caches results. See [ARCHITECTURE.md §10](../ARCHITECTURE.md#10-the-in-app-reader-v12).
-
-**V1.1 — performance & polish:**
-- **Scaled to 20k bookmarks.** Stored search haystack, debounced search, precomputed sort keys,
-  allocation-free matching, and **parallelized facet passes** cut a full recompute ~2.6×
-  (349ms → 135ms debug at 20k), guarded by a regression budget in the scale test. See
-  [ARCHITECTURE.md §6](../ARCHITECTURE.md#6-performance-architecture-designed-for-20k-bookmarks).
-- **Responsive layout** — the detail inspector auto-hides on narrow windows and the sidebar
-  collapses, instead of panes clipping; tag pills truncate inside their card.
-- **Coalesced live sync reloads** so a long sync doesn't hitch the UI on every page.
-- **Bug fix:** a work re-bookmarked on AO3 (new bookmark id, same item) no longer aborts a sync.
-
-**V1 - the foundation:**
-- Polite, resumable sync engine + SQLite/FTS5 store (idempotent, archive-state-preserving).
-- The dark Liquid Glass gallery with full filter parity — every facet the bookmarks listing
-  exposes, tri-state include/exclude, numeric + date ranges, derived/bookmark filters, saved
-  presets — all in-memory and memoized.
-- A real, double-clickable `.app` with in-app resumable sync (live progress, rate-limit banner,
-  index-only by default with per-work download on demand).
+- **1.5: trust.** Pauses and asks for a fresh cookie when it expires mid-sync instead of finishing
+  as if nothing happened; flags works deleted from AO3 (**Only copy** / **Deleted on AO3**); the sync
+  log reports chapter gains.
+- **1.4: Send to Kindle.** One button: a generated cover, an info page and a title badge.
+- **1.3: Quick sync and ratio sorts.** A cheap incremental catch-up, and five sorts that rank by how
+  two numbers relate (Acclaim, Keeper, Conversation, Density, Collector).
+- **1.2: the reader.** Works open in their own windows, navigated by table-of-contents section, in
+  chapter or scroll mode, resuming where you left off.
+- **1.1: performance.** Scaled to 20k bookmarks (a full recompute went from 349 ms to 135 ms),
+  responsive layout, coalesced reloads during sync.
+- **1.0: the foundation.** The polite, resumable sync engine, the SQLite store, the gallery with
+  full filter parity and presets, and a double-clickable app with in-app sync.
 
 ---
 
-## What's next (post-V1.5)
+## What's next
 
-An [adversarial review](ADVERSARIAL-REVIEW.md) of V1.5 has since found three **P0** issues
-that are *not* optional, and the multi-device direction now has a design. See
-[plans/README.md](README.md) for the full index and dependency order.
+The correctness work from the [adversarial review](ADVERSARIAL-REVIEW.md) is done apart from the
+items below. See [README.md](README.md) for the plan index.
 
-**Now owned by a plan — do these first:**
+**Needs a live AO3 capture** (can't be done from the test harness):
+- Pin the login-page markers and "404 means deleted" to real captured responses
+  ([02 §1–§2](02-verification-and-hardening.md)).
+- Test whether an EPUB can be fetched with one request instead of two ([02 §3](02-verification-and-hardening.md)).
+- Watch the first real bookmark-pruning runs: they should either prune a handful of bookmarks or
+  skip with a stated reason.
 
-- **Three silent-failure bugs** → [01-correctness-and-durability.md](01-correctness-and-durability.md):
-  reading positions lost to `SQLITE_BUSY` (no WAL, `busyMode = .immediateError`, `try?`);
-  `deleted_on_ao3_at` is an **unrecoverable latch** that permanently stops archiving a work
-  after one 404; and the sync actually runs **on the main actor**, contrary to the code
-  comments and ARCHITECTURE §7.
-- **Live-verify cookie-expiry + deleted-work detection** → now
-  [02-verification-and-hardening.md](02-verification-and-hardening.md) §1–§2, with the exact
-  capture procedure. Still the same gap: both markers shipped without a captured fixture.
-- **Multi-device, peer-to-peer, no servers** (Mac ↔ Android, later Windows/Linux/headless) →
-  [03](03-p2p-sync-foundation.md) (data model — *irreversible, land first*),
-  [04](04-p2p-transport.md) (transport), [05](05-cross-platform-core.md) (other platforms).
-  A side effect worth naming: with peer file-pull, each work is fetched from AO3 **once
-  across the whole fleet, ever**.
+**Needs a decision:**
+- `work_fts`: keep it (as the search path past ~100k bookmarks) or drop the write cost
+  ([Plan 01](01-correctness-and-durability.md)).
 
-**Still optional, still unowned:**
+**Larger directions:**
+- **Multi-device, peer to peer, no servers** (Mac and Android first):
+  [03](03-p2p-sync-foundation.md) (data model; land first), [04](04-p2p-transport.md) (transport),
+  [05](05-cross-platform-core.md) (other platforms). With peer file transfer, each work would be
+  fetched from AO3 once across all your devices.
 
-- **Scheduled background sync** (opt-in), politeness-respecting.
-- **Export / import** the archive folder; backup integrity checks. (Partly subsumed by
-  [04 §7](04-p2p-transport.md#7-sneakernet-fallback--and-the-syncthing-question)'s op bundles.)
-- **Local file-size / download-status sort** — the one deferred sort (needs epub byte size
-  stored at download; [03 §3.4](03-p2p-sync-foundation.md#34-archive-state--replace-it-with-per-device-possession)'s
-  `work_copy.bytes` provides it for free).
+**Smaller, unowned ideas:**
+- Opt-in scheduled background sync, within the politeness rules.
+- Sort or filter by file size (store the EPUB size at download).
+- Export and integrity checks for the archive folder.
 
 ---
 
-## Risks & mitigations
+## Risks
 
 | Risk | Mitigation |
 |---|---|
-| AO3 HTML changes break the parser | All selectors in one `BlurbParser`, pinned to saved fixture HTML; fail soft per-field. |
-| Rate limiting / IP throttle | Conservative defaults, 429/503 backoff, single-flight, aggressive caching; politeness is a hard requirement. |
-| Cookie expiry mid-sync | Detected (login-page markers, best-effort), pauses + prompts to re-paste, resumes. Not yet live-verified against a real expired cookie. |
-| Large libraries (20k) | Memoized in-memory pipeline + the V1.1 perf pass; paged + resumable sync. SQL fallback only past ~100k. |
-| Restricted/anon works | Require cookie; mark clearly when unavailable; never crash a sync over one work. |
-| ToS / ethics | Scope to the user's own bookmarks; polite client; honest UA; local-only; no bulk-dataset features. |
+| AO3's HTML changes | All selectors in `BlurbParser`, pinned to captured pages; parsing fails soft per field. |
+| Rate limiting | One app-wide request schedule, conservative intervals, backoff never shorter than the interval, bounded runs. |
+| Cookie expires mid-sync | Detected and paused for a fresh cookie; not yet verified against a real expired-cookie page. |
+| A sync deletes real bookmarks | Pruning only after a complete, count-verified read with a cookie, capped at 5%; saved works are flagged, never deleted. |
+| Large libraries | Memoized in-memory pipeline; paged, resumable sync. SQL search only past ~100k. |
+| Restricted works | Need a cookie; one failing work never stops a sync. |
+| Terms of service and ethics | Your own bookmarks only; a polite client with an honest User-Agent; local-only; no bulk features. |

@@ -1,4 +1,6 @@
-# Plan 04 — Peer-to-peer transport (moving the bytes, with no server)
+# Plan 04: Peer-to-peer transport (moving the bytes, with no server)
+
+**Status: not started.** Blocked on [Plan 03](03-p2p-sync-foundation.md).
 
 **Goal:** get the oplog, the metadata delta, and the EPUB files from
 [Plan 03](03-p2p-sync-foundation.md) between a Mac and an Android phone (and later a
@@ -151,9 +153,9 @@ is not contacted at all**.
   transfer.
 - On completion, verify `sha256` against the `COPIES` row **before** writing into `works/`,
   then verify ZIP magic via the existing `WorkDownloader.looksLikeEPUB`
-  (`WorkDownloader.swift:70`). A peer is trusted to be *your other device*, not to be
+  (`WorkDownloader.swift`). A peer is trusted to be *your other device*, not to be
   incorruptible — bad bytes should fail closed.
-- Write via the existing `FileStore.writeEPUB` (`FileStore.swift:56`) so the naming and
+- Write via the existing `FileStore.writeEPUB` (`FileStore.swift`) so the naming and
   atomic-write behaviour stay identical to the AO3 path, then insert the local `work_copy` row.
 - Prefer a peer over AO3 whenever a peer has the exact `(work_id, updated_at)`. Fall back to
   AO3 only when no peer does.
@@ -170,12 +172,12 @@ The user requirement is that this stays as fast and native-feeling as the Mac ap
 Three things deliver that, and none of them is a visual effect:
 
 1. **Sync is never on the read path.** The gallery already derives everything by pure compute
-   over an in-memory working set (ARCHITECTURE §5); P2P must not introduce a network fetch
+   over an in-memory working set (ARCHITECTURE §6); P2P must not introduce a network fetch
    into rendering, ever. A peer being absent, slow, or mid-transfer must be *invisible* to
    browsing. This is the whole feel, and it's already architecturally true — the job is not to
    break it.
 2. **Reuse the coalesced-reload machinery.** `SyncController`'s ≤1/1.2 s reload throttle
-   (`SyncController.swift:52`, ARCHITECTURE §6) exists precisely so a burst of incoming rows
+   (`SyncController.swift`, ARCHITECTURE §7) exists precisely so a burst of incoming rows
    doesn't hitch the UI. Incoming P2P ops must go through the same coalescing — not a reload
    per op. After [Plan 01](01-correctness-and-durability.md) §3 the replay itself is off-main,
    so this is cheap.
@@ -209,12 +211,10 @@ Split that assumption:
 - `works/*.epub` — **safe to replicate with any file syncer.** Immutable, content-addressed
   by `(work_id, updated_at)`, byte-identical across devices. Syncthing is a perfectly good
   transport for these and needs zero code. Keep it working as the zero-effort option.
-- `archive.sqlite` — **do not.** After [Plan 01](01-correctness-and-durability.md) §1 it is
-  three files (`.sqlite`, `-wal`, `-shm`) that are only consistent as a set. A file syncer
-  copying them independently, or copying the main file while a WAL is unmerged, produces a
-  torn or stale database, and two-way replication produces conflict copies with no merge.
-  **This should be an explicit warning in the README's "where your library lives" section**,
-  because the current PLAN-ANDROID text actively invites it.
+- `archive.sqlite` — **do not.** It's a single file again (1.6.1), but a syncer can still copy
+  it mid-write, and two-way replication produces conflict copies with no merge. Once P2P ships,
+  add an explicit warning to the README's "where your library lives" section, because
+  PLAN-ANDROID's original text invites exactly this.
 
 ---
 
@@ -231,9 +231,9 @@ first inbound surface it has ever had.
 - [ ] The listener binds to the **local link only** and is **off by default** — an explicit
       user toggle turns sync on. A backup tool must not open a port because it was installed.
 - [ ] Incoming `BLOB` paths are never taken from the peer. Filenames are derived locally from
-      `work_id` + title via `ArchivePaths.epubFilename` (`ArchivePaths.swift:6`). A
+      `work_id` + title via `ArchivePaths.epubFilename` (`ArchivePaths.swift`). A
       peer-supplied path is a directory-traversal primitive; the existing zip-slip guard in
-      `EpubDocument.extractAll` (`EpubDocument.swift:334`) shows the right instinct — apply it
+      `EpubDocument.extractAll` (`EpubDocument.swift`) shows the right instinct — apply it
       here too.
 - [ ] Incoming EPUBs are `sha256`-verified **and** ZIP-magic-verified before landing in
       `works/`, and are still `EpubSanitizer`-cleaned at read time (they go through the same
@@ -258,7 +258,7 @@ The transport layer can't be fully headless, but most of it can:
 - **Loopback integration test:** two `Store`s + two protocol endpoints over an in-process
   pipe, exercising a full `HELLO`→`BYE` exchange and asserting convergence — no real socket,
   no mDNS, runs in CI.
-- **Run-to-confirm on real hardware** (the honest ceiling, matching ARCHITECTURE §8's stance
+- **Run-to-confirm on real hardware** (the honest ceiling, matching ARCHITECTURE §12's stance
   on the view layer): mDNS discovery on a real network, QR pairing, a mid-transfer Wi-Fi drop
   and resume, and a phone that has been offline for a week converging correctly.
 

@@ -1,4 +1,6 @@
-# PLAN-ANDROID.md — porting AO3 Archiver to Android
+# Porting AO3 Archiver to Android
+
+**Status: not started, and partly superseded (see below).**
 
 > **⚠️ Partly superseded — read this first.** The Kotlin-rewrite strategy and the M0–M6
 > phasing below still stand. Three specifics do **not**, because
@@ -7,8 +9,8 @@
 > | Below | Superseded by | What changes |
 > |---|---|---|
 > | **M1** — *"treat the Mac's `archive.sqlite` schema as a wire format"*; open the Mac's DB as a compatibility test | [03 §7](03-p2p-sync-foundation.md#7-reconciling-with-plan-androidmd-explicit-supersession), [05 §2](05-cross-platform-core.md#2-what-actually-gets-shared--the-contract-not-the-code) | The wire format is the **oplog + metadata delta** (JSON), not the SQLite file. Android keeps its own local DB. Compatibility is proven by **conformance vectors** in CI — no emulator, no Mac artifact. |
-> | **Risk: "FTS5 tokenizer parity"** | [03 §7](03-p2p-sync-foundation.md#7-reconciling-with-plan-androidmd-explicit-supersession) + [01 §4](01-correctness-and-durability.md#4--resolve-the-work_fts-question-f4--p1) | **Deleted, not mitigated.** Byte-compatible FTS5 stops being a requirement. |
-> | **M3** — reads a *Syncthing-replicated* archive folder | [04 §7](04-p2p-transport.md#7-sneakernet-fallback--and-the-syncthing-question) | `works/*.epub` via a file syncer is fine. **`archive.sqlite` is not** — after WAL lands it's three files consistent only as a set. Receive it over the P2P link instead. |
+> | **Risk: "FTS5 tokenizer parity"** | [03 §7](03-p2p-sync-foundation.md#7-reconciling-with-plan-androidmd-explicit-supersession) + [Plan 01](01-correctness-and-durability.md) | **Deleted, not mitigated.** Byte-compatible FTS5 stops being a requirement. |
+> | **M3** — reads a *Syncthing-replicated* archive folder | [04 §7](04-p2p-transport.md#7-sneakernet-fallback--and-the-syncthing-question) | `works/*.epub` via a file syncer is fine. **`archive.sqlite` is not**: a syncer can copy it mid-write, and two-way replication can't merge it. Receive it over the P2P link instead. |
 > | **Risk: "read-position write-back"** | [03 §3.1](03-p2p-sync-foundation.md#31-reading_position--last-writer-wins-with-one-crucial-exception) | Solved properly: LWW by HLC, plus the `hasUserNavigated` latch. The phone no longer has to be read-only. |
 >
 > Also: **land [03](03-p2p-sync-foundation.md) before starting M1**, and close

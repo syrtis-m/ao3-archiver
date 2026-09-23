@@ -1,4 +1,7 @@
-# Plan 03 — Peer-to-peer sync foundation (the data model)
+# Plan 03: Peer-to-peer sync foundation (the data model)
+
+**Status: not started.** Written against `aff9c82`; code references were refreshed for 1.6.1, but
+re-check line numbers before acting.
 
 **Goal:** let one archive live on several devices — a Mac laptop and an Android phone today, a
 Windows/Linux laptop or a headless box later — with **no server anywhere**, no account, and no
@@ -13,19 +16,18 @@ data model is settled, and neither can be retrofitted onto the wrong one.
 > port a schema that is about to change, and its "open the Mac's `archive.sqlite` as a
 > compatibility test" acceptance criterion is superseded here — see §7.
 
-**Depends on:** [Plan 01](01-correctness-and-durability.md) §1 (WAL). Not optional — see §8.
+**Depends on:** the 1.6.1 database setup (one shared connection per app plus a busy timeout;
+see ARCHITECTURE §3). Already in place; see §8.
 
 ---
 
 ## 1. The constraint that shapes everything
 
 **SQLite files do not merge.** Replicating `archive.sqlite` two-way with a file syncer
-(Syncthing, iCloud Drive, Dropbox) produces conflict copies, and after
-[Plan 01](01-correctness-and-durability.md) enables WAL it gets *actively worse*: the DB is
-then three files (`archive.sqlite`, `-wal`, `-shm`) that are only consistent as a set, and a
-syncer that copies them independently — or copies the main file while a WAL is unmerged —
-will hand you a torn or stale database. [PLAN-ANDROID.md](PLAN-ANDROID.md) already flags a
-narrow version of this under "Read-position write-back."
+(Syncthing, iCloud Drive, Dropbox) produces conflict copies at best, and a copy taken mid-write at
+worst. (1.6.0 briefly made this worse with WAL's three-file layout; 1.6.1 went back to one file,
+but one file still can't be merged.) [PLAN-ANDROID.md](PLAN-ANDROID.md) flags a narrow version of
+this under "Read-position write-back."
 
 **The insight that makes it tractable:** almost nothing in this database actually needs to
 merge, because almost all of it is a **re-derivable cache of AO3**.
@@ -37,7 +39,7 @@ merge, because almost all of it is a **re-derivable cache of AO3**.
 | `meta` (resume cursor, `last_incremental_sync_at`) | **Per-device sync state** | **Never synced** — see §5, this is a trap. |
 | `reading_position` | **User state — irreplaceable** | Oplog, LWW by HLC (§3.1). |
 | `filter_preset` | **User state — irreplaceable** | Oplog, LWW + tombstones (§3.2). |
-| `deleted_on_ao3_at` | **Global fact about AO3** | Oplog, first-sighting-wins (§3.3). |
+| `deleted_on_ao3_at`, `deleted_sighting` | **Global fact about AO3** | Sightings union across devices (§3.3). |
 | `epub_path`, `epub_updated_at`, `download_state` | **Per-device possession** | Not merged — *replaced* by a per-device table (§3.4). This is the important one. |
 
 That leaves a CRDT surface of **three small entity types plus one possession table** — a few
@@ -50,7 +52,7 @@ hundred rows, not 20,000. Everything expensive is a cache.
 ### 2.1 Device identity
 
 ```swift
-m.registerMigration("v7-device-identity") { db in
+m.registerMigration("v8-device-identity") { db in
     // This device's stable identity. Generated once, never changed, never leaves the
     // device except as the author field on ops it created. NOT derived from hardware —
     // a reinstall should look like a new device rather than silently resurrect an old
@@ -58,7 +60,7 @@ m.registerMigration("v7-device-identity") { db in
     try db.execute(sql: """
         CREATE TABLE device (
           device_id   TEXT PRIMARY KEY,     -- UUIDv4, generated on first launch
-          name        TEXT NOT NULL,        -- human label: "Athena's MacBook"
+          name        TEXT NOT NULL,        -- human label: "MacBook Air"
           platform    TEXT NOT NULL,        -- macos | android | windows | linux
           is_self     INTEGER NOT NULL DEFAULT 0,
           paired_at   TEXT,
@@ -71,7 +73,7 @@ m.registerMigration("v7-device-identity") { db in
 ### 2.2 The oplog
 
 ```swift
-m.registerMigration("v8-oplog") { db in
+m.registerMigration("v9-oplog") { db in
     // Append-only, per-device operation log. A device ONLY ever appends to its own
     // (device_id, seq) range, so the log itself is conflict-free by construction —
     // two devices can never contend for the same primary key. Merge conflicts are
@@ -135,40 +137,41 @@ You get home, open the same work on the laptop (which still thinks you're at cha
 merely *opening* writes a position op, its newer HLC clobbers chapter 40 and the phone's
 progress is destroyed on next sync.
 
-Today the app would do exactly that: `ReaderModel.recordVisibleSection`
-(`ReaderModel.swift:132`) is driven by the WebView's debounced scroll reporter, and **the
-initial scroll-to-anchor on open fires it**.
+Today the app would do exactly that: `ReaderModel.recordVisibleSection` is driven by the
+WebView's debounced scroll reporter, and **the initial scroll-to-anchor on open fires it**.
 
 > **Required:** an op is emitted only after a *user-initiated* navigation. Add a
 > `hasUserNavigated` latch to `ReaderModel`, set by `goNext`/`goPrevious`/`jump` and by
 > `recordVisibleSection` **only** once a scroll event has arrived that isn't the restore
 > jump. Opening a work, restoring position, and re-rendering on a font change must emit
-> nothing. This is a behavioural invariant, not an optimisation — put it in ARCHITECTURE §10
+> nothing. This is a behavioural invariant, not an optimisation — put it in ARCHITECTURE §9
 > alongside the other reader invariants.
 
 Payload: `{"section": Int, "progress": Double?}` — deliberately **not** `locator`, and
-deliberately section-granular, matching the existing rationale (ARCHITECTURE §10: a pixel
+deliberately section-granular, matching the existing rationale (ARCHITECTURE §9: a pixel
 fraction drifts across devices with different screens even more than across font changes).
 
 ### 3.2 `filter_preset` — LWW plus tombstones
 
-LWW by HLC per preset `name` (already the primary key, `Store.swift:165`). **Deletes must be
+LWW by HLC per preset `name` (already the primary key of `filter_preset`). **Deletes must be
 ops with a `NULL` payload, not row removals** — otherwise device A's delete is silently
 resurrected by device B's older insert on the next exchange. Tombstones are retained
 indefinitely; presets are a handful of rows and the log is small.
 
 Rename = delete + insert, which under LWW is correct and needs no special case.
 
-### 3.3 `deleted_on_ao3_at` — first sighting wins
+### 3.3 Deleted works: union the sightings
 
-The one field where LWW is wrong: this records *when we first observed AO3 404 a work*, and
-`Store.markDeletedOnAO3` already `COALESCE`s to keep the earliest (`Store.swift:547`). Merge
-by **min(hlc)**, preserving that semantic across devices.
+LWW is wrong here. A work counts as deleted once `Store.deletedConfirmThreshold` (2) *distinct*
+sightings agree, and `deleted_sighting` already stores one row per `(work_id, source)`, where the
+source is the sync run that saw the 404 (`SyncEngine.sightingSource(runID:)`). That table was
+shaped to merge: make the source globally unique (`<device_id>:run-<id>`) and replicate sightings
+as a **set union**. Two sightings from two devices then count exactly like two from one device,
+which makes the rule stronger on a multi-device archive, not weaker.
 
-This composes with [Plan 01](01-correctness-and-durability.md) §2: the sighting **count**
-becomes a set-union across devices (two sightings from two devices is exactly as good as two
-from one), which makes the corroboration rule *stronger* on a multi-device archive rather
-than weaker. Ship `deleted_sightings` as a set of `(device_id, hlc)` rather than an integer.
+`deleted_on_ao3_at` stays a local derivation of the unioned sightings (first confirmation time,
+refreshed after the 90-day recheck window), and a successful download on *any* device should
+clear the sightings everywhere: it proves the work exists.
 
 ### 3.4 Archive state — replace it with per-device possession
 
@@ -177,7 +180,7 @@ filesystem path*; it is meaningless on another device, and `download_state` conf
 work is archived" (a global truth) with "I have the bytes here" (a per-device truth).
 
 ```swift
-m.registerMigration("v9-possession") { db in
+m.registerMigration("v10-possession") { db in
     // Which device holds which EPUB. Each device owns (and only writes) its own rows, so
     // this needs no conflict resolution at all — it's a union, not a merge. Replicated so
     // every device knows what the fleet holds, which is what enables peer file pull
@@ -207,12 +210,13 @@ put the file.
 |---|---|---|---|
 | `downloaded` | this device holds bytes | file state | **Replace** — derive from `work_copy` |
 | `pending` | no bytes here yet | file state | **Replace** — derive from `work_copy` |
-| `unavailable` | it's an external work, AO3 has no EPUB | `kind = 'external'`, set at insert (`Store.swift:308`) | **Keep** — a global fact, already derivable from `kind` |
+| `unavailable` | it's an external work, AO3 has no EPUB | `kind = 'external'`, set at insert | **Keep** — a global fact, already derivable from `kind` |
 | `failed` | last download attempt errored here | `markFailed`, with `last_error` | **Keep, local-only** — a per-device UI cache, never synced |
 
-So: *possession* becomes derived from `work_copy`; the other two stay. `DownloadFilter.matches`
-(`GalleryModel.swift:449`) compares against these raw strings and **must be updated in step** —
-it is the only consumer, which is why this is cheap, but it will silently mis-filter if missed.
+So: *possession* becomes derived from `work_copy`; the other two stay. Two consumers must change
+in step: `DownloadFilter.matches` compares against the raw strings, and `WorkListItem.isSaved`
+(which the UI already uses for "can Read / Send to Kindle") currently keys on `epub_path`. Miss
+either and the gallery silently mis-filters or hides actions.
 
 Derived predicates:
 
@@ -220,7 +224,7 @@ Derived predicates:
 - **archived here** → `EXISTS (… AND device_id = <self>)`
 - **stale here** → the local `work_copy.updated_at < work.updated_at`
 
-`worksNeedingDownload` (`Store.swift:460`) gains `AND NOT EXISTS (… device_id = <self> …)`.
+`worksNeedingDownload` gains `AND NOT EXISTS (… device_id = <self> …)`.
 
 **New UI state worth surfacing:** "on your MacBook, not on this phone" is now representable
 and is genuinely useful — it's the affordance that offers the peer pull in
@@ -242,7 +246,7 @@ Content identity. AO3 renders EPUBs server-side and the same `(work_id, updated_
 identical bytes, so the hash is (a) the transfer integrity check, (b) the dedup key, and (c)
 the thing that lets a device verify a peer-supplied file is the same one AO3 would have
 served — a peer that ships you a corrupted or substituted EPUB is caught. Compute it once at
-write time in `FileStore.writeEPUB` (`FileStore.swift:56`).
+write time in `FileStore.writeEPUB`.
 
 ---
 
@@ -252,15 +256,17 @@ Putting 20k works × their tags through an oplog would be absurd — and unneces
 **the merge function already exists and is already tested.**
 
 `Store.upsertWork` is idempotent and *"never touches `epub_path` / `epub_updated_at` /
-`download_state`"* (ARCHITECTURE §3, `Store.swift:319`). That invariant was written so a
-re-sync couldn't clobber a downloaded file — and it turns out to be **exactly** the property
-needed to receive metadata from a peer without trampling local archive state. The same is
-true of `upsertBookmark`'s stale-row handling (`Store.swift:356`). *The hardest part of the
+`download_state`"* (ARCHITECTURE §3). That invariant was written so a re-sync couldn't clobber a
+downloaded file — and it turns out to be **exactly** the property needed to receive metadata from
+a peer without trampling local archive state. The same is true of `upsertBookmark`'s stale-row
+handling. *The hardest part of the
 receive path is already built and already covered by tests.*
 
 **Protocol:** the sender ships rows whose `last_synced_at` is newer than the receiver's
-per-peer watermark; the receiver replays them through the **existing** `upsertWork` /
-`upsertBookmark` / `upsertSeries` / `linkSeriesWork`. Idempotent, resumable, order-independent.
+per-peer watermark; the receiver replays them through the **existing** single-transaction
+upserts (`upsertWorkAndBookmark`, `upsertSeries`, `upsertSeriesMember`). Idempotent, resumable,
+order-independent. Bookmark removals (`bookmark.removed_at`, and rows the syncing device pruned)
+travel the same way: they're AO3-derived facts, so the designated syncer's view wins.
 
 **Topology: one designated AO3-syncing device.** The Mac talks to AO3; other devices receive
 metadata from it. This is not a limitation, it's the correct default:
@@ -289,7 +295,7 @@ not a correctness constraint.
   existing "the cookie never leaves AO3" rule — P2P adds a second exfiltration surface that
   rule didn't previously have to cover.
 - **`epub_path`** — a local path (see §3.4).
-- **`work_fts`** — a local index. If [Plan 01](01-correctness-and-durability.md) §4 option (A)
+- **`work_fts`** — a local index. If [Plan 01](01-correctness-and-durability.md)'s option (A)
   is taken it ceases to exist, which is one fewer cross-platform compatibility problem
   (see §7).
 - **`sync_run`** — local bookkeeping.
@@ -304,8 +310,8 @@ convergence. That is a pure function over pure data — it fits this project's h
 discipline exactly, and it means the risky part of P2P is fully covered *before*
 [Plan 04](04-p2p-transport.md) writes a single socket.
 
-Per [CLAUDE.md](../CLAUDE.md), every one of these goes in **both** `Tests/AO3KitTests/` and
-`Sources/selftest/main.swift`:
+Per [CLAUDE.md](../CLAUDE.md), every one of these runs in **both** test runners; write them as
+`AO3KitTestSupport` scenarios so they do by construction:
 
 - `convergenceIsOrderIndependent` — replay the same op set in three different orders (and
   with duplicates); assert byte-identical materialized state each time. **The core property.**
@@ -338,7 +344,7 @@ Android SQLite."*
 - The wire format is the **oplog + metadata delta** (both plain JSON over a framed stream),
   **not** the SQLite file. Android keeps its own local database in whatever shape suits it.
 - Byte-compatible FTS5 stops being a requirement. Combined with
-  [Plan 01](01-correctness-and-durability.md) §4 option (A), the *"FTS5 tokenizer parity"*
+  [Plan 01](01-correctness-and-durability.md)'s option (A), the *"FTS5 tokenizer parity"*
   risk is **deleted outright**, not mitigated.
 - The "open a Mac-produced `archive.sqlite`" compatibility test is replaced by a stronger,
   cheaper one: **replay a captured op set and assert the same converged state as the Swift
@@ -357,7 +363,7 @@ list to point here. Two plans in this directory disagreeing is worse than either
 
 | Phase | Content | Gate |
 |---|---|---|
-| **0** | [Plan 01](01-correctness-and-durability.md) §1 (WAL + busy timeout) | **Hard prerequisite.** Replay is a write burst against a DB that other handles are reading. Without WAL that is `SQLITE_BUSY` on the default `.immediateError` — the exact failure F1 describes, at higher volume. |
+| **0** | One shared connection + busy timeout (**done in 1.6.1**) | Replay is a write burst. It must go through the app's shared `Store` (`Store.shared(atPath:)`), never a second connection, and a CLI running alongside is covered by the busy timeout. Do **not** reach for WAL (see ARCHITECTURE §3). |
 | **1** | §2 schema (device, oplog, `work_copy`), HLC, local op emission | Irreversible. Nothing reads the ops yet. |
 | **2** | §3 replay + merge, §4 metadata delta receive, all of §6's tests | Still **zero networking**. Fully verifiable headlessly. |
 | **3** | [Plan 04](04-p2p-transport.md) — move bytes | Only starts once §6 is green. |
@@ -369,13 +375,13 @@ properties is reachable without a network.
 
 ## Definition of done (this plan)
 
-- [ ] Migrations `v7`–`v9` land; `swift build` clean, `swift test` + `swift run selftest` green.
+- [ ] Migrations `v8`–`v10` land; `swift build` clean, `swift test` + `swift run selftest` green.
 - [ ] Every §6 assertion exists in **both** runners.
 - [ ] `download_state` is fully derived; no code writes it as a stored flag.
 - [ ] The §3.1 `hasUserNavigated` latch is in `ReaderModel` and covered by
       `openingAWorkEmitsNoOp`.
 - [ ] ARCHITECTURE gains a new section for the sync model; §3 updated for `work_copy`;
-      §10 updated with the reader op-emission invariant; the "cookie never leaves AO3"
+      §9 updated with the reader op-emission invariant; the "cookie never leaves AO3"
       invariant extended to cover the wire.
 - [ ] [PLAN-ANDROID.md](PLAN-ANDROID.md) M1 + risks updated per §7.
 - [ ] **Nothing on the wire yet** — that is [Plan 04](04-p2p-transport.md), and this plan is

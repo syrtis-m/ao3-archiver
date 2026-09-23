@@ -1,67 +1,44 @@
 # Plans
 
-Forward-looking plans for AO3 Archiver. For **how it's built** see
-[ARCHITECTURE.md](../ARCHITECTURE.md) (the source of design truth), for **how to use it**
-[README.md](../README.md), for **day-to-day conventions** [CLAUDE.md](../CLAUDE.md).
+The roadmap and forward-looking plans for AO3 Archiver. For how it's built, see
+[ARCHITECTURE.md](../ARCHITECTURE.md) (the design source of truth); for how to use it,
+[README.md](../README.md); for working rules, [CLAUDE.md](../CLAUDE.md).
 
----
+## Where things stand
 
-## Start here
+| Document | What it is | Status |
+|---|---|---|
+| [PLAN.md](PLAN.md) | Goals, what's shipped, what's next | Current (1.6.1) |
+| [ADVERSARIAL-REVIEW.md](ADVERSARIAL-REVIEW.md) | The two full code reviews and what happened to every finding | Record |
+| [01: Correctness and durability](01-correctness-and-durability.md) | The P0 fixes from the first review | Done, except one decision: keep or drop `work_fts` |
+| [02: Verification and hardening](02-verification-and-hardening.md) | Pinning AO3 behaviour to captured pages | Code done; captures and one manual test remain |
+| [03: P2P sync foundation](03-p2p-sync-foundation.md) | The multi-device data model: device identity, an operation log, merge rules, per-device file possession | Not started. Irreversible schema work; land it first |
+| [04: P2P transport](04-p2p-transport.md) | Discovery, QR pairing, pinned TLS, peer-to-peer EPUB transfer. No server | Not started |
+| [05: Cross-platform core](05-cross-platform-core.md) | Android, Windows, Linux and a headless peer; conformance test vectors | Not started |
+| [PLAN-ANDROID.md](PLAN-ANDROID.md) | The original Android port plan | Partly superseded by 03 and 05 (its header lists which parts) |
 
-| Document | What it is |
-|---|---|
-| [ADVERSARIAL-REVIEW.md](ADVERSARIAL-REVIEW.md) | Findings from a full adversarial read of the codebase at V1.5. Every plan below traces to it. **Read this first.** |
-| [PLAN.md](PLAN.md) | The shipped-and-next roadmap (V1 → V1.5). |
-| [PLAN-ANDROID.md](PLAN-ANDROID.md) | The Android port strategy. **Partly superseded** — see [03 §7](03-p2p-sync-foundation.md#7-reconciling-with-plan-androidmd-explicit-supersession). |
-
-## Implementation plans
-
-Each is self-contained: evidence, implementation, verification, risks, definition of done.
-
-| # | Plan | Addresses | Size |
-|---|---|---|---|
-| 01 | [Correctness & durability](01-correctness-and-durability.md) | F1 silent loss of reading positions · F2 unrecoverable "deleted" latch · F3 sync runs on the main actor · F4 unused FTS writes · F5 429 backoff undercuts baseline | Medium |
-| 02 | [Verification & hardening](02-verification-and-hardening.md) | F6–F8, F11–F13 · the two AO3 behaviours shipped with **no fixture** · wrong-work download hole · Kindle export coverage | Medium |
-| 03 | [P2P sync foundation](03-p2p-sync-foundation.md) | The multi-device data model: device identity, oplog, HLC, merge semantics, per-device possession. **Irreversible — land first.** | Large |
-| 04 | [P2P transport](04-p2p-transport.md) | mDNS discovery, QR pairing, pinned TLS, framing, peer EPUB pull. No server. | Large |
-| 05 | [Cross-platform core](05-cross-platform-core.md) | Android / Windows / Linux / headless peer. Portable `AO3Kit`, conformance vectors. | Medium |
-
----
-
-## Dependency order
+## Order of work
 
 ```
-01 §1 (WAL) ──────────────► 01 §3 (off-main sync)
-     │
-     └────────────────────► 03 (P2P data model) ──► 04 (transport) ──► 05 §4 (headless peer)
-                                   │                                          ▲
-02 §1–§2 (AO3 fixtures) ───────────┼──► 05 §2 (conformance vectors) ──────────┘
-     │                             │
-     └──► 01 §2 (deleted latch)    └──► 05 §4 (Android client)
+02 §1–§2 (capture AO3 pages) ──► 05 §2 (conformance vectors)
 
-05 §1 (portable core split) — independent, do early
+03 (data model) ──► 04 (transport) ──► 05 §4 (headless peer, Android client)
+
+05 §1 (make AO3Kit portable) — independent; can happen any time
 ```
 
-**The three hard gates:**
+Two gates matter:
 
-1. *(Superseded in 1.6.1: the archive is back to a single rollback-journal file with one shared
-   in-app connection + a busy timeout — see ARCHITECTURE §3. Read "WAL" below as "the busy
-   timeout".)* **[01](01-correctness-and-durability.md) §1 (WAL) before [01](01-correctness-and-durability.md) §3 and before [03](03-p2p-sync-foundation.md).** Both increase real write concurrency; without WAL + a busy timeout that means more silent `SQLITE_BUSY` loss, not less.
-2. **[03](03-p2p-sync-foundation.md) before [PLAN-ANDROID.md](PLAN-ANDROID.md) M1.** M1 would otherwise port a schema that is about to change.
-3. **[03](03-p2p-sync-foundation.md) Phase 2 (merge tests green) before [04](04-p2p-transport.md).** The whole merge layer is testable with zero networking; debugging it through a socket costs an order of magnitude more.
-
-## If you only do one thing
-
-[01 §2](01-correctness-and-durability.md#2--make-deleted_on_ao3_at-recoverable-f2--p0) — the
-`deleted_on_ao3_at` latch. It is the only finding where the tool **silently stops doing the
-thing it exists for** (backing up a work), on a set that grows with every sync, while
-displaying a badge asserting the opposite. Everything else is recoverable; this isn't.
+1. **03 before any Android work.** Otherwise the port copies a schema that's about to change.
+2. **03's merge tests pass before 04 starts.** The whole merge layer can be tested with no network;
+   debugging it through a socket is far slower.
 
 ## Conventions for these plans
 
-- Findings cite `file:line` against `main` @ `bf6c583`. Re-verify before acting on stale line numbers.
-- Every plan's verification section names **both** `swift test` and `swift run selftest` —
-  per [CLAUDE.md](../CLAUDE.md) they are lockstep mirrors, so a change landing in only one is
-  incomplete.
-- Where a plan contradicts an existing doc, it says so explicitly and names which supersedes.
-  Two plans quietly disagreeing is worse than either being wrong.
+- Line references go stale. Each document says which commit it read; re-check before acting.
+- Every change lands in **both** test runners (`swift test` and `swift run selftest`), ideally via
+  the shared `AO3KitTestSupport` scenarios.
+- When a plan contradicts another document, it says so and names which one wins. Two documents
+  quietly disagreeing is worse than either being wrong.
+- When a plan's work ships, reduce it to a status summary. Step-by-step instructions for work
+  that's done go stale and can mislead the next person.

@@ -1,269 +1,136 @@
-# Adversarial review — AO3 Archiver (V1.5)
+# Adversarial reviews
 
-Date: 2026-08-10. Reviewed against `main` @ `bf6c583`, with a full read of `Sources/AO3Kit/`,
-`Sources/AO3ArchiverApp/`, `Sources/ao3archiver/`, and the doc set. Baseline at review time:
-`swift build` clean, `swift test` **94 tests / 7 suites passed**, `swift run selftest`
-**ALL CHECKS PASSED** — so every finding below is a live bug in *passing* code.
-
-> **Status: all three P0s (F1, F2, F3) are fixed.** Line/severity text below is preserved as
-> written at review time so the evidence stays auditable; see
-> [01-correctness-and-durability.md](01-correctness-and-durability.md) §1–§3 for what shipped.
-> The new regression test for F1 was verified to **fail** without the fix
-> (`SQLite error 5: database is locked` on the `reading_position` INSERT) and pass with it.
-> **Update 2026-09-22:** F5, F9, F10, F11 (GUI; the CLI keeps its explicit, env-bounded demo
-> listing), F12 and F13 are also fixed. F4, F6, F7 and F8 remain open. A follow-up review found
-> and fixed that the F2 fix's confirmation threshold was unreachable in production (every sighting
-> used the same `"local"` source) — see the commit that carries this note.
-
-**The headline.** This is a genuinely well-built codebase — the invariants in
-[ARCHITECTURE.md](../ARCHITECTURE.md) are real, enforced, and mostly tested, and the
-security posture (host allowlist, DOM-level sanitizer, Keychain, honest UA) is better than
-most shipping software. The findings below are concentrated in one blind spot: **the
-codebase is rigorously tested where it is pure, and untested where it touches the OS** —
-SQLite concurrency, actor isolation, and the AO3 behaviours that were never captured as
-fixtures. Every P0 below lives in that gap.
-
-Findings are ranked by *expected harm to the archive*, not by how interesting they are.
-A tool whose purpose is "don't lose the fic" should weight silent data loss above all else.
+Two full reviews of the codebase, looking for bugs that pass every test. This file is the record of
+what they found and what happened to each finding. File and line references point at the commit
+each review read, so they'll drift. The fixes and the current design are in
+[ARCHITECTURE.md](../ARCHITECTURE.md).
 
 ---
 
-## Severity summary
+## First review: 2026-08-10, version 1.5 (`bf6c583`)
 
-| # | Finding | Severity | Plan |
+The whole codebase and documentation were read at a point where the build was clean and both test
+runners passed (94 tests). Every finding was therefore a live bug in passing code.
+
+**The headline.** The codebase is well built: its invariants are real, enforced and mostly tested,
+and its security posture (host allowlist, DOM-level sanitizer, Keychain, honest User-Agent) is
+better than most shipping software. The findings clustered in one blind spot: **it was rigorously
+tested where it was pure, and untested where it touched the operating system** (SQLite locking,
+actor isolation) **or AO3 itself** (behaviours never captured as fixtures).
+
+Findings are ranked by expected harm to the archive. For a tool whose job is "don't lose the fic",
+silent data loss outranks everything.
+
+| # | Finding | Severity | Status |
 |---|---|---|---|
-| ✅ F1 | **Fixed.** No WAL + `busyMode = .immediateError` + 3 concurrent `Store` handles + `try?` writes → reading positions silently lost | **P0** | [01](01-correctness-and-durability.md) |
-| ✅ F2 | **Fixed.** `deleted_on_ao3_at` was a one-way latch with no clearing path — one transient 404 permanently stops archiving a work | **P0** | [01](01-correctness-and-durability.md) |
-| ✅ F3 | **Fixed.** The whole sync ran **on the main actor**, contradicting the code comments and ARCHITECTURE §7 | **P0** | [01](01-correctness-and-durability.md) |
-| F4 | `work_fts` written on every upsert, read by nothing but `selftest` — pure write amplification | P1 | [01](01-correctness-and-durability.md) |
-| F5 | 429 backoff can retry after ~1 s — *shorter* than the steady-state polite interval | P1 | [01](01-correctness-and-durability.md) |
-| F6 | 2 requests per EPUB where 1 may suffice — doubles AO3 load on the dominant sync cost | P1 | [02](02-verification-and-hardening.md) |
-| F7 | `epubHref` whole-page fallback can match an author-controlled `/downloads/` link → wrong work archived | P1 | [02](02-verification-and-hardening.md) |
-| F8 | Two shipped AO3 behaviours (login page, 404-means-deleted) have **no captured fixture** | P1 | [02](02-verification-and-hardening.md) |
-| F9 | `SyncEngine.chapterGains`: cross-suspension mutable state on an `@unchecked Sendable` class | P2 | [01](01-correctness-and-durability.md) |
-| F10 | Activity-feed event ordering is not guaranteed (one detached `Task` per event) | P2 | [01](01-correctness-and-durability.md) |
-| F11 | Anonymous sync silently crawls a hardcoded unrelated fandom tag | P2 | [02](02-verification-and-hardening.md) |
-| F12 | Search haystack omits `warnings`, contradicting README's "search by any word" | P2 | [02](02-verification-and-hardening.md) |
-| F13 | `EpubSanitizer.isRemote` substring match strips legitimate local hrefs | P3 | [02](02-verification-and-hardening.md) |
+| F1 | Reading positions silently lost when a save met a sync's database lock | P0 | Fixed (redone in 1.6.1) |
+| F2 | One 404 permanently marked a work deleted and stopped archiving it | P0 | Fixed (fix corrected in 1.6) |
+| F3 | The whole sync ran on the main thread, despite comments saying otherwise | P0 | Fixed |
+| F4 | `work_fts` written on every sync, read by nothing | P1 | **Open**: needs a product decision |
+| F5 | A 429 could be retried sooner than the normal request interval | P1 | Fixed |
+| F6 | Two requests per EPUB where one might do | P1 | **Open**: needs a manual AO3 test |
+| F7 | A planted `/downloads/` link could archive the wrong work | P1 | Fixed |
+| F8 | Login-page and deleted-work detection had no captured AO3 pages behind them | P1 | **Open**: needs live captures |
+| F9 | Mutable sync state shared across `await`s, guarded only by a comment | P2 | Fixed |
+| F10 | The activity log could show events out of order | P2 | Fixed |
+| F11 | Syncing without a username crawled an unrelated fandom tag | P2 | Fixed |
+| F12 | Search ignored warnings, despite the README promising "any word" | P2 | Fixed |
+| F13 | The sanitizer stripped local links that merely contained `https://` | P3 | Fixed |
+
+The open items are planned in [Plan 01](01-correctness-and-durability.md) (F4) and
+[Plan 02](02-verification-and-hardening.md) (F6, F8).
+
+### F1: reading positions silently lost
+
+Three facts combined. The store opened plain SQLite connections, GRDB's default is to fail
+*immediately* on a locked database rather than wait, and the app opened one connection for the
+gallery plus one per reader window. When a reader saved your place while a sync was writing, the
+save failed with `SQLITE_BUSY`, and `ReaderModel`'s `try?` threw the error away. Your place in a
+247-chapter work could vanish with nothing logged.
+
+*Fix:* a 5-second busy timeout and a visible save error. The first version also switched to WAL;
+1.6.1 replaced that with one shared connection for the whole app and went back to a single-file
+database, because WAL's extra files made simple backups incomplete.
+
+### F2: an unrecoverable "deleted" latch
+
+A single 404 set `deleted_on_ao3_at`, which removed the work from both download queues forever.
+Nothing ever cleared it, and the "404 means deleted" assumption had never been checked against a
+real deleted work. A 404 during an AO3 deploy, or for a work briefly made restricted, would silently
+stop the tool archiving a work that still existed, while its badge claimed it was gone. Unlike every
+other uncertain parse in the codebase, which fails toward doing *more* work, this one failed toward
+never trying again.
+
+*Fix:* a work is treated as deleted only when two separate sightings agree, the exclusion expires
+after 90 days, and **Check again on AO3** clears it by hand.
+
+### F3: the sync ran on the main thread
+
+`SyncController` is `@MainActor`, so the `Task` it created inherited main-actor isolation. The proof
+was in the code: it called a main-actor method without `await`, which only compiles when already on
+the main actor. Every listing parse, database write and EPUB write therefore ran on the main thread,
+while a comment and ARCHITECTURE both said "off the main actor". The earlier fix for UI hitches
+during sync (throttling reloads) had been treating a symptom.
+
+*Fix:* `SyncEngine` became an `actor`, driven from a detached task, with progress delivered through
+one ordered stream (which also fixed F10).
+
+### F4 to F13, briefly
+
+- **F4:** `upsertWork` rewrites the FTS row for every card on every sync; only tests read it.
+- **F5:** the 429 fallback wait at attempt 0 was 1–2 s, four times faster than the 4 s interval,
+  in response to AO3 saying "slow down".
+- **F6:** each download fetches the work page just to read the EPUB link.
+- **F7:** the fallback link selector also scanned author-written content.
+- **F8:** see Plan 02.
+- **F9:** the "no overlapping runs" guarantee lived in a comment on an `@unchecked Sendable` class.
+  There was no live bug; making the engine an actor made the guarantee real.
+- **F10:** one new `Task` per progress event, and independent tasks have no ordering guarantee.
+- **F11** to **F13:** as in the table.
+
+### What was good, and must stay that way
+
+- **The host allowlist handles the subtle case.** `isAO3Host` matches the apex or a `.`-prefixed
+  subdomain, never a bare suffix, so `evil-archiveofourown.org` is rejected. It's checked before a
+  request is built *and* on every redirect.
+- **The sanitizer works in the right layer:** on the DOM, not in a navigation delegate that can't
+  see image loads.
+- **`Store.count(_:)` allowlists its table name,** since an identifier can't be a bound parameter.
+- **The idempotency rules are real and tested,** including keeping a deleted-but-saved work inside
+  the Saved filter.
+- **Quick sync fails soft in the safe direction:** a card whose date didn't parse counts as
+  "unknown", not "old", so parser drift makes it do more work rather than stop early.
+
+### The through-line
+
+F2 and F8 share a root cause: two AO3 behaviours shipped as assumptions, without captured pages, in
+a codebase whose parser rule is "pin every selector to real HTML". F1 and F3 share another: nothing
+tested the boundary with the operating system, because the suite is (rightly) pure and headless.
 
 ---
 
-## P0 findings
+## Follow-up review: 2026-09-22 (`aff9c82` and later)
 
-### F1 — Reading positions are silently discarded under concurrency
+A second pass read the code independently (including the first review's own fixes), the view layer,
+and the real archive's data. It found another round of bugs in passing code, all fixed in 1.6, plus
+one found by dry-running the upgrade on the real archive:
 
-**Evidence (all three conditions verified, not inferred):**
+| Finding | Harm | Fix |
+|---|---|---|
+| The F2 fix's two-sighting threshold was unreachable: every sighting used the same source | Deleted works never confirmed; re-requested every sync | One sighting per run; an engine-level test drives two runs |
+| Cancel during downloads marked every remaining work failed, then reported "Done" | Saved works lost their Read / Kindle buttons | Cancellation propagates through client, limiter and loop |
+| A failed refresh demoted a saved work to "failed" | Same: file on disk, actions hidden, dropped from Saved | Saved works stay saved; the UI asks the file |
+| A cancelled run still finishing could overwrite a new run's status | Wrong status, Cancel button gone | Runs carry a generation number |
+| One rate limiter per client | Download clicks sent parallel requests to AO3 | One app-wide limiter |
+| Series only read their first page | Long series silently truncated | Pagination followed |
+| A saved resume cursor was used for a different listing | A Full sync could resume a stale crawl | Cursor only used for the same list |
+| An unreadable Keychain item showed as empty, and a sync then deleted it | Cookie silently erased | Unreadable items are never overwritten |
+| The WAL switch from F1 left three files in the archive folder | Copying `archive.sqlite` alone missed recent writes | Single-file database, one shared connection (1.6.1) |
+| A stray dangling row in the real archive failed the database upgrade | The new build couldn't open the archive at all | Migrations tolerate and repair dangling rows |
+| Smaller: sanitizer bypasses via WHATWG URL parsing, unescaped `dc:language`, over-long filenames, orphaned files on rename, same-title Kindle export collisions | Defense in depth, correctness | All fixed |
 
-1. `Store.swift:26` — `dbQueue = try DatabaseQueue(path: path)`. No `Configuration`, so
-   **journal mode is the default rollback journal, not WAL**. In rollback-journal mode a
-   writer excludes all readers and vice versa.
-2. `.build/checkouts/GRDB.swift/GRDB/Core/Configuration.swift:338` —
-   `public var busyMode: Database.BusyMode = .immediateError`. GRDB's default is **no busy
-   timeout**: a contended lock fails *immediately* with `SQLITE_BUSY` rather than retrying.
-3. Three separate `Store` handles are open on the same `archive.sqlite` at once:
-   `AO3ArchiverApp.swift:155` (gallery) and `AO3ArchiverApp.swift:101` — **one per reader
-   window**, and the app explicitly supports "many at once" (ARCHITECTURE §10).
-4. `ReaderModel.swift:171` — `try? store?.saveReadingPosition(...)`. The `try?` swallows the
-   `SQLITE_BUSY`.
-
-**Failure scenario.** You open three reader windows and hit Sync. The sync's `upsertWork`
-transaction (main actor — see F3) holds the write lock. You scroll; the reader's debounced
-`recordVisibleSection` fires `saveReadingPosition`; SQLite returns `SQLITE_BUSY`
-immediately; `try?` discards it; the reader reports nothing. You close the window and your
-place in a 247-chapter fic is gone. Nothing logs, nothing badges, no test covers it.
-
-The same pattern applies to `persistPosition()` on every `goNext`/`goPrevious`/`jump`.
-
-**Why the current design hides it.** ARCHITECTURE §10 justifies the second handle as "fine
-for tiny, `try?`-guarded resume reads/writes" — which is exactly the reasoning that turns a
-lock conflict into silent loss. `try?` is correct for *"this write is optional"*; resume
-position is not optional, it's the feature.
-
-**Fix direction:** WAL + a busy timeout + stop swallowing. Detailed in
-[01](01-correctness-and-durability.md) §1.
-
----
-
-### F2 — `deleted_on_ao3_at` is an unrecoverable latch
-
-**Evidence.**
-- Set in exactly one place: `SyncEngine.swift:365`, `try? store.markDeletedOnAO3(workID:)`,
-  triggered by a single `catch AO3Error.http(404)`.
-- Consumed as a permanent exclusion in **both** download queues:
-  `Store.swift:466` and `Store.swift:488` (`AND deleted_on_ao3_at IS NULL`).
-- `Store.markDeletedOnAO3` (`Store.swift:544`) uses `COALESCE(deleted_on_ao3_at, ?)` — it is
-  deliberately *sticky*.
-- **Nothing clears it.** A repo-wide grep for `deleted_on_ao3` finds the migration, the
-  setter, two queue exclusions, two read sites in `GalleryModel`, two UI badges, and tests.
-  There is **no `UPDATE … SET deleted_on_ao3_at = NULL`** anywhere, and no UI affordance.
-
-**Failure scenario.** AO3 serves a 404 for a reason other than deletion — a deploy window, a
-work temporarily set to registered-users-only, an orphaning redirect, a CDN blip, or simply
-the assumption being wrong. The work is latched. It is dropped from
-`worksNeedingDownload` *and* `worksNeedingRedownload` **forever**, so it will never be backed
-up and an already-saved copy will never gain its new chapters. Meanwhile the card shows a red
-badge asserting "deleted from AO3" — which is now a lie the user has no way to correct.
-
-**Why this is the most serious finding for an archival tool.** F1 loses your bookmark in a
-book. F2 silently stops the program from doing the one thing it exists to do, on an
-unbounded set of works, and *tells you it's fine*. The blast radius grows with every sync.
-
-**Compounding factor — the assumption is self-admittedly unverified.** ARCHITECTURE §13 says
-in its own words: *"the 404-means-deleted assumption hasn't been confirmed against a real
-deleted work."* Building a permanent, irreversible exclusion on top of an explicitly
-unverified heuristic is the inversion of this codebase's own fail-soft ethos. Every other
-uncertain parse in `BlurbParser` degrades toward *doing more work*; this one degrades toward
-*never trying again*.
-
-**Fix direction:** require corroboration before latching, make the latch expire, and add a
-manual reset. Detailed in [01](01-correctness-and-durability.md) §2.
-
----
-
-### F3 — The entire sync runs on the main actor
-
-**Evidence — this is provable from the type system, not guessed.**
-
-`SyncController` is declared `@Observable @MainActor` (`SyncController.swift:9-11`).
-Therefore `start(...)` is main-actor-isolated, and the `Task { [weak self] in … }` it creates
-at `SyncController.swift:92` **inherits that isolation** (unstructured `Task` inherits the
-enclosing actor context).
-
-The proof is in the code itself: line 123 calls `self?.finish(result:)` — a `@MainActor`
-method — **with no `await`**. That only compiles if the task body is already main-actor
-isolated. Same for `endRun`, `push`, and the `lastError` assignments in the `catch` arms.
-
-**What that means in practice.** Inside that task:
-- `BlurbParser.parseListing(html:)` — a full SwiftSoup DOM parse of a listing page, per page
-- `store.upsertWork` / `upsertBookmark` — a SQLite write transaction, per card
-- `files.writeEPUB` — a multi-hundred-KB `Data.write(options: .atomic)`, per work
-- `EpubDocument`-free but still: `Store.replaceFTS` tokenization, per card (see F4)
-
-…all execute **on the main thread**. The `await`s at the network boundary yield the thread,
-which is why the app doesn't appear hung — but every page's parse-and-ingest burst is a main
-thread stall of exactly the kind the V1.1 perf pass was fighting.
-
-**The documentation says the opposite, in two places:**
-- `SyncController.swift:6` — *"runs the tested `SyncEngine` **off the main actor**"*
-- ARCHITECTURE §7 — *"`SyncController` (@MainActor @Observable) runs the **off-main**
-  `SyncEngine`"*
-
-**This is the most valuable finding in the review**, because it reframes prior work. ARCHITECTURE §6
-records that live sync reloads had to be coalesced to ≤1/1.2 s because a long sync hitched
-the UI. That coalescing treated a symptom. A material share of the hitch is the parse and the
-DB writes competing with SwiftUI for the main thread — and it is still there, invisible,
-under a comment claiming it was solved.
-
-**Fix direction:** make `SyncEngine` genuinely off-main and let the controller be the only
-main-actor part. Detailed in [01](01-correctness-and-durability.md) §3.
-
----
-
-## P1 findings
-
-### F4 — `work_fts` is maintained but unreachable
-
-`Store.replaceFTS` (`Store.swift:427`) runs a `DELETE` + `INSERT` against the FTS5 virtual
-table for **every work on every upsert** — i.e. every card on every page of every sync,
-including the Quick sync's date-updated pass which deliberately re-ingests cards.
-
-The only reader is `Store.searchWorkIDs` (`Store.swift:593`). A repo-wide grep shows it is
-called **only from `Sources/selftest/main.swift`** (lines 207, 211, 214). Neither the app,
-the CLI, nor any other part of `AO3Kit` calls it. The gallery's search is an in-memory
-substring scan over `WorkListItem.searchHaystack` (`GalleryModel.swift:544`).
-
-So the tool pays FTS5 tokenization + two statements per work per sync, plus the index's disk
-footprint, for a capability **no user can reach**. At 20k works that is 40k statements of
-pure overhead per full sync, on the main thread (F3).
-
-This isn't obviously "delete it" — ARCHITECTURE §6 names FTS as the intended fallback past
-~100k bookmarks. But the current state is the worst of the three options: maintained, never
-exercised in anger, and unreachable. Pick one. See [01](01-correctness-and-durability.md) §4.
-
-### F5 — 429 backoff can be shorter than the polite baseline
-
-`AO3Client.backoff(attempt)` (`AO3Client.swift:291`) returns `min(60, pow(2, attempt)) +
-random(0...1)`. At `attempt == 0` that is **1–2 seconds**.
-
-`perform` uses it as the 429 fallback when AO3 sends no `Retry-After`
-(`AO3Client.swift:240`). So the response to an explicit *"you are going too fast"* can be a
-retry ~1 s later — **four times faster than the 4 s steady-state interval**.
-
-`limiter.penalize(seconds: wait)` does push the next slot out, so the practical floor is that
-same 1–2 s rather than zero. It's still backwards: a 429 should always back off *further*
-than baseline, never less. ARCHITECTURE §9 lists politeness as non-negotiable; this is the
-one place the code doesn't honour it. One-line fix, in [01](01-correctness-and-durability.md) §5.
-
-### F6, F7, F8, F11, F12, F13
-
-Detailed with evidence in [02-verification-and-hardening.md](02-verification-and-hardening.md).
-Summarised in the table above.
-
----
-
-## P2 findings
-
-### F9 — `chapterGains` is unguarded cross-suspension mutable state
-
-`SyncEngine.swift:23` declares `private var chapterGains: [Int: Int]` on a class marked
-`@unchecked Sendable` (line 12). It is written in `ingest` and read/mutated via
-`removeValue` in the download loop — across `await` boundaries, with the safety argument
-living in a **comment** (*"SyncEngine doesn't support overlapping runs"*) rather than in the
-type.
-
-**No live defect.** Both callers are safe today: `SyncController` guards explicitly with
-`guard phase != .running` (`SyncController.swift:80`), and the CLI issues exactly one
-`engine.run(...)` in top-level code and then exits (`ao3archiver/main.swift:75`) — it has no
-guard because it has no way to start a second run. The finding is that the invariant is
-**unenforced**, not currently violated: nothing in the type system stops a future caller, and
-a `@unchecked Sendable` annotation is a promise the compiler doesn't check. Cheap to make real
-when [Plan 01](01-correctness-and-durability.md) §3 turns the engine into an actor — at which
-point the guarantee is free rather than documented.
-
-### F10 — Activity feed ordering is not guaranteed
-
-`SyncController.swift:106` creates a **new** `Task { @MainActor in self?.apply(event) }` per
-event. Independent tasks hopping to the same actor have no FIFO guarantee, so the
-"torrent-style activity feed" can render events out of order — e.g. a "Saved: X" line above
-the "Page 3" line that produced it. Cosmetic, but it's a log the user is asked to trust
-during a long, slow operation. An `AsyncStream` fixes it and removes 40 task allocations
-per page.
-
----
-
-## What is genuinely good (and should be protected by any future work)
-
-Stated explicitly because the plans in this directory must not regress it:
-
-- **The host allowlist is correct, including the subtle part.** `AO3Client.isAO3Host`
-  (`AO3Client.swift:178`) matches the apex exactly or a `.`-prefixed subdomain — it does not
-  use a bare `hasSuffix`, so `evil-archiveofourown.org` is rejected. It's enforced *before*
-  the request is formed (line 209) **and** in the redirect delegate (line 128). Two layers,
-  both right.
-- **The sanitizer is in the right layer.** `EpubSanitizer` cleans the DOM rather than relying
-  on a `WKWebView` navigation delegate, which structurally cannot see subresource loads. The
-  file's own doc comment articulates exactly why. `hasDangerousScheme` even strips C0 control
-  characters before matching, defeating `java&#9;script:`.
-- **`Store.count(_:)` guards its interpolated identifier** with `countableTables`
-  (`Store.swift:579`) — a table name can't be bound as a parameter, and the author noticed.
-- **The idempotency invariants are real and tested**, including the genuinely subtle
-  `markDeletedOnAO3` `CASE WHEN epub_path IS NOT NULL` conditional (`Store.swift:548`) that
-  keeps an "only copy" work inside the Saved facet.
-- **`reachedUpdateFrontier` fails soft in the safe direction** (`SyncEngine.swift:246`): a
-  card whose `updatedAt` didn't parse counts as *unknown*, not *old*, so parser drift makes
-  the pass do more work rather than silently stop early. This is the exact instinct F2 is
-  missing.
-
----
-
-## The through-line
-
-Three of the P0/P1 findings (F2, F8, and the caveats ARCHITECTURE §13 raises about itself)
-are the same root cause: **two AO3 behaviours were shipped as assumptions without captured
-fixtures**, in a codebase whose entire parser discipline is "pin the selector to real
-captured HTML." The remaining P0s (F1, F3) share a different root cause: **the OS boundary —
-SQLite locking and actor isolation — has no test that could have caught them**, because the
-test suite is (correctly, deliberately) pure and headless.
-
-Those two gaps, not any individual bug, are what the plans in this directory are organised
-around.
+**What it taught.** Two of the worst bugs hid in fixes to the first review, behind tests that called
+a lower layer with hand-picked arguments. The project now has a fake-AO3 harness
+(`AO3KitTestSupport`) so behaviour spanning the sync engine is tested end to end in both runners,
+and a rule to dry-run anything that changes the archive's format against a copy of the real data
+first.

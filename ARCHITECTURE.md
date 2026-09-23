@@ -1,596 +1,552 @@
 # Architecture
 
-The single source of truth for **how AO3 Archiver is built and why**. For what it does and how
-to use it, see [README.md](README.md). For the forward-looking roadmap and plans, see [plans/](plans/README.md).
-For day-to-day contributor conventions, see [CLAUDE.md](CLAUDE.md).
+How AO3 Archiver is built, and why. This is the design source of truth. For what the app does and
+how to use it, see [README.md](README.md); for day-to-day working rules, [CLAUDE.md](CLAUDE.md);
+for the roadmap, [plans/](plans/README.md).
 
-> **Built from scratch.** This is an original codebase. `ao3_api` / `ao3downloader` and similar
-> tools are referenced only as *documentation of AO3's behaviour* (download-URL shape, 429
-> handling, bookmark pagination, which fields live on a card) — no vendored code, no dependency on their abstractions.
+> **Built from scratch.** Tools like `ao3_api` and `ao3downloader` were read only as documentation
+> of how AO3 behaves (download URLs, rate limiting, pagination, what a card contains). No code is
+> vendored and nothing depends on their abstractions.
 
 ---
 
-## 1. What constrains the design (AO3 facts, verified against the live site)
+## 1. What AO3 forces on the design
 
-These are not preferences; getting them wrong gets the tool (or the user's IP) throttled.
+These were verified against the live site. They aren't preferences: getting them wrong gets the
+tool, or the user's IP, throttled.
 
-- **No public API.** Everything is HTML scraping. Auth is the `_otwarchive_session` cookie,
-  injected explicitly per request and never persisted by the tool.
-- **AO3 renders EPUBs server-side.** We download them as-is; we never construct EPUBs.
-- **Listing markup is shared** across works-search / tag / bookmarks / series pages — cards are
-  `li.work.blurb.group` / `li.bookmark.blurb.group`. **One parser serves all sources.**
-- **Each card embeds `<!-- updated_at=<unixts> -->`,** and the EPUB URL carries the same value.
-  That timestamp is the **download cache key** — skip re-download when it hasn't changed.
-- **EPUB link gotcha:** the href is `/downloads/<id>/<slug>.epub?updated_at=<ts>` and
-  301-redirects to `download.archiveofourown.org`. Match it on the path **before `?`** (it does
-  *not* end in `.epub`) and let URLSession follow the redirect.
-- **Adult works** show an interstitial; bypass with `?view_adult=true`.
-- **Bookmarks are heterogeneous:** a work, an external work (`/external_works/…`, off-site, no
-  EPUB), or a series (a nested collection). Only works are downloadable; series are expanded
-  into their member works.
-- **Rate limiting is real and strict.** AO3 returns 429 *and* 503 with `Retry-After` under light
-  bursts. Default to ~1 request / 4s, single-flight, with backoff. **Politeness is a hard
-  requirement, not a nicety.**
-- **No cover art.** AO3 EPUBs contain no cover images — so the gallery is metadata cards, not a
-  cover grid. (Don't reintroduce cover extraction.)
+- **There is no API.** Everything is HTML. Authentication is the `_otwarchive_session` cookie,
+  which the tool attaches to each request itself and never writes anywhere but the Keychain.
+- **AO3 builds the EPUBs.** We download them as they are; we never assemble one.
+- **One card format everywhere.** Works searches, tag pages, bookmark lists and series pages all
+  use the same blurb markup (`li.work.blurb.group`, `li.bookmark.blurb.group`), so one parser
+  serves every listing.
+- **Every card embeds `<!-- updated_at=<unix time> -->`,** and the EPUB link carries the same
+  value. That timestamp is the download cache key: if it hasn't changed, the saved file is current.
+- **The EPUB link is awkward.** It looks like `/downloads/<id>/<slug>.epub?updated_at=<ts>` (so it
+  doesn't *end* in `.epub`) and redirects to `download.archiveofourown.org`. We match on the path
+  before `?` and let URLSession follow the redirect.
+- **Adult works** sit behind an interstitial; `?view_adult=true` skips it.
+- **Bookmarks come in three kinds:** a work, an external work (`/external_works/…`, hosted
+  elsewhere, no EPUB), or a series. Only works can be downloaded; series are expanded into their
+  member works.
+- **Rate limiting is real.** AO3 answers light bursts with 429 or 503 and a `Retry-After`. We make
+  one request at a time, a few seconds apart, and back off when asked. Politeness is a hard
+  requirement.
+- **No cover art.** AO3's EPUBs have no covers, so the gallery shows metadata cards, not a cover
+  grid. (The Kindle export draws its own cover for the device; see §11.)
 
 ---
 
 ## 2. Module map
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│ AO3ArchiverApp (SwiftUI, macOS 26) — a thin skin over the model      │
-│   GalleryView · FilterSidebar · WorkCardView · WorkDetailView         │
-│   SyncController / SyncSheet · CredentialStore · Theme                │
-│   ReaderView · EpubWebView   (in-app EPUB reader, own windows)        │
-└───────────────┬─────────────────────────────────────────────────────┘
-                │ reads/observes (everything with an `if` lives below this line)
-┌───────────────▼─────────────────────────────────────────────────────┐
-│ AO3Kit — the reusable, fully-tested core                             │
-│                                                                       │
-│  GalleryModel   in-memory read/filter/sort/facet engine + view model │
-│  Store          GRDB/SQLite schema + FTS5; idempotent upserts; queries│
-│  SyncEngine     bounded, resumable: paginate → ingest → expand → dl   │
-│  BlurbParser    listing HTML → [WorkBlurb] (work/external/series)     │
-│  WorkDownloader resolve + fetch the server-rendered EPUB              │
-│  FileStore      archive folder + works/<id> - title.epub layout       │
-│  AO3Client      THE ONLY networked component (rate limit, backoff)    │
-│  EpubDocument   .epub → spine + TOC sections + generated reader HTML   │
-│  EpubSanitizer  strip remote refs / scripts from chapter bodies        │
-│  ReaderModel · ReaderSession · ReaderSettings  (reader logic + state)  │
-│  KindleExport   build a Send-to-Kindle .epub (info page + cover + badge)│
-│  KindleCover    render a JPEG cover (CoreText) — AO3 ships none         │
-│  RateLimiter · Models · ArchivePaths                                  │
+┌──────────────────────────────────────────────────────────────────────┐
+│ AO3ArchiverApp (SwiftUI, macOS 26): a thin skin over the model         │
+│   GalleryView · FilterSidebar · WorkCardView · WorkDetailView          │
+│   SyncController · SyncSheet · CredentialStore (Keychain) · Theme      │
+│   ReaderView · EpubWebView (reader windows)                            │
+└───────────────┬──────────────────────────────────────────────────────┘
+                │ observes; everything with an `if` lives below this line
+┌───────────────▼──────────────────────────────────────────────────────┐
+│ AO3Kit: the tested core                                                │
+│   AO3Client · RateLimiter      the only network access                 │
+│   BlurbParser · WorkDownloader  HTML → cards; card → EPUB bytes        │
+│   Store · FileStore             SQLite catalog; EPUB files on disk     │
+│   SyncEngine (actor)            index → reconcile → series → download  │
+│   GalleryModel · Presentation   filter/sort/facets; display decisions  │
+│   EpubDocument · EpubSanitizer  EPUB → safe, generated reader HTML     │
+│   ReaderSession · ReaderModel   reader state and coordination          │
+│   KindleExport · KindleCover    Send to Kindle                         │
+│   Models · ArchivePaths                                                │
 └──────────────────────────────────────────────────────────────────────┘
-                ▲                              ▲
-        ao3archiver (CLI driver)      selftest (headless checks)
+        ▲                         ▲                          ▲
+  ao3archiver (CLI)     AO3KitTestSupport (stub AO3)   selftest / AO3KitTests
 ```
 
-**Two hard rules that the whole codebase leans on:**
+Two rules hold the design together:
 
-1. **All network access goes through `AO3Client`.** Nothing else constructs a `URLSession`
-   request — that one place owns politeness, backoff, the cookie, and the User-Agent.
-2. **All logic lives below the SwiftUI line, in `AO3Kit`.** Anything with an `if` belongs in the
-   model (`GalleryModel`), not a View. The views are a dumb, compile-verified skin; the model is
-   unit-tested. This is what keeps the app testable despite a headless build environment.
+1. **All network access goes through `AO3Client`.** Nothing else builds a request, so politeness,
+   backoff, the cookie and the User-Agent are enforced in exactly one place.
+2. **All logic lives in `AO3Kit`.** If code makes a decision, it belongs below the SwiftUI line,
+   where it can be tested without a window server. The views only bind; `Presentation.swift`
+   exists to hold the small display decisions (is this work saved? which badge?) that would
+   otherwise creep into them.
 
 ---
 
-## 3. Data layer (`Store`, GRDB/SQLite + FTS5)
+## 3. Data layer (`Store`, `FileStore`)
 
-The archive is a plain on-disk SQLite file plus a `works/` folder — portable, survives app
-updates, and never lives in `/tmp`. The canonical schema is the migration list in
-`Store.swift`; the shape:
+The archive is a folder: one SQLite file and a `works/` folder of EPUBs.
+
+```
+<archive>/
+  archive.sqlite
+  works/<work id> - <sanitized title>.epub
+```
+
+It defaults to `~/Documents/ao3archive`. It's a plain path (the app isn't sandboxed), survives app
+updates, and never lives in `/tmp`.
+
+### Tables
+
+The migrations in `Store.swift` are the canonical schema.
 
 | Table | Holds | Notes |
 |---|---|---|
-| `work` | works + external works | `id` = AO3 work id; archive state (`epub_path`, `epub_updated_at`, `download_state`, `deleted_on_ao3_at`) lives here |
-| `series` | bookmarked series | expanded into member `work` rows on sync |
-| `series_work` | series ↔ member work links | with `part` ordering |
-| `bookmark` | one row per AO3 bookmark | polymorphic `(item_kind, item_id)` → a work or a series |
-| `tag` / `work_tag` | normalized tags | so a facet count is one grouped query |
-| `bookmark_tag` | the user's *own* bookmark tags | distinct from work tags |
-| `work_fts` | FTS5 full-text index | title/author/summary/tags/notes |
-| `filter_preset` | saved "Smart Bookmarks" | JSON-encoded filter + sort |
-| `reading_position` | reader resume point per work | `(work_id PK → work, spine_index, locator, progress)`; section-granular |
-| `meta` | key/value | resume cursor for a throttled index |
-| `sync_run` | sync bookkeeping | per-run counts/status |
-| `deleted_sighting` | one row per corroborating 404 sighting | `(work_id, source)`; a work is only *believed* deleted at `deletedConfirmThreshold` sightings |
+| `work` | works and external works | `id` is the AO3 id. Archive state lives here: `epub_path`, `epub_updated_at`, `download_state`, `deleted_on_ao3_at` |
+| `series`, `series_work` | bookmarked series and their member works | `part` gives series order |
+| `bookmark` | one row per AO3 bookmark | points at a work or a series via `(item_kind, item_id)`; `removed_at` marks a bookmark removed on AO3 but kept locally (§5) |
+| `tag`, `work_tag` | normalized work tags | |
+| `bookmark_tag` | your own bookmark tags | separate from work tags |
+| `work_fts` | FTS5 index over title, author, summary, tags, notes | maintained but not read by the app; see §13 |
+| `filter_preset` | saved filters | JSON-encoded filter and sort |
+| `reading_position` | reader resume point per work | section index + progress |
+| `deleted_sighting` | one row per 404 sighting | `(work_id, source)`; see §5 |
+| `meta` | key/value app state | the Full-sync resume cursor, the Quick-sync watermark |
+| `sync_run` | one row per sync | counts and status (`ok`, `error`, `interrupted`) |
 
-**One file, one in-app connection, and a busy timeout — the timeout is load-bearing.** The
-archive is a single `archive.sqlite` in SQLite's rollback-journal mode. The app opens it **once**
-(`Store.shared(atPath:)`) and every window — gallery, sync, each reader — shares that connection,
-so the app never contends with itself. `Store.makeConfiguration` sets `busyMode = .timeout(5)`:
-GRDB's default is `.immediateError`, and when the app once held a separate handle per reader window
-that made a resume write during a sync fail instantly with `SQLITE_BUSY`, which `ReaderModel`'s
-`try?` then discarded. The timeout still matters for the one remaining cross-connection case, a CLI
-sync running alongside the app.
+### One file, one connection
 
-*Not WAL.* 1.6.0 briefly switched archives to WAL; 1.6.1 reverted it. WAL's benefit (readers don't
-block the writer) is moot with one in-app connection, and it costs two sidecar files that must be
-copied as a set — Apple's SQLite keeps `-wal`/`-shm` on disk even after a clean close — which also
-makes a file-synced (iCloud Documents) archive riskier. The journal mode lives in the file header,
-so `makeConfiguration` switches a WAL archive back on open (checkpointing it; removing the leftover
-`-shm` only after the switch succeeds, which proves no other connection was using WAL).
+`archive.sqlite` uses SQLite's rollback journal, so the archive is always a single file you can
+copy. The app opens it **once** (`Store.shared(atPath:)`), and the gallery, sync and every reader
+window share that connection, so the app never competes with itself for the database lock.
 
-**Design decisions that matter:**
+The **busy timeout** (`busyMode = .timeout(5)`) is the part that prevents data loss. GRDB's default
+is to fail immediately on a locked database. When the app used to open a second connection per
+reader window, a reading-position save during a sync failed with `SQLITE_BUSY` and a `try?` threw
+the error away, so your place in a book silently vanished. Now a writer that meets a lock waits for
+the other short transaction instead. Inside the app that no longer happens; the timeout covers a CLI
+sync running alongside it.
 
-- **Idempotent upserts preserve archive state.** `upsertWork` updates metadata via
-  `ON CONFLICT(id) DO UPDATE` but **never touches** `epub_path` / `epub_updated_at` /
-  `download_state` — re-reading a bookmark page must not clobber a downloaded file.
-- **"Needs download" is a query, not a flag:** `epub_path IS NULL OR updated_at > epub_updated_at`,
-  so an interrupted sync resumes correctly. `updated_at` is stored as the **unix ts** (the cache
-  key), not ISO — exact comparison, no human-date parsing.
-- **`bookmark` has two unique constraints** — `bookmark_id` (PK) and `UNIQUE(item_kind, item_id)`.
-  A work re-bookmarked on AO3 returns a *new* bookmark id for the *same* item; `upsertBookmark`
-  drops any stale row for that item before inserting, so the second constraint can't abort a sync.
-- **`work_fts` is a plain FTS5 table** (not `content=''`): upserts DELETE-then-INSERT by
-  `rowid = work.id`, so no external-content triggers are needed.
-- **Series dedup:** a series' members share the one `work` row (UNIQUE id) plus a `series_work`
-  link; if separately bookmarked they keep their own `bookmark` row too. The polymorphic
-  `bookmark(item_kind, item_id)` makes the overlap a non-issue.
-- **`upsertWork` returns a `WorkUpsertChange`** (`isNew`, `newChapters`) computed from the row's
-  `chapters_have` *before* the upsert overwrites it — the only way to detect "gained N chapters"
-  without a second pass, since the column itself is gone by the time the caller could compare. See
-  [§13](#13-cookie-expiry-mid-sync--deleted-work-detection-v15).
+*Why not WAL:* 1.6.0 switched archives to WAL mode; 1.6.1 switched them back. WAL's advantage
+(readers don't block the writer) doesn't matter with one in-app connection, and it adds `-wal` and
+`-shm` files that must be copied together. Apple's SQLite keeps them on disk even after a clean
+close, and after an app quit recent writes live only in `-wal`, so copying or cloud-syncing
+`archive.sqlite` alone gives an out-of-date database. The journal mode is stored in the file, so
+`Store.makeConfiguration` converts a WAL archive back when it opens one: it checkpoints the WAL into
+the main file, then removes the leftover `-shm` only after the switch succeeds (which proves no
+other connection was using WAL).
 
-On-disk layout:
-```
-<ArchiveRoot>/
-  archive.sqlite
-  works/<work_id> - <sanitized title>.epub
-```
+### Rules the data layer keeps
 
----
-
-## 4. Networking & sync
-
-**`AO3Client`** is the only networked component: a **process-wide** token-slot `RateLimiter`
-(`RateLimiter.shared` — every client, including each single-work Download, queues on the same
-slot clock; default ~1 req / 4s, user-tunable), 429/503 `Retry-After` backoff with jitter and
-exponential growth on repeats (never shorter than the polite interval), 5xx + timeout retries, explicit cookie injection, an honest User-Agent (the requester's AO3
-username when known + contact `syrtis@sysd.info`, built by `AO3Config.defaultUserAgent`), and
-automatic following of the EPUB download redirect. It exposes
-`onRateLimit` so the UI can surface a backoff instead of looking stalled.
-
-**Host allowlist (security).** The cookie and the username-bearing User-Agent must never reach a
-non-AO3 host, and the client must never be steered off-site (SSRF). So `perform` refuses any
-request whose host isn't AO3 *before* issuing it, the redirect delegate cancels any hop that leaves
-AO3, and the EPUB-link parser is anchored to site-relative `/downloads/` paths. The host test
-(`isAO3Host`) matches the apex exactly or a `.`-prefixed subdomain — a bare
-`hasSuffix("archiveofourown.org")` would also match a lookalike like `evil-archiveofourown.org`.
-
-**`SyncEngine`** orchestrates a bounded, resumable run (each step committed immediately):
-
-1. **Index** — page through bookmarks, classify each card (`work`/`external` → `work`, `series`
-   → `series`), upsert the lightweight metadata. External works are recorded but never queued
-   for download.
-2. **Series expansion** (rate-limited) — for each bookmarked series, fetch `/series/<id>`, parse
-   its members with the same `BlurbParser`, upsert + link them, enqueue each for download.
-3. **Content download** (slow, rate-limited) — fetch EPUBs for works that need one, validating
-   the ZIP/EPUB magic bytes, and mark each downloaded on completion.
-
-**Queue order is intent:** both download queues put the most recently bookmarked works first
-(then unbookmarked series members), so a per-run cap spends itself on what you just added rather
-than on the oldest work ids. **Save Visible** (`SyncEngine.downloadSelected`) downloads the
-unsaved works in the current filtered view, capped at `maxSelectedDownloads` (100), skipping
-already-current files, recorded as a normal sync run.
-
-**Series:** expansion follows a series' pagination (≤ `maxSeriesPages`). Besides the Full sync
-pass, Quick sync expands up to `expandNewSeries` (3) never-expanded series per run, and the detail
-view has a per-series fetch.
-
-**Removed bookmarks (Full sync only, `pruneRemovedBookmarks`).** After the index pass, bookmarks
-not seen this run are treated as removed on AO3 **only if** `SyncEngine.pruneDecision` passes every
-guard: a session cookie (private bookmarks are owner-only, and an expired cookie on your own listing
-most likely serves the public ones rather than a login page), the pass started at page 1 and ran to
-the last page, the distinct bookmark ids seen equal AO3's own "of N Bookmarks" heading
-(`BlurbParser.listingTotal`), private bookmarks were visible if we hold any, and the removal is
-≤ 5% (min 25). A work still yours locally (EPUB, reading position, series link) keeps its row with
-`bookmark.removed_at` set and an "Un-bookmarked" badge; the rest are deleted and
-`Store.deleteOrphanWorks` sweeps works nothing refers to (also run at app open). Ingest writes a
-card's work + bookmark rows in **one transaction** so the sweep can never catch a half-ingested card.
-
-**Bounded by default** (`maxPages`, `maxDownloads` default low) so a casual run never crawls a
-large account by accident. **Resumable:** the next-page URL is persisted in `meta`
-(`SyncEngine.resumeKey`), so a run throttled at page 15 of ~130 resumes there, not at page 1.
-A failed download stays in the queue (retryable across runs — run anonymously, add a cookie,
-re-run to pick up works that needed login). A failed *refresh* of a work we already hold keeps it
-`'downloaded'` (the file is still there). Cancellation propagates as `CancellationError` — the
-download loop stops rather than parking every remaining work as failed. The resume cursor is only
-followed when it belongs to the listing being indexed. A listing fetch that bounces to AO3's login form
-(cookie expired) throws `AO3Error.sessionExpired` and pauses the run instead of silently
-completing as if the index were caught up — see [§13](#13-cookie-expiry-mid-sync--deleted-work-detection-v15).
+- **Upserts never touch archive state.** `upsertWork` updates metadata with
+  `ON CONFLICT(id) DO UPDATE` but never writes `epub_path`, `epub_updated_at` or `download_state`,
+  so re-reading a bookmark page can't clobber a downloaded file.
+- **"Needs download" is a query, not a flag:** no file yet, or `updated_at > epub_updated_at`. An
+  interrupted sync therefore resumes correctly, and a failed download is retried next time (so a
+  work that needed a cookie downloads once you add one). `updated_at` is stored as the unix
+  timestamp for exact comparison.
+- **A saved work stays saved.** `markFailed` and deletion confirmation leave `download_state` at
+  `'downloaded'` whenever an `epub_path` exists, and the UI asks the file (`WorkListItem.isSaved`),
+  not the state. A failed refresh once flipped saved works to "failed", which hid their Read and
+  Kindle buttons while the file sat on disk.
+- **Re-bookmarks don't break the sync.** `bookmark` has two unique constraints (`bookmark_id` and
+  `(item_kind, item_id)`). Re-bookmarking a work on AO3 gives it a new bookmark id, so
+  `upsertBookmark` removes the old row for that item before inserting.
+- **Each card is written in one transaction** (`upsertWorkAndBookmark`, `upsertSeriesMember`), so
+  nothing can observe a work without its bookmark or series link. That matters because
+  `deleteOrphanWorks` (run at app open and after pruning) deletes works nothing refers to: no
+  bookmark, no series link, no file, no reading position.
+- **Chapter gains are detected during the upsert.** `upsertWork` returns a `WorkUpsertChange`
+  computed from the row's old `chapters_have` before overwriting it, which is the only moment the
+  comparison is possible.
+- **Migrations from v6 on use `foreignKeyChecks: .immediate`.** Every statement is still
+  foreign-key checked, but GRDB skips its whole-database check after the migration. That check
+  aborted on a single pre-existing dangling row in a real archive and left the app unable to open
+  it; v7 deletes such rows.
 
 ---
 
-## 5. The gallery model (`GalleryModel` — the heart of the UI)
+## 4. Networking (`AO3Client`, `RateLimiter`, `WorkDownloader`)
 
-Everything the gallery shows is derived by **pure compute over an in-memory working set**, so
-filter / search / sort / facet never touch disk on the hot path.
+`AO3Client` is the only component that touches the network.
 
-- **`fetchAllListItems()`** builds the display rows from the `bookmark` table joined to
-  `work`/`series` plus tags, grouping tags **in memory** so a work with N tags yields one
-  `WorkListItem` with N tags (no join fan-out). Items come from the `bookmark` table, so series
-  *members* that aren't separately bookmarked don't appear as their own cards.
-- **One generic keyed filter mechanism.** Every multi-value dimension (bookmark type, rating,
-  category, warnings, language, fandom, relationship, character, freeform, your tags) lives in a
-  single `FacetDimension` enum + a `WorkListItem.values(for:)` extractor. The filter stores
-  `include`/`exclude` as `[FacetDimension: Set<String>]`. **Invariant: an emptied dimension drops
-  its key** (never an empty set) — so `isActive` / `==` / the memo key / preset round-trips stay
-  honest. Adding a dimension is one `case` + one line.
-- **Tri-state facets.** Each value cycles neutral → include (green ✓) → exclude (red ⊘) →
-  neutral — include and exclude in one list, not AO3's duplicated lists. Exclude wins.
-- **Ranges are one mechanism too.** `RangeField` (word count / kudos / comments / bookmarks /
-  hits / date updated / date bookmarked) + `NumericBound` (min/max) over a single `Double?`
-  extractor. A nil-valued item (a series has no word count) drops out of an active range. Date
-  bookmarked is parsed from text to `Date?` once at load (shared POSIX/UTC formatter, fail-soft)
-  — no schema migration, because all filtering is in memory.
-- **Derived / bookmark booleans** use `TriFilter` (any/yes/no): crossover (fandom count > 1),
-  rec'd, has-notes, private/public. Completion and download are single-select.
-- **Faceted counts are true faceted search:** each dimension's counts are computed against the
-  set filtered by all *other* dimensions, so selecting one value never hides that dimension's
-  other values.
-- **Saved presets ("Smart Bookmarks").** `GalleryFilter`/`GallerySort` are `Codable`; a
-  `FilterPreset` (name + filter + sort) is JSON-encoded into `filter_preset`. (A
-  `[FacetDimension: Set<String>]` encodes as a JSON *array* — Swift only treats String/Int keys
-  as object keys — which round-trips fine.)
-- **`GalleryViewModel`** (`@Observable`) holds `allItems` + `filter` + `sort` and exposes the
-  derived `visibleItems` / `facets(for:)`, **memoized** via an `@ObservationIgnored` cache keyed
-  by `MemoKey(filter, sort, loadGeneration)` — so repeated renders don't recompute; only a real
-  change does. A `recomputeCount` lets tests prove the memo holds.
+- **One schedule for the whole app.** Every client queues on the process-wide `RateLimiter.shared`,
+  which hands out time slots at the configured interval (4 s by default in the CLI, 5 s in the
+  app). A sync, Save Visible, and any number of Download clicks all wait their turn on the same
+  clock.
+- **Retries back off, never below the polite interval.** 429 honours `Retry-After`; 429, 5xx
+  (including Cloudflare's 52x codes) and network errors otherwise back off exponentially with
+  jitter, and no wait is ever shorter than the normal request interval. `onRateLimit` lets the UI
+  show "waiting 30 s" instead of looking stalled. A Cloudflare challenge page ("shields up") is
+  reported as such rather than retried or mistaken for a login problem.
+- **Cancellation is not a failure.** A cancelled request surfaces as `CancellationError` (URLSession
+  reports `URLError.cancelled`; the limiter's sleep throws), so callers stop instead of retrying or
+  recording a per-work error.
+- **The cookie and User-Agent never leave AO3.** `perform` refuses any host that isn't AO3 before
+  building the request. `isAO3Host` matches the apex or a `.`-prefixed subdomain; a bare suffix
+  check would also accept `evil-archiveofourown.org`. The redirect delegate cancels any hop off AO3
+  and re-attaches the cookie across AO3's own cross-host EPUB redirect, which URLSession would
+  otherwise drop.
+- **Honest identification.** The User-Agent is
+  `ao3-archiver/<toolVersion> (personal bookmark backup; AO3 user: <name>; contact …)`.
+  `AO3Config.toolVersion` is the app's single version number; `make-app.sh` stamps it into the
+  bundle.
 
-### Out of scope by data availability
-
-Date-*published* range and date-posted sort: the listing blurb carries only the *updated* date,
-so a published date would need a per-work hydration fetch we deliberately avoid for politeness.
-A local-file-size / download-status sort needs epub byte size stored at download (a small
-post-V1 item).
+`WorkDownloader` fetches a work page, finds the EPUB link, and downloads it. The link must be
+site-relative and belong to **this** work (`/downloads/<workID>/…`); the fallback selector also sees
+author-written content, so without the id check a planted link could archive a different work under
+this one's name. The downloaded bytes must start with the ZIP signature. A page with no download
+link means the work needs a login (`requiresLogin`), unless it's a Cloudflare page.
 
 ---
 
-## 6. Performance architecture (designed for 20k bookmarks)
+## 5. Sync (`SyncEngine`)
 
-**Design point:** ~20k unique bookmarks on Apple-Silicon compute (many fast cores, ample RAM).
-At this scale nothing in the pipeline is O(n²) and 20k items are only tens of MB resident — so
-the answer is **not** a SQL rewrite. The slowness was wasted recomputation, main-thread
-blocking, and no input debounce. The fix keeps the tested in-memory engine and makes it do
-**less work, less often, off the main thread, across more cores.**
+`SyncEngine` is an `actor`. The app drives it from a detached task, so parsing, database writes and
+file writes stay off the main thread, and two runs can't interleave. Every page and every EPUB is
+committed as soon as it's done, so an interrupted run loses nothing.
 
-| Lever | What it does | Where |
+### Full sync (`run`)
+
+1. **Index.** Page through the bookmark list, parse each card and upsert it. External works are
+   recorded but never downloaded. The next-page URL is saved as a resume cursor, so a run stopped at
+   page 15 of 130 continues from page 15 next time (only if the cursor belongs to the same listing).
+   **Start over** in the app clears it.
+2. **Reconcile removed bookmarks** (the app's Full sync only). See below.
+3. **Expand series.** Fetch each bookmarked series, following its pagination (up to
+   `maxSeriesPages`), and link its member works.
+4. **Download.** Fetch EPUBs for works that need one, up to the run's cap.
+
+### Quick sync (`incrementalSync`)
+
+A cheap catch-up, bounded by a small page budget:
+
+1. **New bookmarks:** page the default (date bookmarked) listing until a page contains nothing new.
+2. **Updated works:** page the date-updated listing until a whole page predates the last successful
+   Quick sync. Re-ingesting bumps `updated_at`, which marks saved works stale. A card whose date
+   didn't parse counts as "unknown", not "old", so parser drift makes the pass do more work, never
+   stop early.
+3. **New series:** expand up to three bookmarked series that have never been fetched.
+4. **Re-download** saved works that went stale (capped). The never-downloaded backlog is left for
+   Full sync or Save Visible.
+
+The watermark is the run's start time and is saved only on success, so nothing updated mid-run is
+skipped.
+
+### Other entry points
+
+- **Save Visible** (`downloadSelected`) downloads the unsaved works in the gallery's current view,
+  at most 100 per request, skipping files that are already current. It's recorded as a normal sync
+  run.
+- **The detail panel's Download button** uses the same `downloadWork` as the sync loop, and **Fetch
+  works in this series** uses the same series expansion.
+
+**Queue order is intent.** Both download queues put the most recently bookmarked works first, then
+series members nobody bookmarked directly. With a cap per run, order decides what gets saved;
+ascending work id used to mean the oldest works on AO3 always went first.
+
+### Removed bookmarks
+
+After a Full sync's index pass, a bookmark this run didn't see *might* have been removed on AO3.
+Acting on that is dangerous, since a partial view would delete real bookmarks, so
+`SyncEngine.pruneDecision` requires every one of these:
+
+- **A session cookie.** Private bookmarks are only shown to their logged-in owner, and an expired
+  cookie on your own listing most likely serves the public ones rather than a login page.
+- **A complete read:** the pass started on page 1 (not a resume) and continued until there was no
+  Next link.
+- **The exact count:** the number of distinct bookmarks seen equals the total in AO3's own heading
+  ("1 - 20 of 1,811 Bookmarks", read by `BlurbParser.listingTotal`). A page that shifted mid-run or a
+  truncated listing fails this.
+- **Private bookmarks visible,** if the archive holds any.
+- **A small change:** at most 5% of bookmarks (or 25, whichever is larger). A large drop is far more
+  likely a parsing or login problem than you un-bookmarking hundreds of works at once.
+
+If any check fails, nothing is removed and the activity log says why. If all pass, a bookmark whose
+work is still yours locally (a saved file, a reading position, a series link) is kept and flagged
+`removed_at`, which shows as an **Un-bookmarked** badge. Other removed bookmarks are deleted, and the
+orphan sweep removes their works. A bookmark that reappears on AO3 is simply un-flagged.
+
+### Cookie expiry mid-sync
+
+AO3 doesn't reject a stale cookie; it returns a normal page containing the login form. A sync would
+then find no cards and finish looking successful. `BlurbParser.looksLikeLoginPage` detects the form
+(only when the page has no cards, so a fic summary that mentions logging in can't trigger it, and
+only when a cookie was supplied, since logged-out pages legitimately show a login form). The engine
+throws `AO3Error.sessionExpired`; the app pauses in a `needsCookie` state and **Resume sync**
+restarts the same run with a fresh cookie. A Full sync continues from its saved cursor.
+
+### Deleted works
+
+A 404 on a work's page is **evidence** that the author deleted it, not proof; AO3 also returns 404
+during deploys and for some restricted works. So:
+
+- Each sync records at most one sighting per work, under its own source
+  (`SyncEngine.sightingSource(runID:)`). A work is only treated as deleted once
+  `Store.deletedConfirmThreshold` (2) different runs agree. (A fixed source once made the threshold
+  unreachable; tests calling the Store directly with made-up sources didn't catch it.)
+- Once confirmed, the work gets `deleted_on_ao3_at`: an **Only copy** badge if you saved it,
+  **Deleted on AO3** if not. It drops out of the download queues so it isn't requested every sync.
+- The exclusion **expires** after `deletedRecheckDays` (90), because authors do restore works. A
+  re-confirmation after that gets a fresh timestamp.
+- A successful download clears all sightings, and **Check again on AO3** in the detail panel clears
+  the verdict by hand.
+- Nothing is probed proactively; this only happens when the normal download flow meets a 404.
+
+### Chapter gains
+
+`SyncEngine.ingest` records positive `newChapters` deltas; the download loop reports "gained N
+chapters — saved" only once the new file is actually written.
+
+---
+
+## 6. The gallery model (`GalleryModel`)
+
+Everything the gallery shows comes from **pure computation over an in-memory list**, so filtering,
+searching, sorting and facet counts never touch the disk.
+
+- **`fetchAllListItems()`** joins `bookmark` to `work` or `series`, grouping tags in memory so a
+  work with N tags is one item, not N rows. Items come from bookmarks, so series members you didn't
+  bookmark appear under their series, not as their own cards.
+- **One filter mechanism for every tag-like dimension.** Bookmark type, rating, category, language,
+  fandom, warnings, relationships, characters, additional tags and your own tags are cases of
+  `FacetDimension`, each with one `values(for:)` extractor. The filter keeps `include` and `exclude`
+  sets per dimension. **An emptied dimension drops its key**, so `isActive`, `==`, the memo key and
+  preset round-trips stay honest. Adding a dimension is one case plus one line.
+- **Three-state facets.** A value cycles neutral → include → exclude → neutral. Exclude wins. Within
+  a multi-value dimension (tags) includes are AND-ed; within a single-value one (rating) they're
+  OR-ed, since a work can't have two ratings.
+- **Ranges** (word count, kudos, comments, bookmarks, hits, date updated, date bookmarked) share one
+  `NumericBound` mechanism over a `Double?` value. An item without a value (a series has no word
+  count) drops out of an active range.
+- **Yes/no filters** (crossover, rec'd, has notes, private) use `TriFilter`; completion and download
+  state are single-select.
+- **True faceted counts.** Each dimension's counts are computed against the items filtered by all
+  *other* dimensions, so picking a value never hides its siblings.
+- **Presets.** `GalleryFilter` and `GallerySort` are `Codable`; a preset is stored as JSON in
+  `filter_preset`.
+- **`GalleryViewModel`** (`@Observable`) holds the items, filter and sort, and memoizes the visible
+  list and all facet counts under `MemoKey(filter, sort, loadGeneration)`, so a re-render doesn't
+  recompute. During a sync the list reloads off the main thread (`reload(from:)`); a generation
+  counter drops an older fetch that finishes after a newer one.
+
+**Not available from the data:** a date-published filter or sort. Listing cards carry only the
+updated date, and fetching each work's page to get it would cost one request per work.
+
+---
+
+## 7. Performance (designed for 20,000 bookmarks)
+
+At 20k items nothing is quadratic and the working set is tens of MB, so the answer wasn't a SQL
+rewrite. The slowness was repeated work, main-thread work and no input debounce. The fix keeps the
+in-memory engine and makes it do less, less often, off the main thread, on more cores.
+
+| Change | Effect | Where |
 |---|---|---|
-| **Stored `searchHaystack`** | concatenated/lowercased once in `init`, not re-joined per match call | `WorkListItem` |
-| **Debounced search** | a burst of keystrokes collapses to one recompute (~200ms); clearing applies instantly | `GalleryView` |
-| **Precomputed sort keys** | `titleSortKey`/`authorSortKey` replace per-comparison `localizedCaseInsensitiveCompare` | `WorkListItem` / `GallerySort` |
-| **Allocation-free matching** | probe each item value against the small include/exclude set instead of building a `Set` per item per dimension | `GalleryFilter.matches` |
-| **Parallel facet passes** | the 9 independent faceted-count passes run via `DispatchQueue.concurrentPerform` (each writes its own result slot — no locking); wall-clock collapses toward one pass | `GalleryViewModel.derived` |
-| **Coalesced sync reloads** | the live "grow the gallery" reload (a full `fetchAllListItems` + recompute) is throttled to ≤1 / ~1.2s during sync, with an immediate flush at end-of-run | `SyncController` |
+| Stored `searchHaystack` | built once per item, not per keystroke | `WorkListItem` |
+| Debounced search | a burst of typing becomes one recompute (~200 ms) | `GalleryView` |
+| Stored sort keys | plain `<` instead of locale-aware comparison per sort step | `WorkListItem` |
+| Allocation-free matching | probe the small filter sets instead of building a set per item | `GalleryFilter.matches` |
+| Parallel facet passes | the 10 facet counts run on all cores, each into its own slot | `GalleryViewModel` |
+| Coalesced sync reloads | at most one gallery reload per ~1.2 s during a sync, fetched off-main | `SyncController`, `GalleryViewModel.reload` |
 
-**Measured (debug, 20k synthetic items):** a full recompute (visible list + all 10 facets) went
-**349ms → 135ms (~2.6×)**; first compute 121ms → 52ms. These are guarded by a regression
-assertion in the scale test, so later changes can't silently regress them. A "parallel facets ==
-serial facets" check proves the concurrency stays deterministic.
+**Measured** (debug build, 20k synthetic items): a full recompute went from 349 ms to 135 ms, and
+the first compute from 121 ms to 52 ms. A budget assertion in the scale test guards these numbers,
+and a check that parallel facet counts equal serial ones keeps the concurrency deterministic.
 
-**Deferred (optional, future):** moving the recompute fully off-main with a generation token
-(insurance for 50k+ / pathological filters; high architectural cost, modest payoff at 20k after
-the above), and a SQL/FTS fallback (only past ~100k — and a search-*semantics* change, since
-FTS is token/prefix matching, not the current substring-anywhere `contains`).
+**Deliberately not done:** moving the recompute itself off the main thread (little gain at 20k), and
+switching search to SQL/FTS (only worth it past ~100k, and it would change search from "substring
+anywhere" to token matching).
 
 ---
 
-## 7. UI layer (`AO3ArchiverApp`)
+## 8. The app (`AO3ArchiverApp`)
 
-A thin SwiftUI skin over the tested model. **Platform is macOS 26 package-wide**
-(`.macOS("26.0")` in `Package.swift`) — one deployment boundary, so real Liquid Glass
-(`.glassEffect`, `.buttonStyle(.glass)`) and Observation are available with no scattered
-`@available`. Glass is the only render path.
+The whole package targets **macOS 26**, so Liquid Glass (`.glassEffect`, `.buttonStyle(.glass)`) and
+Observation are available everywhere with no `@available` branches.
 
-- **Layout** mirrors AO3 bookmarks: a glass **filter sidebar** (live facet counts, typeahead on
-  high-cardinality dimensions), the **gallery** of metadata cards (comfortable/compact density),
-  a top bar (search + sort + sync), and a **detail inspector** (open in Books, reveal in Finder,
-  view on AO3; series list their members in order, per-work download).
-- **The card is metadata, not a cover:** title, author, AO3 colour-coded corner symbols (rating /
-  category-with-gradients / warnings / completion), tag pills grouped by type, stats, summary,
-  and your own bookmark tags/notes.
-- **Responsive layout (V1.1).** The detail inspector is the *flex* pane: below ~900pt it
-  auto-hides (width tracked via `onGeometryChange`) and returns when the window widens; the
-  sidebar collapses to a toggle when its min width can't be honored. Tag pills truncate inside
-  the card (`FlowLayout` clamps over-long children to the row width) instead of overflowing.
-- **In-app sync.** `SyncController` (@MainActor @Observable) runs the genuinely off-main
-  `SyncEngine` (an `actor`, driven from a `Task.detached`) with
-  live progress — page-of-total, a rate-limit banner, an activity feed — and reloads the gallery
-  live (coalesced) as pages index. `SyncSheet` collects username + cookie into `CredentialStore`
-  (Keychain). Default sync is **index-only** (fast, gentle); EPUBs download per-work on demand or
-  via a bulk toggle. A `.needsCookie` phase (V1.5) pauses on `AO3Error.sessionExpired` instead of
-  failing outright — see [§13](#13-cookie-expiry-mid-sync--deleted-work-detection-v15).
-- **Deleted-on-AO3 badge (V1.5).** A work flagged `deletedOnAO3` gets a red `ColorBadge` on its
-  card and a banner in the detail view — "only copy" if `epubPath != nil`, "deleted before you
-  could save it" otherwise. Gated on `epubPath`, not `downloadState`, deliberately: see §13.
-- **The sidebar is a `ScrollView`, not a `List`:** a `List` is NSTableView-backed and reloads
-  mid-event when a filter row mutates the model → "reentrant operation in NSTableView delegate".
+- **Layout.** A filter sidebar with live facet counts (typeahead for dimensions with thousands of
+  values), the gallery of metadata cards (comfortable or compact), a toolbar (search, sort, Save
+  Visible, archive folder, sync) and a detail panel. It adapts to width: at 1100 pt and up both side
+  panels can be pinned; between 720 and 1100 pt only one at a time; below 720 pt they open as sheets
+  over the gallery.
+- **Cards show metadata, not covers:** title, author, AO3's colour-coded corner symbols (rating,
+  category, warnings, completion), tag pills by type, stats, summary, your bookmark tags and notes,
+  and badges for **Only copy**, **Deleted on AO3** and **Un-bookmarked**.
+- **The detail panel** offers Read, Open in Books, Send to Kindle, Reveal in Finder, Download EPUB
+  and View on AO3; for a series, its works in order and a fetch button.
+- **Syncing.** `SyncController` (`@MainActor`) drives the engine from a detached task and feeds
+  progress back through one ordered stream: page N of M, a rate-limit banner, an activity log. Each
+  run carries a generation number; Cancel frees the UI at once, and anything a cancelled run still
+  reports is ignored, so it can't overwrite a newer run. The gallery owns its controller and cancels
+  it if the archive folder changes. `SyncSheet` stores the username and cookie in the Keychain via
+  `CredentialStore`. If the Keychain refuses a read, the stored value is kept (never overwritten by
+  the empty field) and the sheet says so. A sync requires a username.
+- **The sidebar is a `ScrollView`, not a `List`.** A `List` is NSTableView-backed and reloads
+  mid-event when a filter row changes the model, which crashes.
 
-### Archive folder resolution
+**Archive folder:** `AO3_ARCHIVE_DIR` if set, else the folder picked in the app (UserDefaults
+`archiveFolderPath`), else `~/Documents/ao3archive`. The CLI uses the same default. On open the app
+closes sync runs left `running` by a crash (only ones older than six hours, in case a CLI sync is
+live) and sweeps orphan works.
 
-Highest priority first: `AO3_ARCHIVE_DIR` env → the folder the user picked (UserDefaults
-`archiveFolderPath`, via the toolbar folder menu) → default `~/Documents/ao3archive`. The CLI
-uses the same default. Non-sandboxed by design (a personal tool reads a user-chosen folder
-directly), so the path is plain — no security-scoped bookmark needed. The folder menu has
-**Reveal in Finder**.
-
-### Bundle vs. bare executable
-
-The `.app` bundle (`Packaging/make-app.sh`, non-sandboxed, ad-hoc signed) is the real thing:
-launched as a bundle it gets keyboard focus / resize / Dock for free. Run bare via
-`swift run AO3ArchiverApp` it needs runtime nudges a bundle provides automatically —
-`NSApp.setActivationPolicy(.regular)` + activate (else keystrokes go to the launching terminal),
-and inserting `.resizable` on the `NSWindow`. Those nudges are belt-and-suspenders for the bundle.
+**The `.app` bundle** (`Packaging/make-app.sh`: non-sandboxed, ad-hoc signed) is the real way to run
+it. Run bare with `swift run AO3ArchiverApp`, it needs a regular activation policy, an explicit
+activate and a forced resizable window, which the code supplies.
 
 ---
 
-## 8. Testing
+## 9. The reader
 
-Full **Xcode is installed**, so two runners exercise the same assertions against the same
-fixtures:
+Saved works open in the app's own reader, in their own windows. It only reads files already on disk,
+so it adds no network use.
 
-- **`swift test`** — the swift-testing suite in `Tests/AO3KitTests/` (parser, downloader, Store,
-  gallery model).
-- **`swift run selftest`** — the framework-free equivalent (same assertions, same fixtures), which
-  also runs under Command-Line-Tools-only toolchains where `swift test` can't import `Testing`.
+**What AO3's EPUBs look like.** An EPUB is a ZIP described by an OPF file (manifest plus an ordered
+spine), with an EPUB2 `toc.ncx` or EPUB3 `nav` table of contents. AO3 splits a work into one file
+per chapter **plus a preface and a title page**, and the title page isn't in the TOC. Navigating the
+raw spine would therefore call the title page "Chapter 2".
 
-Keep the two **in lockstep** when changing the parser, store, or model.
+**`EpubDocument`** parses the container, OPF, spine, metadata and TOC (falling back to spine order)
+and derives **reading sections**: the spine files between one TOC entry and the next fold into one
+titled section, so the title page lands inside "Preface". Extraction refuses any entry whose path
+would escape the target folder.
 
-**End-to-end engine tests without a network (`AO3KitTestSupport`).** `AO3Client` accepts an
-injected `URLSessionConfiguration` and `RateLimiter`; `StubAO3` installs a `URLProtocol` on a
-unique `stub-*.archiveofourown.org` host per test (so it passes the host allowlist and parallel
-tests don't share routes) and fails loudly on any unrouted request. Scenarios are written **once**
-in `EngineScenarios` / `ModelChecks` / `ReaderScenarios` and run by *both* runners, so the lockstep
-rule holds by construction. Prefer adding a scenario here over a Store-only test when the behaviour
-spans the engine — a Store-level test with hand-picked arguments is how the unreachable
-deletion-sighting threshold hid in passing code.
+**It renders generated HTML, not the EPUB's XHTML.** AO3's XHTML uses named entities like `&nbsp;`
+without declaring them, and WebKit's strict XML parser stops at the first one, showing half a
+chapter. So the reader builds a fresh `text/html` page from each section's sanitized body, inlines
+its own stylesheet, and loads that. (`dc:language` goes into `<html lang>` only if it looks like a
+real language tag.)
 
-- **Parser selectors are pinned to real captured AO3 HTML** in `Tests/AO3KitTests/Fixtures/`
-  (works listing, bookmarks page, series card, series page). When AO3 markup drifts, update the
-  fixture and the expectations together. **Fail soft per-field** — one bad card must never abort
-  a whole page.
-- **The store/sync logic** (idempotency, stale-detection, FTS, series expansion, the re-bookmark
-  constraint) and **the whole gallery model** (fan-out-safe join, tri-state include/exclude,
-  ranges, derived filters, preset round-trip, sort, memoization, **20k scale + per-recompute
-  budget**, parallel==serial facets) are covered — no network, no rendering.
-- **Verification ceiling is `swift build`** for the views: the headless environment compiles
-  SwiftUI but can't render it, so the view layer is compile-verified only and the user confirms
-  visuals. Don't `swift run AO3ArchiverApp` as a check — it needs a window server and hangs
-  headlessly.
+**No network, enforced in the page itself.** A `WKWebView` navigation delegate never sees image or
+stylesheet loads, so **`EpubSanitizer`** cleans every body first. It removes scripts, embeds,
+`<style>`, `<link>`, SVG animation elements and event handlers; drops any `url()`-bearing inline
+style; and drops URL attributes that would load remotely. "Remote" is decided the way WebKit parses
+URLs: a protocol-relative URL or any scheme other than a few local ones (`data:`, `mailto:`, …) is
+remote, after removing the tabs and newlines that URL parsing ignores. That catches `https:host`,
+`ht<tab>tps://` and backslash forms, which a prefix check misses. Every candidate in a `srcset` is
+checked, and every attribute ending in `href` (so SVG's `xlink:href`) is treated as a link. The
+navigation delegate cancelling non-file navigations is a second layer.
 
----
+**Two modes.** *Chapters* shows one section at a time, and parses only that section, so even a huge
+work opens instantly. *Scroll* shows the whole work; sanitizing every chapter takes a while (about
+2.6 s for 247 chapters), so it happens off the main thread behind a spinner and is cached, making
+later font or theme changes near-instant. The EPUB's images are extracted off the main thread too,
+using a separate archive handle because ZIPFoundation's `Archive` isn't thread-safe. If extraction
+fails, the window says so instead of staying blank. (`content-visibility` was tried for lazy
+rendering and removed: it makes WebKit jump when scrolling up.)
 
-## 9. Conventions
+**Resume** is by section, which survives font changes where a pixel offset wouldn't. In scroll mode
+a debounced script reports the topmost visible section, so resume lands where you actually were.
+Positions are saved to `reading_position` through the app's shared connection; if a save fails, the
+reader shows a warning rather than losing it silently. The script message handler is removed in
+`dismantleNSView` to avoid a retain cycle, and the view reloads on a content *version*, since the
+generated file's path is reused.
 
-- **Built from scratch** — references document AO3 behaviour only; no vendored code.
-- **All network access goes through `AO3Client`;** all branching logic lives in `AO3Kit`, not Views.
-- **Parser fails soft per-field;** selectors pinned to fixtures.
-- **Honest User-Agent** with contact `syrtis@sysd.info` — no forged browser UA.
-- **Politeness is non-negotiable:** bounded defaults, single-flight, respect 429.
-
----
-
-## 10. The in-app reader (V1.2)
-
-Read archived works **inside** the app (dark, Liquid-Glass) instead of handing off to Apple
-Books. It's purely local — it renders EPUBs already downloaded, so there's **no new network or
-ToS surface**. The logic lives in `AO3Kit` (tested headlessly against synthetic + real captured
-EPUBs); the view is a thin `WKWebView` skin. New dependency: **ZIPFoundation** (MIT) to read the
-EPUB ZIP — `WorkDownloader` only validated the magic bytes before.
-
-**AO3 EPUB facts that shape the design** (verified against real files):
-- An EPUB is a ZIP described by an **OPF** (`META-INF/container.xml` → package → `manifest` +
-  ordered `spine`); the TOC is an EPUB2 **`toc.ncx`** or EPUB3 **`nav`**.
-- AO3/calibre split a work into per-chapter spine files **plus a Preface and a title page** — and
-  the **title page is absent from the NCX**. Navigating the raw spine therefore mislabels front
-  matter as chapters ("Chapter 3 of 27").
-
-**`EpubDocument`** (`EpubDocument.swift`) opens the ZIP, parses container/OPF/spine/metadata and
-the nav-or-ncx TOC (fail-soft to spine order), and derives **reading sections** — the unit the
-reader navigates. `buildSections` folds the spine files between one TOC anchor and the next into a
-single titled unit, so the title page lands inside "Preface" (a 5-spine work → 4 sections; a
-248-spine work → 247). All paths are keyed by full zip path so spine⇄TOC matching and extraction
-need no relative-path gymnastics; a zip-slip guard refuses entries escaping the extraction dir.
-
-**Rendering — a *generated* `text/html` doc, not the EPUB's own `.xhtml`.** AO3 XHTML carries
-named entities (`&nbsp;`) with no entity DTD; loaded as `.xhtml`, WebKit's strict XML parser
-**bails at the first undefined entity and renders only a partial chapter**. So the reader builds a
-fresh `text/html` document from the sanitized `<body>` of each section, inlines the reader
-stylesheet, and loads it with `loadFileURL` — the lenient HTML parser renders the whole chapter.
-
-**Security (the no-remote-requests invariant).** A `WKWebView` navigation delegate only sees
-navigations, not subresource loads — a hotlinked remote `<img>` (common in AO3 works) would
-phone home. So enforcement is **upstream in the DOM**: **`EpubSanitizer`** strips remote
-`src`/`href`/`srcset`, `<script>`/`<iframe>`, and inline `on*` handlers from each body before it's
-concatenated. The nav delegate cancelling non-`file:` navigations is belt-and-suspenders.
-
-**Two modes + the big-work path.** **Chapters** (one section; ←/→) and **Scroll** (the whole work
-concatenated; a TOC jump scrolls to the section anchor). The cost is SwiftSoup-sanitizing every
-chapter (~2.6s for a 247-chapter work), so scroll mode does it **off the main thread** behind a
-"Preparing…" spinner (only ~60–300ms of zip reads touch main) and **caches** the sanitized bodies
-(`EpubDocument.bodyCache`), so later mode/font changes rebuild in ~2ms. Chapters mode parses a
-single section on open — instant regardless of work size, the path for enormous works.
-`content-visibility` was tried for lazy off-screen rendering and **removed**: it makes WebKit jump
-scroll position when scrolling up into a virtualized chapter. Scroll mode renders the full DOM.
-
-## 11. Derived "ratio" sorts (`GallerySort`)
-
-Beyond the single-metric sorts (kudos, hits, word count…), the gallery offers five **derived
-ratio sorts** that rank by a *relationship* between two metrics, surfacing fics single-metric
-sorts bury: **Acclaim** (kudos ÷ hits — quietly beloved), **Keeper** (bookmarks ÷ kudos — saved to
-reread, not just liked), **Conversation** (comments ÷ kudos — discussion magnets / serials),
-**Density** (kudos ÷ words — short bangers), **Collector** (bookmarks ÷ hits). They were picked
-from an offline exploratory analysis of the archive (the scatter-lab report under the archive
-folder) as the ratios most *independent of raw popularity* — i.e. they reorder the list rather than
-echo the kudos sort.
-
-**Smoothing, not a hard floor.** A naive `num/den` puts flukes first — a 5-hit/5-kudos fic scores a
-perfect 100% acclaim. So each sort ranks by `num / (den + prior)`, where the per-ratio `prior`
-(hits 300, kudos 40, words 2000) is a soft exposure floor: it shrinks tiny-denominator works toward
-zero while leaving normal-sized ones essentially unchanged, and — unlike a filter — **keeps every
-item in the list** (missing metrics → 0, sink to the bottom). This is a pure, deterministic
-function of the in-memory item, so it stays below the SwiftUI line and is unit-tested in both the
-swift-testing suite (`ratioSorts`) and the headless `selftest`. `GallerySort.isRatio` lets the
-toolbar picker group them under a "Ratios" section; the cases are `Codable` raw strings, so they
-round-trip in filter presets like any other sort.
-
-**Resume** is **section-granular** (robust across font changes). In scroll mode a one-way,
-debounced scroll reporter posts the topmost-visible section index to the native side
-(`recordVisibleSection`), so resume lands where you actually read, not the last TOC selection; the
-position persists to `reading_position` (additive migration `v4`). The `WKScriptMessageHandler` is
-removed in `dismantleNSView` to avoid a retain cycle.
-
-**Windows.** Each work opens in its **own** value-based `WindowGroup(for: ReaderWindowValue.self)`
-window (resizable/fullscreen/many at once, portrait default), independent of the gallery; the
-window's own `Store` handle serves resume. Reading state (`ReaderSession` = section index +
-bounds + progress; `ReaderSettings` = theme/font/mode + the generated CSS) is pure and tested; the
-`@Observable` `ReaderModel` coordinates document + session + persistence; the view only binds.
-
-**Verification ceiling** is unchanged: `EpubDocument`/`EpubSanitizer`/`ReaderSession`/
-`ReaderSettings` are unit-tested (synthetic EPUBs in both TOC flavours, an AO3-shaped fixture for
-folding + entity-safety + no-remote, the body cache); the `WKWebView`/SwiftUI layer is
-compile-verified only — rendering, windows, and scroll-resume are run-to-confirm.
+**Windows.** Each work opens in its own `WindowGroup(for: ReaderWindowValue.self)` window: resizable,
+full-screen, as many as you like. The logic (`ReaderSession` for position and bounds,
+`ReaderSettings` for theme, font and CSS, `ReaderModel` to coordinate) is tested; the web view is
+compile-checked only.
 
 ---
 
-## 12. Send to Kindle (`KindleExport`, `KindleCover` — V1.4)
+## 10. Ratio sorts (`GallerySort`)
 
-`WorkDetailView`'s **Send to Kindle** button hands a saved work to Amazon's *Send to Kindle* Mac
-app (`open` via `NSWorkspace`, resolved by **bundle id** `com.amazon.SendToKindle` — `Amazon
-Kindle.app` is also installed, so a name lookup is ambiguous). AO3's exported EPUB is bare — no
-cover, plain title — so before the hand-off `KindleExport.makeKindleEPUB` writes a *temp copy* and
-augments it with three additions, each targeting a different Kindle surface:
+Besides the single-number sorts, five sorts rank by how two numbers relate, surfacing fics a single
+number buries:
 
-1. **A generated cover** (`KindleCover.renderJPEG`) — AO3 epubs ship no cover, so the homescreen
-   has nothing to thumbnail. A 2:3 JPEG drawn with **CoreGraphics + CoreText** (no AppKit, so it's
-   safe off the main thread — the send runs in a background `Task`): centered serif title (auto-
-   shrinks as it lengthens), author, fandom, ship, word count. Registered via a manifest `<item>` +
-   `<meta name="cover">` (the hint Amazon's converter reads). Skipped if the book already declares a
-   cover.
-2. **An info page** (`infoPageXHTML`) — prepended as spine[0], added to the `<guide>` *and* the
-   NCX/nav TOC, so Kindle (which auto-skips spine front matter to "chapter 1") treats it as content
-   and lands you on it. Reflowable, relative (`em`) sizing, no tables/flexbox (KF8 reflow mangles
-   them), darker labels for eink contrast. Fields: fandom, ship, rating/warnings/category, stats.
-3. **A title badge** (`kindleTitle`) — a compact `(Fandom, 10k words)` suffix folded into
-   `<dc:title>` for the library *list* view. Length-bounded (≤2 fandoms, capped chars) so it can't
-   overflow; fandom-first so it survives truncation. (Sized against the real archive: median badged
-   title ~60 chars, which fits the Paperwhite list view.)
+| Sort | Ratio | Finds |
+|---|---|---|
+| Acclaim | kudos ÷ hits | quietly beloved works |
+| Keeper | bookmarks ÷ kudos | works people save to reread |
+| Conversation | comments ÷ kudos | discussion magnets, serials |
+| Density | kudos ÷ words | short works that punch above their length |
+| Collector | bookmarks ÷ hits | works readers keep |
 
-**OPF edits are surgical string splices, never a SwiftSoup re-serialize** — round-tripping an OPF
-through a lenient parser risks mangling the `xmlns:dc`/`xmlns:opf` namespace decls and breaking the
-book. `mimetype` is left untouched (stays first + stored). **The OPF is re-fetched and replaced
-*last***: the cover/page/TOC writes shift ZIP central-directory offsets, so an `Entry` captured
-earlier would be stale and corrupt the package (this bit, caught by the real-archive stress test).
-The whole thing is **best-effort** — a missing/unparseable OPF leaves the already-valid copy alone
-rather than throwing, so the book still reaches the device. Temp copies live in
-`tmp/ao3-kindle/`; they can't be deleted on the way out (the async hand-off must outlive the call),
-so each run sweeps copies older than an hour.
+They were chosen from an exploratory analysis of a real archive as the ratios least correlated with
+raw popularity, so they actually reorder the list.
 
-**Pure, tested logic** (title/badge building, word abbreviation, fandom shortening, info-page
-XHTML, chapter text) is unit-tested in both the swift-testing suite and the headless `selftest`;
-the EPUB surgery is verified by **reopening the built file with `EpubDocument`** (spine +1, info
-page first + in the TOC, mimetype first, cover meta + extractable bytes) — the discriminating check
-that catches both string-splice and ZIP corruption. What can't be verified headlessly and is
-**run-to-confirm on a device**: whether Amazon's converter honours the cover/start-page, and
-list-view truncation of the badge.
+A plain ratio ranks flukes first (5 hits and 5 kudos is "100% acclaim"), so each sort uses
+`num / (den + prior)` with a per-ratio prior (hits 300, kudos 40, words 2,000). That pulls
+tiny-denominator works toward zero while barely moving normal ones, and unlike a minimum threshold
+it keeps every item in the list. Missing numbers count as 0 and sink. `GallerySort.isRatio` groups
+them in the sort menu.
 
 ---
 
-## 13. Cookie-expiry mid-sync + deleted-work detection (V1.5)
+## 11. Send to Kindle (`KindleExport`, `KindleCover`)
 
-Two related additions, both triggered by signals the sync already produces — neither adds new
-network surface or proactive probing.
+The **Send to Kindle** button hands a saved work to Amazon's *Send to Kindle* Mac app, found by
+bundle id (`com.amazon.SendToKindle`; a name lookup would also match the Kindle reading app). AO3's
+EPUB is bare, so `KindleExport.makeKindleEPUB` first makes a temporary copy with three additions,
+each for a different part of the Kindle:
 
-**Cookie-expiry detection.** A sync that silently produces zero new bookmarks looks identical
-whether the account is genuinely caught up or the session cookie just expired — AO3 doesn't 401/403
-a stale-cookie request to `/users/<x>/bookmarks`, it 200s a rendered login form. Previously
-`BlurbParser.parseListing` would just find no `li.bookmark.blurb.group` cards on that page and the
-sync would complete looking successful. `BlurbParser.looksLikeLoginPage(html:cardCount:)` catches
-this: **gated on the listing being otherwise empty** (so a coincidental string match inside a fic
-summary can't misfire while real cards are present) and matched against multiple markers ORed
-together — Devise's default flash text and the login form's `action`/field-name — fail-soft like the
-rest of the parser. `SyncEngine` checks it at every listing fetch (`indexSync`, `indexNewBookmarks`,
-`indexUpdatedWorks`) and throws `AO3Error.sessionExpired`, but **only when a cookie was actually
-supplied** (`hasCookie`, checked via `AO3Config.sanitizeCookie(client.config.sessionCookie)`) — AO3's
-logged-out page chrome plausibly carries its own login form as site-wide navigation, so an anonymous
-sync hitting a legitimately-empty page must never be misread as "your cookie expired."
+1. **A cover** (`KindleCover`), for the home screen: a 2:3 JPEG drawn with CoreGraphics and CoreText
+   (safe off the main thread): title (shrinking as it lengthens), author, fandom, ship and word
+   count. Skipped if the book already has a cover.
+2. **An info page**, which you land on when you open the book: fandom, ship, rating, warnings,
+   category and stats. It's the first spine item and is listed in the guide and TOC, because Kindle
+   skips front matter it doesn't recognise as content. Simple reflowable markup, no tables or flexbox.
+3. **A title badge** for the library list: `Title (Fandom, 10k words)`, with at most two fandoms and
+   a length cap so it fits the list view.
 
-`SyncController` catches `.sessionExpired` distinctly from a generic failure: it captures the exact
-`start(...)` arguments in a `ResumeParams` struct, sets `phase = .needsCookie`, and stops. `SyncSheet`
-shows a re-paste-cookie prompt in that phase (the cookie field is already editable again, since
-`.needsCookie != .running`); `resumeWithCookie(_:)` re-invokes `start` with everything unchanged
-except the fresh cookie. A full sync resumes from its **persisted page cursor** (`SyncEngine.resumeKey`
-was already written through the last successfully-processed page before the failing one); a Quick
-sync just re-runs its bounded, idempotent catch-up — cheap enough that re-walking a few pages costs
-nothing.
+**The OPF is edited with targeted string splices, never re-serialized** through an HTML parser,
+which could mangle its XML namespaces. `mimetype` stays first and uncompressed. The OPF is replaced
+**last**, because the other writes shift the ZIP's internal offsets and an entry read earlier would
+be stale. If anything about the book is unexpected, the export leaves the valid copy alone rather
+than failing.
 
-**Caveat — unverified against live AO3.** Unlike every other parser selector, the login-page markers
-have no captured fixture behind them (a real expired-cookie response wasn't available to capture
-during development). If AO3's actual login-redirect markup drifts from the assumed Devise
-conventions, update `looksLikeLoginPage` the same way any other selector drift gets fixed: capture
-the real page into `Tests/AO3KitTests/Fixtures/` and pin the test to it.
+The export runs off the main thread. Each export gets its own temporary folder (so two exports of
+the same title can't collide) under `tmp/ao3-kindle/`, and folders older than an hour are swept,
+since the file must outlive the hand-off to Amazon's app.
 
-**Chapter-gain log line.** `Store.upsertWork` returns a `WorkUpsertChange` (`isNew`, `newChapters`)
-computed by reading the row's *old* `chapters_have` before the `ON CONFLICT DO UPDATE` overwrites it
-— the only point such a comparison is possible, since the column is gone by the time a caller could
-look back. `SyncEngine.ingest` stashes a positive delta in a private `chapterGains: [Int: Int]`
-(reset at the top of `run`/`incrementalSync`) keyed by work id; the download loop consumes it
-(`removeValue`) only once the file is actually re-saved, so the log says "gained N chapters — saved"
-at the point that's true, not at index time when it'd be a promise.
+**Tested** by reopening the built file with `EpubDocument` (spine plus one, info page first and in
+the TOC, `mimetype` first, cover present). **Only checkable on a device:** whether Amazon's converter
+uses the cover and start page, and how the badge truncates.
 
-> **Updated (post-V1.5 correctness pass).** Three things below changed once the caveats in this
-> section were taken seriously — see `plans/ADVERSARIAL-REVIEW.md` F1–F3:
-> 1. **A single 404 no longer latches a work as deleted.** Because "404 means deleted" is *not*
->    pinned to a fixture, one sighting only records evidence in `deleted_sighting`;
->    `Store.deletedConfirmThreshold` (2) independent sightings are needed to set
->    `deleted_on_ao3_at`. The old behaviour permanently retired a work from **both** download
->    queues with no way back — one transient 404 during an AO3 deploy silently stopped the tool
->    archiving a work that was still there, while badging it as gone.
-> 2. **The exclusion expires.** `worksNeedingDownload`/`worksNeedingRedownload` exclude a
->    confirmed-deleted work only for `Store.deletedRecheckDays` (90), then give it one more
->    chance — authors do restore works. `Store.clearDeletedOnAO3` plus a **"Check again on AO3"**
->    button in the detail banner is the manual escape hatch.
-> 3. **`SyncEngine` is an `actor`** and the GUI drives it from a `Task.detached`. It previously
->    inherited `SyncController`'s `@MainActor` isolation, so every listing parse, DB write, and
->    EPUB write ran on the main thread despite comments here claiming otherwise.
+---
 
-**Deleted-work detection.** A genuine HTTP 404 fetching a work's page during the download loop means
-the author deleted it — a stronger, more specific signal than the prior behavior of lumping every
-download failure (including this one) under `.requiresLogin`/"needs a cookie", which was actively
-misleading for a deleted work. `download(_:onEvent:)` catches `AO3Error.http(404)` specifically,
-calls `Store.recordDeletedSighting(workID:source:)` with the **run's own source**
-(`SyncEngine.sightingSource(runID:)` — sightings from one source collapse to one row, so a fixed
-source could never reach the 2-sighting threshold), and logs a message that names what we hold:
-"your saved copy is the only one left" when `Store.PendingWork.hasDownload` is true, "deleted before
-you could save it" otherwise. On confirmation it sets `deleted_on_ao3_at` (keeping the first
-confirmation time, but refreshed once the recheck window has lapsed so the exclusion re-applies).
-A successful download clears all sightings. It is **never proactively probed** — it only ever fires
-when the existing download/redownload flow happens to hit the 404 on its own.
+## 12. Testing
 
-A subtlety caught by the real-archive demo run, not the test suite: confirming deletion must **not**
-unconditionally overwrite `download_state` to `'failed'`. A work that's already `'downloaded'` (we
-hold a perfectly good prior copy) staying `'downloaded'` is what keeps it in the **Saved** filter
-facet — exactly the work worth being able to find. The SQL is conditional:
-`download_state = CASE WHEN epub_path IS NOT NULL THEN download_state ELSE 'failed' END`. The UI
-badge mirrors this by checking `epubPath != nil` directly rather than `downloadState == "downloaded"`,
-so it can't regress the same way again. (`markFailed` follows the same rule: a failed refresh of a
-saved work leaves it `'downloaded'`.) `worksNeedingDownload`/`worksNeedingRedownload` both exclude
-a recently-confirmed `deleted_on_ao3_at`, so a confirmed-gone work stops being re-requested on every future
-sync — a politeness win, not just bookkeeping.
+Two runners execute the same checks against the same fixtures:
 
-**Caveat — unverified against live AO3.** The 404-means-deleted assumption hasn't been confirmed
-against a real deleted work. If AO3 instead serves a 200 "this work has been deleted" tombstone page
-rather than a 404, `WorkDownloader.downloadEPUB` would still fall through to its existing
-no-download-link path and throw `.requiresLogin` — silently missing the new classification rather
-than breaking anything. Capture a real deleted-work response into `Tests/AO3KitTests/Fixtures/` to
-close this gap, the same way the cookie-expiry markers need a real fixture.
+- **`swift test`**: the swift-testing suite in `Tests/AO3KitTests/`.
+- **`swift run selftest`**: a framework-free runner for toolchains without Xcode.
 
-**Verification.** `WorkUpsertChange` (new/gain detection), `recordDeletedSighting` (the `download_state`
-preservation + queue exclusion), and `looksLikeLoginPage` (marker matching + the empty-listing gate)
-are unit-tested in both the swift-testing suite and the headless `selftest`. What isn't — and can't
-be, without a captured fixture — is whether AO3's actual markup matches the assumptions above; see
-the two caveats.
+They must stay in lockstep. The simplest way is to write checks in **`AO3KitTestSupport`**, which
+both run:
+
+- **`StubAO3`** is a fake AO3. `AO3Client` accepts an injected `URLSessionConfiguration` and
+  `RateLimiter`, and the stub installs a `URLProtocol` on a unique `stub-….archiveofourown.org` host
+  per test (it passes the host allowlist, and parallel tests don't share routes). Any request it
+  wasn't told about fails loudly, so a test can never reach the real site.
+- **`EngineScenarios`** run the real `SyncEngine` end to end: deletion across two runs, Cancel in the
+  middle of downloads, series pagination, resume cursors, pruning (and every way it must refuse),
+  Quick-sync series, Save Visible.
+- **`ModelChecks`** and **`ReaderScenarios`** cover the prune guards, orphan sweep, legacy-database
+  migration, the single-file conversion, display decisions, off-main reloads and reader extraction.
+
+Prefer an engine scenario whenever behaviour spans the engine: a Store-level test with hand-picked
+arguments is exactly how the unreachable deletion threshold hid in passing code. When fixing a bug,
+check that the new test fails without the fix.
+
+**Parser selectors are pinned to captured AO3 pages** in `Tests/AO3KitTests/Fixtures/` (works
+listing, bookmarks page, series card, series page). When AO3's markup changes, update the fixture
+and the expectations together; parsing fails soft per field, and one bad card never aborts a page.
+
+**The views are compile-checked only.** The build environment can't render SwiftUI, so the user
+click-tests the UI.
+
+---
+
+## 13. Known gaps and unverified assumptions
+
+Kept in one place so they're easy to find and close:
+
+- **The login-page markers have no captured fixture.** `looksLikeLoginPage` matches the form's
+  action, a field name and Devise's flash text; no real expired-cookie page was available to pin it
+  to. Capture one into `Fixtures/` when possible.
+- **"404 means deleted" hasn't been confirmed on a real deleted work.** If AO3 serves a 200 "deleted"
+  page instead, the download fails as `requiresLogin` and no deletion is ever recorded (safe, but
+  silent). A captured response would settle it.
+- **Pruning has never run against live AO3.** It depends on the "of N Bookmarks" heading matching
+  the cards the parser sees; if they differ (for example a placeholder card the parser drops), every
+  run safely skips pruning and says why in the activity log.
+- **Each EPUB costs two requests** (work page, then file). Fetching `/downloads/<id>/…` directly
+  might work but hasn't been tested against AO3.
+- **`work_fts` is maintained but unused.** Search runs in memory; the FTS table is written on every
+  upsert and read only by tests. Keep it as the path past ~100k bookmarks, or drop it: an open
+  decision.
+
+See [plans/](plans/README.md) for how each would be closed.

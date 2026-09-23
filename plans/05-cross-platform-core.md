@@ -1,4 +1,6 @@
-# Plan 05 — Cross-platform: Android now, Windows / Linux / headless later
+# Plan 05: Cross-platform (Android now; Windows, Linux and headless later)
+
+**Status: not started.** §1 (making `AO3Kit` portable) is independent and could be done any time.
 
 **Goal:** make a second (and third) client cheap, and keep them honest about each other —
 without a rewrite per platform and without the two-parsers-drift problem
@@ -20,7 +22,7 @@ Verified by inspecting every `import` in `Sources/AO3Kit/`:
 | `KindleCover.swift` | **Yes** — `CoreGraphics`, `CoreText`, `ImageIO` |
 | *Everything else* (23 files) | **No** — `Foundation`, `SwiftSoup`, `GRDB`, `ZIPFoundation`, `Observation` only |
 
-And `AO3Client.swift:2-4` already carries `#if canImport(FoundationNetworking)` — someone
+And `AO3Client.swift` already carries `#if canImport(FoundationNetworking)` — someone
 previously thought about non-Apple platforms.
 
 Dependency portability, stated at the confidence each actually deserves:
@@ -43,8 +45,8 @@ Dependency portability, stated at the confidence each actually deserves:
 > **Nothing else in this plan depends on the Windows answer.** Linux — which is what §4's
 > headless peer actually needs — is on solid ground.
 
-**The only real blocker is `Package.swift:13` — `platforms: [.macOS("26.0")]`, declared
-package-wide.** That constraint exists for a good reason (ARCHITECTURE §7: one deployment
+**The only real blocker is `Package.swift` — `platforms: [.macOS("26.0")]`, declared
+package-wide.** That constraint exists for a good reason (ARCHITECTURE §8: one deployment
 boundary so Liquid Glass and Observation need no scattered `@available`) — but it is declared
 on the *package*, so it also pins the parser, the store, the sync engine, and the gallery model
 to macOS 26 when none of them need it.
