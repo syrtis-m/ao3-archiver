@@ -1,6 +1,7 @@
 import Foundation
 import AO3Kit
 import ZIPFoundation
+import AO3KitTestSupport
 
 // Headless verification of BlurbParser / WorkDownloader against the real captured
 // fixture. Runs anywhere Swift builds (no XCTest/Testing dependency). Exits non-zero on
@@ -1254,6 +1255,20 @@ let limiterTask = Task {
 limiterTask.cancel()
 limiterDone.wait()
 check("rate limiter throws when cancelled (no unspaced requests)", limiterProbe.threw)
+
+// SyncEngine end-to-end against a stub AO3 — the same scenarios EngineTests runs.
+print("SyncEngine — end-to-end (stub AO3)")
+final class ScenarioResults: @unchecked Sendable { var checks: [(String, Bool)] = [] }
+for (name, run) in EngineScenarios.all {
+    let results = ScenarioResults(), done = DispatchSemaphore(value: 0)
+    Task {
+        defer { done.signal() }
+        do { results.checks = try await run().map { ("\(name): \($0.name)", $0.ok) } }
+        catch { results.checks = [("\(name) ran without throwing (\(error))", false)] }
+    }
+    done.wait()
+    for (n, ok) in results.checks { check(n, ok) }
+}
 
 print("")
 if failures == 0 {

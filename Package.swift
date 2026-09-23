@@ -49,10 +49,17 @@ let package = Package(
         // Headless parser verification that runs under a Command Line Tools–only
         // toolchain (where `swift test` can't link XCTest/Testing). CI with full Xcode
         // runs the richer suite in Tests/AO3KitTests instead.
+        // Stub-AO3 harness (a `URLProtocol` + canned listing/work pages) shared by BOTH test
+        // runners, so `SyncEngine` can be exercised end-to-end with zero network access.
+        .target(
+            name: "AO3KitTestSupport",
+            dependencies: ["AO3Kit"]
+        ),
         .executableTarget(
             name: "selftest",
             dependencies: [
                 "AO3Kit",
+                "AO3KitTestSupport",
                 .product(name: "ZIPFoundation", package: "ZIPFoundation"),
             ]
         ),
@@ -60,6 +67,7 @@ let package = Package(
             name: "AO3KitTests",
             dependencies: [
                 "AO3Kit",
+                "AO3KitTestSupport",
                 .product(name: "ZIPFoundation", package: "ZIPFoundation"),
             ],
             resources: [.copy("Fixtures")]

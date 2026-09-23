@@ -97,6 +97,7 @@ public actor SyncEngine {
         /// Of `downloadsFailed`, how many failed because AO3 returned a genuine 404 — the work
         /// was deleted by its author, not a transient/auth failure. A subset, not additional.
         public var worksDeleted = 0
+        public init() {}
     }
 
     /// Structured progress for the CLI log and the sync-status UI.

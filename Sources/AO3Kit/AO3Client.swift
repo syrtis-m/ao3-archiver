@@ -155,10 +155,14 @@ public final class AO3Client: @unchecked Sendable {
     /// stalled. (seconds, attempt, max)
     public var onRateLimit: @Sendable (TimeInterval, Int, Int) -> Void = { _, _, _ in }
 
-    public init(config: AO3Config, limiter: RateLimiter = .shared) {
+    /// `sessionConfiguration` exists for tests: they inject a stub `URLProtocol` (and a private
+    /// `RateLimiter`) so the whole `SyncEngine` can run against canned AO3 responses without
+    /// touching the network. Production always uses the default ephemeral configuration.
+    public init(config: AO3Config, limiter: RateLimiter = .shared,
+                sessionConfiguration: URLSessionConfiguration = .ephemeral) {
         self.config = config
         self.limiter = limiter
-        let cfg = URLSessionConfiguration.ephemeral
+        let cfg = sessionConfiguration
         cfg.timeoutIntervalForRequest = config.requestTimeout
         cfg.httpShouldSetCookies = false          // we set the session cookie explicitly
         cfg.httpAdditionalHeaders = ["User-Agent": config.userAgent]
