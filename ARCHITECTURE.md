@@ -98,15 +98,21 @@ updates, and never lives in `/tmp`. The canonical schema is the migration list i
 | `sync_run` | sync bookkeeping | per-run counts/status |
 | `deleted_sighting` | one row per corroborating 404 sighting | `(work_id, source)`; a work is only *believed* deleted at `deletedConfirmThreshold` sightings |
 
-**Connections are opened WAL + busy-timeout, and that is load-bearing, not tuning.**
-`Store.makeConfiguration` sets `journalMode = .wal` and `busyMode = .timeout(5)`. The app holds
-**several handles on one file** — one for the gallery, one *per reader window* — and GRDB's
-default `busyMode` is `.immediateError`. With the stock rollback journal that combination made a
-reader's resume write during a sync fail instantly with `SQLITE_BUSY`, which `ReaderModel`'s
-`try?` then discarded: your place in a work vanished with no error anywhere. `DatabaseQueue` does
-**not** enable WAL on its own (only `DatabasePool` does), so the setting is explicit. Note WAL
-adds `-wal`/`-shm` sidecar files that are only consistent *as a set* — never copy `archive.sqlite`
-alone, and never two-way file-sync it.
+**One file, one in-app connection, and a busy timeout — the timeout is load-bearing.** The
+archive is a single `archive.sqlite` in SQLite's rollback-journal mode. The app opens it **once**
+(`Store.shared(atPath:)`) and every window — gallery, sync, each reader — shares that connection,
+so the app never contends with itself. `Store.makeConfiguration` sets `busyMode = .timeout(5)`:
+GRDB's default is `.immediateError`, and when the app once held a separate handle per reader window
+that made a resume write during a sync fail instantly with `SQLITE_BUSY`, which `ReaderModel`'s
+`try?` then discarded. The timeout still matters for the one remaining cross-connection case, a CLI
+sync running alongside the app.
+
+*Not WAL.* 1.6.0 briefly switched archives to WAL; 1.6.1 reverted it. WAL's benefit (readers don't
+block the writer) is moot with one in-app connection, and it costs two sidecar files that must be
+copied as a set — Apple's SQLite keeps `-wal`/`-shm` on disk even after a clean close — which also
+makes a file-synced (iCloud Documents) archive riskier. The journal mode lives in the file header,
+so `makeConfiguration` switches a WAL archive back on open (checkpointing it; removing the leftover
+`-shm` only after the switch succeeds, which proves no other connection was using WAL).
 
 **Design decisions that matter:**
 

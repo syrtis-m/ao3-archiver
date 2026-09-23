@@ -44,7 +44,9 @@ Each is self-contained: evidence, implementation, verification, risks, definitio
 
 **The three hard gates:**
 
-1. **[01](01-correctness-and-durability.md) §1 (WAL) before [01](01-correctness-and-durability.md) §3 and before [03](03-p2p-sync-foundation.md).** Both increase real write concurrency; without WAL + a busy timeout that means more silent `SQLITE_BUSY` loss, not less.
+1. *(Superseded in 1.6.1: the archive is back to a single rollback-journal file with one shared
+   in-app connection + a busy timeout — see ARCHITECTURE §3. Read "WAL" below as "the busy
+   timeout".)* **[01](01-correctness-and-durability.md) §1 (WAL) before [01](01-correctness-and-durability.md) §3 and before [03](03-p2p-sync-foundation.md).** Both increase real write concurrency; without WAL + a busy timeout that means more silent `SQLITE_BUSY` loss, not less.
 2. **[03](03-p2p-sync-foundation.md) before [PLAN-ANDROID.md](PLAN-ANDROID.md) M1.** M1 would otherwise port a schema that is about to change.
 3. **[03](03-p2p-sync-foundation.md) Phase 2 (merge tests green) before [04](04-p2p-transport.md).** The whole merge layer is testable with zero networking; debugging it through a socket costs an order of magnitude more.
 

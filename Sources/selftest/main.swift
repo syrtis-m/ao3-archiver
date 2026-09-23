@@ -322,28 +322,28 @@ do {
               try store.worksNeedingDownload().contains { $0.id == neverDownloaded.workID })
     }
 
-    // Store — WAL concurrency (F1). The app opens one Store for the gallery and one per
-    // reader window on the SAME file. Without WAL + a busy timeout, GRDB's default
+    // Store — lock contention (F1). Two connections on one file (the app + a CLI sync).
+    // Without a busy timeout, GRDB's default
     // `.immediateError` busy mode made a reader's resume write during a sync fail instantly
     // with SQLITE_BUSY — and the caller's `try?` discarded it, silently losing the position.
     if let bmHTML = try? String(contentsOf: bookmarksURL, encoding: .utf8),
        let card = try BlurbParser.parseListing(html: bmHTML).first(where: { $0.kind == .work }) {
-        print("Store — concurrent handles (WAL)")
+        print("Store — concurrent handles (busy timeout)")
         let dir = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("ao3-wal-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("ao3-lock-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
         let path = dir.appendingPathComponent("archive.sqlite").path
 
         let gallery = try Store(path: path)
         let reader = try Store(path: path)
-        check("an on-disk archive opens in WAL journal mode",
-              try gallery.journalMode().lowercased() == "wal")
+        check("an on-disk archive is a single file (rollback journal, not WAL)",
+              try gallery.journalMode().lowercased() == "delete")
         try gallery.upsertWork(card)
 
         // Hold the write lock briefly on a background thread (a sync transaction in flight),
-        // then release it — WAL gives one writer + many readers, so what the busy timeout
-        // buys is *waiting* for a short transaction instead of failing instantly.
+        // then release it — what the busy timeout buys is *waiting* for a short transaction
+        // instead of failing instantly.
         let holding = DispatchSemaphore(value: 0)
         let released = DispatchSemaphore(value: 0)
         DispatchQueue.global().async {
@@ -1256,7 +1256,7 @@ if let src = try? makeAO3LikeEpub() {
 }
 
 // Semaphore rather than a top-level `await`: an `await` here would turn all of main.swift
-// into an async context and break the DispatchSemaphore waits in the WAL check above.
+// into an async context and break the DispatchSemaphore waits in the lock check above.
 final class LimiterProbe: @unchecked Sendable { var threw = false }
 let limiterProbe = LimiterProbe(), limiterDone = DispatchSemaphore(value: 0)
 let limiterTask = Task {
@@ -1274,6 +1274,8 @@ check("rate limiter throws when cancelled (no unspaced requests)", limiterProbe.
 print("Presentation (model-level view decisions)")
 for (n, ok) in ModelChecks.presentation() { check(n, ok) }
 for (n, ok) in ModelChecks.saveVisiblePlan() { check("save visible — \(n)", ok) }
+do { for (n, ok) in try ModelChecks.singleFileArchive() { check("single-file archive — \(n)", ok) } }
+catch { check("single-file checks ran (\(error))", false) }
 do { for (n, ok) in try ModelChecks.migrationSurvivesDanglingRows() { check("legacy DB — \(n)", ok) } }
 catch { check("legacy DB migration ran (\(error))", false) }
 for (n, ok) in ModelChecks.pruneGuards() { check("prune guard — \(n)", ok) }

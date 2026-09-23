@@ -66,6 +66,30 @@ public enum ModelChecks {
         ]
     }
 
+    /// An archive a 1.6.0 build left in WAL mode goes back to ONE file on open (its WAL
+    /// checkpointed in, sidecars gone), with nothing lost; and the app shares one connection.
+    public static func singleFileArchive() throws -> [EngineScenarios.Check] {
+        let dir = NSTemporaryDirectory() + "single-\(UUID())/"
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let path = dir + "archive.sqlite"
+        try Store.makeWALDatabase(atPath: path, withMeta: ("probe", "kept"))
+        let hadSidecars = FileManager.default.fileExists(atPath: path + "-wal")
+        let store = try Store(path: path)
+        let mode = try store.journalMode().lowercased()
+        let kept = try store.getMeta("probe")
+        let files = try FileManager.default.contentsOfDirectory(atPath: dir).sorted()
+        let a = try Store.shared(atPath: dir + "shared.sqlite")
+        let b = try Store.shared(atPath: dir + "./shared.sqlite")
+        return [
+            ("fixture really was WAL with a sidecar", hadSidecars),
+            ("reopened archive is single-file mode", mode == "delete"),
+            ("data written under WAL survives the switch", kept == "kept"),
+            ("no -wal/-shm left behind (\(files))", files == ["archive.sqlite"]),
+            ("one shared connection per archive path", a === b),
+        ]
+    }
+
     /// The orphan sweep removes only works nothing refers to.
     public static func orphanSweep() throws -> [EngineScenarios.Check] {
         let store = try Store(inMemory: true)

@@ -36,6 +36,9 @@ import AO3KitTestSupport
     @Test func saveVisiblePlan() {
         for check in ModelChecks.saveVisiblePlan() { #expect(check.ok, "\(check.name)") }
     }
+    @Test func singleFileArchive() throws {
+        for check in try ModelChecks.singleFileArchive() { #expect(check.ok, "\(check.name)") }
+    }
     @Test func migrationSurvivesDanglingRows() throws {
         for check in try ModelChecks.migrationSurvivesDanglingRows() { #expect(check.ok, "\(check.name)") }
     }

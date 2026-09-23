@@ -531,13 +531,13 @@ import Foundation
         #expect(try store.worksNeedingDownload().contains { $0.id == card.workID })
     }
 
-    /// F1: the app opens one Store for the gallery and one per reader window on the SAME file.
-    /// Without WAL + a busy timeout, GRDB's default `.immediateError` busy mode meant a
-    /// reader's resume write during a sync failed instantly with SQLITE_BUSY — and the
-    /// caller's `try?` discarded it, silently losing the reading position.
+    /// F1: two connections on one file (today: the app + a CLI sync; originally the app opened
+    /// one per reader window). With GRDB's default `.immediateError` busy mode a resume write
+    /// that met the other's lock failed instantly with SQLITE_BUSY — and the caller's `try?`
+    /// discarded it, silently losing the reading position. The busy timeout makes it wait.
     @Test func readingPositionSurvivesAConcurrentWriter() throws {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("ao3-wal-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("ao3-lock-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
         let path = dir.appendingPathComponent("archive.sqlite").path
@@ -545,7 +545,7 @@ import Foundation
         // Two independent handles on one file — exactly the gallery + reader-window shape.
         let gallery = try Store(path: path)
         let reader = try Store(path: path)
-        #expect(try gallery.journalMode().lowercased() == "wal")
+        #expect(try gallery.journalMode().lowercased() == "delete")   // single file, no sidecars
 
         let card = try #require(try BlurbParser.parseListing(html: fixture("bookmarks_page"))
             .first { $0.kind == .work })
@@ -553,8 +553,8 @@ import Foundation
 
         // Hold the write lock on the gallery handle for a beat on a background thread — the
         // shape of a sync transaction in flight — then release it. (It must be released:
-        // WAL gives one writer + many readers, so two *concurrent* writers still serialise;
-        // what the busy timeout buys is waiting for a short transaction instead of dying.)
+        // two writers always serialise; what the busy timeout buys is waiting for a short
+        // transaction instead of dying.)
         let holding = DispatchSemaphore(value: 0)
         let released = DispatchSemaphore(value: 0)
         DispatchQueue.global().async {

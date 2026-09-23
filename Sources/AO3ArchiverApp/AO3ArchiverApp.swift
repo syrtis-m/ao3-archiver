@@ -98,7 +98,9 @@ struct ReaderWindowRoot: View {
         }
         .navigationTitle(value.title)
         .task {
-            store = try? Store(path: URL(fileURLWithPath: value.archiveRootPath)
+            // The gallery's own connection, not a second one: inside the app nothing ever
+            // contends for the database lock (see `Store.shared(atPath:)`).
+            store = try? Store.shared(atPath: URL(fileURLWithPath: value.archiveRootPath)
                 .appendingPathComponent("archive.sqlite").path)
             ready = true
         }
@@ -154,7 +156,7 @@ struct RootView: View {
             // Create the archive folder first — on first launch the default
             // ~/Documents/ao3archive won't exist yet, so SQLite can't create the db (error 14).
             try FileManager.default.createDirectory(at: archiveRoot, withIntermediateDirectories: true)
-            let s = try Store(path: archiveRoot.appendingPathComponent("archive.sqlite").path)
+            let s = try Store.shared(atPath: archiveRoot.appendingPathComponent("archive.sqlite").path)
             try? s.closeStaleSyncRuns()   // bookkeeping only; never blocks opening
             // Works nothing refers to (no bookmark, file, reading position or series link) are
             // invisible and only clog the download queue — e.g. cards from an old crawl of a

@@ -21,22 +21,41 @@ public enum StoreError: Error, CustomStringConvertible {
 public final class Store: @unchecked Sendable {
     let dbQueue: DatabaseQueue
 
-    /// WAL + a busy timeout are **required here, not tuning**. The app opens one `Store` for
-    /// the gallery *and one per reader window* on the same file, and GRDB's default
-    /// `busyMode` is `.immediateError` — so with the stock rollback journal, a reader's
-    /// resume write during a sync failed instantly with `SQLITE_BUSY` and the caller's `try?`
-    /// discarded it, silently losing your place in a work.
+    /// **One file, and a busy timeout.** The archive is a single `archive.sqlite` (SQLite's
+    /// rollback-journal mode) — no `-wal`/`-shm` sidecars, so copying or cloud-syncing the one
+    /// file is a complete copy whenever nothing is mid-write.
     ///
-    /// WAL lets readers and the single writer proceed concurrently; the timeout covers the
-    /// remaining writer-vs-writer window (a sync transaction vs. a resume write — both short,
-    /// so 5s means "something is actually wrong", not "we were unlucky").
+    /// The busy timeout is the load-bearing part: GRDB's default `busyMode` is
+    /// `.immediateError`, so a write that met another connection's lock (the CLI syncing while
+    /// the app saves a reading position) failed instantly with `SQLITE_BUSY` — and a caller's
+    /// `try?` once turned that into a silently lost reading position. With `.timeout(5)` it
+    /// waits for the other (short) transaction instead. Inside the app there's no contention
+    /// at all: every window shares one connection (`Store.shared(atPath:)`).
     ///
-    /// `DatabaseQueue` does **not** enable WAL on its own (only `DatabasePool` does), hence
-    /// the explicit `journalMode`. WAL is persistent in the DB header and a no-op in memory.
+    /// Why not WAL (1.6.0 briefly used it): it adds two sidecar files that must be copied as a
+    /// set — on macOS they persist even after a clean close — and a file-syncer (iCloud
+    /// Documents) that uploads `archive.sqlite` alone can capture a stale database. Its
+    /// benefit, readers not blocking the writer, doesn't matter with one in-app connection.
+    /// The journal mode is stored in the file header, so an archive 1.6.0 switched to WAL is
+    /// switched back explicitly here (checkpointing its WAL into the main file first).
     static func makeConfiguration() -> Configuration {
         var config = Configuration()
-        config.journalMode = .wal
         config.busyMode = .timeout(5.0)
+        config.prepareDatabase { db in
+            if try String.fetchOne(db, sql: "PRAGMA journal_mode")?.lowercased() == "wal" {
+                // Needs no other connection open; if one is (a CLI mid-sync), this is a no-op
+                // and the switch happens on a later open.
+                let now = (try? String.fetchOne(db, sql: "PRAGMA journal_mode = DELETE"))?.lowercased()
+                // SQLite removes the -wal; Apple's build leaves the (data-free) -shm index.
+                // The switch only succeeds with exclusive access — nobody else can be using
+                // WAL on this file — so it's safe to delete now, leaving exactly one file.
+                if now == "delete",
+                   let file = try String.fetchOne(db, sql: "SELECT file FROM pragma_database_list WHERE name = 'main'"),
+                   !file.isEmpty {
+                    try? FileManager.default.removeItem(atPath: file + "-shm")
+                }
+            }
+        }
         return config
     }
 
@@ -46,9 +65,49 @@ public final class Store: @unchecked Sendable {
         try Self.migrator.migrate(dbQueue)
     }
 
+    /// The app-wide `Store` for the archive at `path` — the same instance for every caller
+    /// (gallery, sync, every reader window), so the app never contends with itself for the
+    /// database lock. Opened on first use and kept for the life of the process.
+    public static func shared(atPath path: String) throws -> Store {
+        let key = URL(fileURLWithPath: path).standardizedFileURL.path
+        return try sharedLock.withLock {
+            if let existing = sharedStores[key] { return existing }
+            let store = try Store(path: key)
+            sharedStores[key] = store
+            return store
+        }
+    }
+    nonisolated(unsafe) private static var sharedStores: [String: Store] = [:]
+    private static let sharedLock = NSLock()
+
+    /// In-memory store, for tests.
+    public init(inMemory: Bool) throws {
+        dbQueue = try DatabaseQueue(configuration: Self.makeConfiguration())
+        try Self.migrator.migrate(dbQueue)
+    }
+
+    /// The database's active journal mode (`"delete"` on disk, `"memory"` in memory). Exposed
+    /// so tests can assert the single-file invariant above rather than trusting config.
+    public func journalMode() throws -> String {
+        try dbQueue.read { db in
+            try String.fetchOne(db, sql: "PRAGMA journal_mode") ?? ""
+        }
+    }
+
     /// The migration identifiers applied to this database, in order (for tests/diagnostics).
     public func appliedMigrations() throws -> [String] {
         try dbQueue.read { try Self.migrator.appliedIdentifiers($0) }.sorted()
+    }
+
+    /// Test hook: create a WAL-mode database (as 1.6.0 left real archives) holding one meta
+    /// row, with its connection left open-then-dropped the way an app quit leaves it.
+    public static func makeWALDatabase(atPath path: String, withMeta meta: (String, String)) throws {
+        var config = Configuration()
+        config.journalMode = .wal
+        let q = try DatabaseQueue(path: path, configuration: config)
+        try migrator.migrate(q)
+        try q.write { try $0.execute(sql: "INSERT INTO meta (key, value) VALUES (?, ?)",
+                                     arguments: [meta.0, meta.1]) }
     }
 
     /// Test hook: create a database migrated only up to v5 (the schema the Jul 2026 builds
@@ -60,20 +119,6 @@ public final class Store: @unchecked Sendable {
         try q.writeWithoutTransaction { db in
             try db.execute(sql: "PRAGMA foreign_keys = OFF")
             for statement in sql { try db.execute(sql: statement) }
-        }
-    }
-
-    /// In-memory store, for tests.
-    public init(inMemory: Bool) throws {
-        dbQueue = try DatabaseQueue(configuration: Self.makeConfiguration())
-        try Self.migrator.migrate(dbQueue)
-    }
-
-    /// The database's active journal mode (`"wal"` on disk, `"memory"` in memory). Exposed so
-    /// tests can assert the WAL invariant above actually holds rather than trusting config.
-    public func journalMode() throws -> String {
-        try dbQueue.read { db in
-            try String.fetchOne(db, sql: "PRAGMA journal_mode") ?? ""
         }
     }
 
@@ -867,7 +912,7 @@ public final class Store: @unchecked Sendable {
 
     /// Run `body` while *this* handle genuinely **holds the write lock** — so a test can prove
     /// a **second** handle on the same file can still write concurrently, which is the whole
-    /// point of the WAL + busy-timeout config above. Public because the headless `selftest`
+    /// point of the busy-timeout config above. Public because the headless `selftest`
     /// runner has no `@testable` access and must assert the same invariant as the suite.
     ///
     /// The `meta` write is load-bearing, not incidental: GRDB opens a *deferred* transaction,

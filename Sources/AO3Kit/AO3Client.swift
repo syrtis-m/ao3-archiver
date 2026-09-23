@@ -30,7 +30,7 @@ public struct AO3Config: Sendable {
 
     /// The app/CLI version — the ONE place it's defined. The User-Agent reports it, and
     /// `Packaging/make-app.sh` stamps it into the bundle's Info.plist, so they can't drift.
-    public static let toolVersion = "1.6.0"
+    public static let toolVersion = "1.6.1"
 
     /// Honest, descriptive User-Agent. Includes the requester's AO3 username when known, so AO3
     /// can identify whose account is making the (polite) requests; `contact` stays the tool
