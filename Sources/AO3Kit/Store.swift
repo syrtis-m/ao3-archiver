@@ -244,6 +244,13 @@ public final class Store: @unchecked Sendable {
                 SELECT id, 'legacy', deleted_on_ao3_at FROM work WHERE deleted_on_ao3_at IS NOT NULL
                 """)
         }
+        m.registerMigration("v7-bookmark-removed") { db in
+            // Set when a complete, verified Full-sync index no longer lists this bookmark (you
+            // removed it on AO3) but we must keep the row because the work is *yours* locally —
+            // a saved EPUB, a reading position, or a series link. Bookmarks with nothing local
+            // are deleted outright instead. NULL = currently bookmarked. Re-seeing it clears it.
+            try db.execute(sql: "ALTER TABLE bookmark ADD COLUMN removed_at TEXT")
+        }
         return m
     }
 
@@ -434,7 +441,7 @@ public final class Store: @unchecked Sendable {
                item_kind=excluded.item_kind, item_id=excluded.item_id,
                bookmarked_at=excluded.bookmarked_at, bookmarker_notes=excluded.bookmarker_notes,
                is_rec=excluded.is_rec, is_private=excluded.is_private,
-               last_synced_at=excluded.last_synced_at
+               last_synced_at=excluded.last_synced_at, removed_at=NULL
             """, arguments: [
                 bid, kindStr, itemID, b.bookmarkedAt, b.bookmarkerNotes,
                 b.isRec ? 1 : 0, b.isPrivate ? 1 : 0, now, now,
@@ -444,6 +451,28 @@ public final class Store: @unchecked Sendable {
         for name in b.bookmarkTags {
             try db.execute(sql: "INSERT OR IGNORE INTO bookmark_tag (bookmark_id, name) VALUES (?, ?)",
                            arguments: [bid, name])
+        }
+    }
+
+    /// A listing card's work row + bookmark row in ONE transaction. Two separate writes left a
+    /// window where the work existed with no bookmark — exactly what `deleteOrphanWorks`
+    /// (run at app open, possibly while a CLI sync is ingesting) treats as garbage.
+    @discardableResult
+    public func upsertWorkAndBookmark(_ b: WorkBlurb, now: String = Store.nowISO()) throws -> WorkUpsertChange {
+        try dbQueue.write { db in
+            let change = try Self.upsertWork(db, b, now: now)
+            try Self.upsertBookmark(db, b, itemKind: b.kind, itemID: b.workID, now: now)
+            return change
+        }
+    }
+
+    /// A series member's work row + its series link in ONE transaction (see above).
+    public func upsertSeriesMember(_ b: WorkBlurb, seriesID: Int, part: Int?,
+                                   now: String = Store.nowISO()) throws {
+        try dbQueue.write { db in
+            try Self.upsertWork(db, b, now: now)
+            try db.execute(sql: "INSERT OR REPLACE INTO series_work (series_id, work_id, part) VALUES (?,?,?)",
+                           arguments: [seriesID, b.workID, part])
         }
     }
 
@@ -516,6 +545,14 @@ public final class Store: @unchecked Sendable {
         /// The file we currently hold (relative to the archive root), if any — so a re-download
         /// under a changed title can remove the superseded file instead of orphaning it.
         public var epubPath: String? = nil
+        /// When we last downloaded it (the `updated_at` the saved file reflects).
+        public var epubUpdatedAt: Int? = nil
+        /// Saved, and AO3 reports nothing newer — downloading again would change nothing.
+        public var isCurrent: Bool {
+            guard hasDownload else { return false }
+            guard let updatedAt else { return true }
+            return (epubUpdatedAt ?? 0) >= updatedAt
+        }
     }
 
     /// Works that still need an EPUB: AO3 works (not external) with no file yet, or whose
@@ -541,7 +578,7 @@ public final class Store: @unchecked Sendable {
                   AND (epub_path IS NULL
                        OR (updated_at IS NOT NULL
                            AND (epub_updated_at IS NULL OR updated_at > epub_updated_at)))
-                ORDER BY id\(lim)
+                ORDER BY \(Self.queueOrder)\(lim)
                 """)
             return rows.map { PendingWork(id: $0["id"], title: $0["title"], updatedAt: $0["updated_at"],
                                           hasDownload: ($0["epub_path"] as String?) != nil,
@@ -564,7 +601,7 @@ public final class Store: @unchecked Sendable {
                   AND epub_path IS NOT NULL
                   AND updated_at IS NOT NULL
                   AND (epub_updated_at IS NULL OR updated_at > epub_updated_at)
-                ORDER BY id\(lim)
+                ORDER BY \(Self.queueOrder)\(lim)
                 """)
             return rows.map { PendingWork(id: $0["id"], title: $0["title"], updatedAt: $0["updated_at"],
                                           hasDownload: ($0["epub_path"] as String?) != nil,
@@ -578,10 +615,11 @@ public final class Store: @unchecked Sendable {
     public func pendingWork(workID: Int) throws -> PendingWork? {
         try dbQueue.read { db in
             guard let row = try Row.fetchOne(db, sql: """
-                SELECT id, title, updated_at, epub_path FROM work WHERE id = ? AND kind = 'work'
+                SELECT id, title, updated_at, epub_path, epub_updated_at FROM work WHERE id = ? AND kind = 'work'
                 """, arguments: [workID]) else { return nil }
             return PendingWork(id: row["id"], title: row["title"], updatedAt: row["updated_at"],
-                               hasDownload: (row["epub_path"] as String?) != nil, epubPath: row["epub_path"])
+                               hasDownload: (row["epub_path"] as String?) != nil, epubPath: row["epub_path"],
+                               epubUpdatedAt: row["epub_updated_at"])
         }
     }
 
@@ -595,6 +633,95 @@ public final class Store: @unchecked Sendable {
                 sql: "SELECT bookmark_id FROM bookmark WHERE bookmark_id IN (\(qs))",
                 arguments: StatementArguments(ids))
             return Set(rows)
+        }
+    }
+
+    // MARK: - Bookmark removal (pruning) & orphan cleanup
+
+    /// Counts that `SyncEngine.pruneDecision` weighs before removing anything.
+    public struct BookmarkCensus: Sendable, Equatable {
+        public let active: Int           // bookmarks not already marked removed
+        public let activePrivate: Int
+        public let notSeenSince: Int     // active ones this run never saw
+        public init(active: Int, activePrivate: Int, notSeenSince: Int) {
+            self.active = active; self.activePrivate = activePrivate; self.notSeenSince = notSeenSince
+        }
+    }
+
+    public func bookmarkCensus(notSeenSince cutoff: String) throws -> BookmarkCensus {
+        try dbQueue.read { db in
+            let row = try Row.fetchOne(db, sql: """
+                SELECT count(*) AS n, coalesce(sum(is_private), 0) AS p,
+                       coalesce(sum(CASE WHEN last_synced_at < ? THEN 1 ELSE 0 END), 0) AS gone
+                FROM bookmark WHERE removed_at IS NULL
+                """, arguments: [cutoff])
+            return BookmarkCensus(active: row?["n"] ?? 0, activePrivate: row?["p"] ?? 0,
+                                  notSeenSince: row?["gone"] ?? 0)
+        }
+    }
+
+    /// Apply a *verified* removal pass: every active bookmark not seen since `cutoff` is gone
+    /// from AO3. A work that's still yours locally (saved EPUB, reading position, series link)
+    /// keeps its row, flagged `removed_at`; everything else is deleted, then orphans swept.
+    /// Only ever called after `SyncEngine.pruneDecision` approved it. Returns (flagged, deleted).
+    @discardableResult
+    public func applyBookmarkRemovals(notSeenSince cutoff: String,
+                                      now: String = Store.nowISO()) throws -> (flagged: Int, deleted: Int) {
+        let result: (Int, Int) = try dbQueue.write { db in
+            try db.execute(sql: """
+                UPDATE bookmark SET removed_at = ?
+                WHERE removed_at IS NULL AND last_synced_at < ? AND item_kind = 'work'
+                  AND item_id IN (\(Self.keptLocallySQL))
+                """, arguments: [now, cutoff])
+            let flagged = db.changesCount
+            try db.execute(sql: """
+                DELETE FROM bookmark WHERE removed_at IS NULL AND last_synced_at < ?
+                """, arguments: [cutoff])
+            let deleted = db.changesCount
+            // A series nobody bookmarks any more goes too (its links cascade).
+            try db.execute(sql: """
+                DELETE FROM series WHERE id NOT IN (SELECT item_id FROM bookmark WHERE item_kind = 'series')
+                """)
+            return (flagged, deleted)
+        }
+        try deleteOrphanWorks()
+        return result
+    }
+
+    /// Works that are ours locally regardless of bookmark state.
+    static let keptLocallySQL = """
+        SELECT id FROM work WHERE epub_path IS NOT NULL
+        UNION SELECT work_id FROM reading_position
+        UNION SELECT work_id FROM series_work
+        """
+
+    /// Delete works nothing refers to: no bookmark (active or removed), no series link, no
+    /// saved EPUB, no reading position. They're invisible in the gallery and would only sit
+    /// in the download queue (e.g. cards from a crawl of some *other* listing). Also clears
+    /// their FTS rows, which — being a virtual table — don't cascade. Returns how many.
+    @discardableResult
+    public func deleteOrphanWorks() throws -> Int {
+        try dbQueue.write { db in
+            let orphanWhere = """
+                id NOT IN (SELECT item_id FROM bookmark WHERE item_kind = 'work')
+                AND id NOT IN (\(Self.keptLocallySQL))
+                """
+            try db.execute(sql: "DELETE FROM work_fts WHERE rowid IN (SELECT id FROM work WHERE \(orphanWhere))")
+            try db.execute(sql: "DELETE FROM work WHERE \(orphanWhere)")
+            return db.changesCount
+        }
+    }
+
+    /// Bookmarked series that have never been expanded (no member links yet) — what a Quick
+    /// sync expands a few of at a time, so series stop being metadata-only forever.
+    public func unexpandedSeriesIDs() throws -> [Int] {
+        try dbQueue.read { db in
+            try Int.fetchAll(db, sql: """
+                SELECT s.id FROM series s
+                JOIN bookmark b ON b.item_kind = 'series' AND b.item_id = s.id AND b.removed_at IS NULL
+                WHERE NOT EXISTS (SELECT 1 FROM series_work sw WHERE sw.series_id = s.id)
+                ORDER BY b.bookmark_id DESC
+                """)
         }
     }
 
@@ -723,6 +850,14 @@ public final class Store: @unchecked Sendable {
             return try body()
         }
     }
+
+    /// Download-queue order: the most recently bookmarked first (bookmark ids are monotonic),
+    /// then series members nobody bookmarked directly, then by id. With a download cap per run,
+    /// order *is* intent — ascending work id meant the oldest works on AO3 always went first.
+    static let queueOrder = """
+        (SELECT max(b.bookmark_id) FROM bookmark b
+          WHERE b.item_kind = 'work' AND b.item_id = work.id AND b.removed_at IS NULL) DESC NULLS LAST, id
+        """
 
     /// SQL fragment excluding confirmed-deleted works from the download queues — but only
     /// until the recheck window elapses, so a permanent exclusion can't be created by a

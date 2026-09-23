@@ -29,6 +29,9 @@ struct WorkDetailView: View {
     /// Set when a pasted cookie couldn't be saved to the Keychain (the download still proceeds
     /// with it, but it won't persist) — so the failure isn't silent.
     @State private var keychainWarning: String?
+    /// Per-series "fetch works" (so a series isn't metadata-only until a Full sync).
+    @State private var fetchingSeries = false
+    @State private var seriesError: String?
 
     var body: some View {
         ScrollView {
@@ -42,7 +45,7 @@ struct WorkDetailView: View {
                 if let line = item.statsLine.nonBlank {
                     Text(line).font(.callout.monospacedDigit()).foregroundStyle(.secondary)
                 }
-                if item.kind == .series, !seriesMembers.isEmpty { seriesSection }
+                if item.kind == .series { seriesSection }
                 metaGrid
                 if let summary = item.summary.nonBlank {
                     labeled("Summary") { Text(summary) }
@@ -80,6 +83,24 @@ struct WorkDetailView: View {
     private var seriesSection: some View {
         labeled("Works in this series") {
             VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    if fetchingSeries {
+                        ProgressView().controlSize(.small)
+                        Text("Fetching from AO3…").font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        Button(seriesMembers.isEmpty ? "Fetch works in this series" : "Refresh from AO3") {
+                            fetchSeries()
+                        }
+                        .buttonStyle(.glass).controlSize(.small)
+                        if seriesMembers.isEmpty {
+                            Text("Not fetched yet").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                if let seriesError {
+                    Text(seriesError).font(.caption).foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 ForEach(Array(seriesMembers.enumerated()), id: \.element.id) { index, work in
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text("\(index + 1).").font(.callout.monospacedDigit()).foregroundStyle(.secondary)
@@ -208,7 +229,11 @@ struct WorkDetailView: View {
             kudos: item.kudos, hits: item.hits)
         Task {
             do {
-                let tagged = try KindleExport.makeKindleEPUB(source: src, work: work)
+                // Off the main thread: the rewrite re-zips the whole EPUB and renders a cover —
+                // a visible stall on a long work when it ran inline here.
+                let tagged = try await Task.detached(priority: .userInitiated) {
+                    try KindleExport.makeKindleEPUB(source: src, work: work)
+                }.value
                 guard let app = NSWorkspace.shared.urlForApplication(
                     withBundleIdentifier: KindleExport.sendToKindleBundleID) else {
                     throw KindleExport.ExportError.rewriteFailed(
@@ -250,19 +275,12 @@ struct WorkDetailView: View {
         }
         let cookie = typed ?? CredentialStore.cookie
         let workID = item.itemID
-        let root = archiveRoot, store = store
+        let store = store, engine = makeEngine(cookie: cookie)
         Task {
             do {
-                // Higher retry budget than the default: AO3 behind Cloudflare can flap 525s for
-                // several requests in a row, and a single-work download should ride that out
-                // (with backoff) rather than give up after a handful of tries.
-                let client = AO3Client(config: AO3Config(
-                    userAgent: AO3Config.defaultUserAgent(ao3User: CredentialStore.username),
-                    sessionCookie: cookie, maxRetries: 8))
                 guard let work = try store.pendingWork(workID: workID) else {
                     throw AO3Error.badURL("/works/\(workID)")
                 }
-                let engine = SyncEngine(client: client, store: store, files: FileStore(root: root))
                 try await engine.downloadWork(work)
                 downloading = false
                 cookieInput = ""
@@ -272,6 +290,32 @@ struct WorkDetailView: View {
                 downloadError = String(describing: error)
                 if case AO3Error.requiresLogin = error { needsCookie = true } else { needsCookie = false }
             }
+        }
+    }
+
+    /// An engine on the shared (process-wide) rate limiter, for one-off actions from this panel.
+    private func makeEngine(cookie: String?) -> SyncEngine {
+        // Higher retry budget than the default: AO3 behind Cloudflare can flap 525s for several
+        // requests in a row, and a one-off action should ride that out rather than give up.
+        let client = AO3Client(config: AO3Config(
+            userAgent: AO3Config.defaultUserAgent(ao3User: CredentialStore.username),
+            sessionCookie: cookie, maxRetries: 8))
+        return SyncEngine(client: client, store: store, files: FileStore(root: archiveRoot))
+    }
+
+    /// Fetch this series' member works from AO3 (all pages, bounded) and link them.
+    private func fetchSeries() {
+        fetchingSeries = true; seriesError = nil
+        let engine = makeEngine(cookie: CredentialStore.cookie), seriesID = item.itemID, store = store
+        Task {
+            do {
+                _ = try await engine.expandSeries(into: .init(), seriesIDs: [seriesID])
+                seriesMembers = (try? store.fetchSeriesMembers(seriesID: seriesID)) ?? []
+                onChanged()
+            } catch {
+                seriesError = "Couldn't fetch this series: \(error)"
+            }
+            fetchingSeries = false
         }
     }
 

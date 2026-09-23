@@ -1273,6 +1273,14 @@ check("rate limiter throws when cancelled (no unspaced requests)", limiterProbe.
 
 print("Presentation (model-level view decisions)")
 for (n, ok) in ModelChecks.presentation() { check(n, ok) }
+for (n, ok) in ModelChecks.saveVisiblePlan() { check("save visible — \(n)", ok) }
+for (n, ok) in ModelChecks.pruneGuards() { check("prune guard — \(n)", ok) }
+do { for (n, ok) in try ModelChecks.orphanSweep() { check(n, ok) } }
+catch { check("orphan sweep checks ran (\(error))", false) }
+if let bm = try? String(contentsOf: repoRoot.appendingPathComponent("Tests/AO3KitTests/Fixtures/bookmarks_page.html"),
+                        encoding: .utf8) {
+    for (n, ok) in ModelChecks.listingTotal(bookmarksFixtureHTML: bm) { check("listing total — \(n)", ok) }
+} else { check("listing total fixture", false) }
 do { for (n, ok) in try ModelChecks.staleSyncRuns() { check(n, ok) } }
 catch { check("stale sync-run checks ran (\(error))", false) }
 
@@ -1292,6 +1300,18 @@ for (name, run) in EngineScenarios.all {
 
 // Reader — off-main extraction + surfaced failures (same scenario as ReaderScenarioTests).
 // ReaderModel is @MainActor, so spin the main run loop instead of blocking it on a semaphore.
+print("Gallery — off-main reload")
+do {
+    let results = ScenarioResults()
+    var finished = false
+    Task { @MainActor in
+        do { results.checks = try await ReaderScenarios.galleryReload().map { ($0.name, $0.ok) } }
+        catch { results.checks = [("gallery reload scenario ran (\(error))", false)] }
+        finished = true
+    }
+    while !finished { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+    for (n, ok) in results.checks { check(n, ok) }
+}
 print("Reader — extraction")
 if let readerEpub = try? makeSyntheticEpub(useNCX: false) {
     let results = ScenarioResults()

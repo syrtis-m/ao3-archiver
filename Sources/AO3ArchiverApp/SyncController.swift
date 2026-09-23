@@ -106,12 +106,65 @@ final class SyncController {
             phase = .failed
             return
         }
+        let listPath = "/users/\(AO3Config.encodePathComponent(username))/bookmarks?page=1"
+        let resume = ResumeParams(store: store, username: username, archiveRoot: archiveRoot,
+                                  interval: interval, downloadEPUBs: downloadEPUBs, maxPages: maxPages,
+                                  resumeIndex: resumeIndex, incremental: incremental, reload: reload)
+        launch(store: store, username: username, cookie: cookie, archiveRoot: archiveRoot,
+               interval: interval, reload: reload,
+               status: downloadEPUBs ? "Starting…" : "Building bookmark list…", resume: resume) { engine, onEvent in
+            if incremental {
+                // Quick sync: bounded two-pass catch-up. Full series expansion stays OFF (one
+                // query per series defeats "limited queries"), but up to 3 never-expanded
+                // series are fetched so they don't stay metadata-only until a Full sync.
+                // Downloads are re-downloads only, capped — overflow drains next time.
+                let options = SyncEngine.Options(maxPages: maxPages, maxDownloads: 25,
+                                                 expandSeries: false, resumeIndex: false,
+                                                 expandNewSeries: 3)
+                return try await engine.incrementalSync(listPath: listPath, options: options, onEvent: onEvent)
+            } else {
+                // Full sync also reconciles bookmarks removed on AO3 — only after a verified
+                // complete pass (see `SyncEngine.pruneDecision`).
+                let options = SyncEngine.Options(maxPages: maxPages,
+                                                 maxDownloads: downloadEPUBs ? 50 : 0,
+                                                 expandSeries: downloadEPUBs,
+                                                 resumeIndex: resumeIndex,
+                                                 pruneRemovedBookmarks: true)
+                return try await engine.run(listPath: listPath, options: options, onEvent: onEvent)
+            }
+        }
+    }
+
+    /// Download specific works now (e.g. everything visible in the gallery) through the same
+    /// engine, limiter, progress feed and Cancel as a sync. Capped by
+    /// `SyncEngine.maxSelectedDownloads`; already-current works are skipped.
+    func startDownload(workIDs: [Int], store: Store, username: String?, cookie: String?,
+                       archiveRoot: URL, interval: TimeInterval, reload: @escaping () -> Void) {
+        guard phase != .running, !workIDs.isEmpty else { return }
+        self.reload = reload
+        pendingResume = nil
+        currentPage = 0; totalPages = nil; downloaded = 0; failed = 0
+        lastError = nil; rateLimit = nil; activity = []
+        launch(store: store, username: username, cookie: cookie, archiveRoot: archiveRoot,
+               interval: interval, reload: reload,
+               status: "Saving \(min(workIDs.count, SyncEngine.maxSelectedDownloads)) works…",
+               resume: nil) { engine, onEvent in
+            try await engine.downloadSelected(workIDs: workIDs, onEvent: onEvent)
+        }
+    }
+
+    /// The shared run machinery: a generation-tagged run, an ordered event stream, and the
+    /// engine driven from a detached task.
+    private func launch(store: Store, username: String?, cookie: String?, archiveRoot: URL,
+                        interval: TimeInterval, reload: @escaping () -> Void, status: String,
+                        resume: ResumeParams?,
+                        job: @escaping @Sendable (SyncEngine, @escaping @Sendable (SyncEngine.Event) -> Void)
+                            async throws -> SyncEngine.Result) {
         runGeneration += 1
         let gen = runGeneration
-        phase = .running; statusLine = downloadEPUBs ? "Starting…" : "Building bookmark list…"
+        phase = .running; statusLine = status
 
         let userAgent = AO3Config.defaultUserAgent(ao3User: username)
-        let listPath = "/users/\(AO3Config.encodePathComponent(username))/bookmarks?page=1"
 
         // A single ordered channel for progress events. Previously each event spawned its own
         // `Task { @MainActor in … }`; independent tasks hopping to an actor have no FIFO
@@ -128,12 +181,10 @@ final class SyncController {
             }
         }
 
-        // `Task.detached`, NOT `Task {}`: `start` is @MainActor-isolated, so an unstructured
-        // `Task` inherits that isolation and the whole sync — every SwiftSoup listing parse,
-        // every Store write transaction, every EPUB write — ran ON THE MAIN THREAD. Detaching
-        // forces each hop back to be an explicit `await`, which is the compiler check that was
-        // missing (the old code called `self?.finish(...)` with no `await`, which only
-        // compiled *because* it was main-actor isolated).
+        // `Task.detached`, NOT `Task {}`: this is @MainActor-isolated, so an unstructured
+        // `Task` would inherit that isolation and the whole run — every SwiftSoup listing parse,
+        // every Store write transaction, every EPUB write — would run ON THE MAIN THREAD.
+        // Detaching forces each hop back to be an explicit `await` the compiler checks.
         task = Task.detached(priority: .userInitiated) { [weak self] in
             defer { continuation.finish() }
             do {
@@ -143,7 +194,7 @@ final class SyncController {
                     userAgent: userAgent, sessionCookie: cookie,
                     minRequestInterval: interval, maxRetries: 8))
                 // Through the same ordered stream as progress events — no strong `self` capture
-                // (which kept an abandoned controller and its sync alive) and no unordered
+                // (which kept an abandoned controller and its run alive) and no unordered
                 // per-notice Task that could land after the run ended.
                 client.onRateLimit = { secs, attempt, max in
                     continuation.yield(.rateLimit(secs, attempt: attempt, max: max))
@@ -151,34 +202,16 @@ final class SyncController {
                 let files = FileStore(root: archiveRoot)
                 try files.ensureDirectories()
                 let engine = SyncEngine(client: client, store: store, files: files)
-                let onEvent: @Sendable (SyncEngine.Event) -> Void = { continuation.yield(.engine($0)) }
-                let result: SyncEngine.Result
-                if incremental {
-                    // Quick sync: bounded two-pass catch-up. expandSeries OFF (one query per
-                    // series defeats "limited queries"); downloads are re-downloads only, capped
-                    // to keep the run cheap — any overflow drains on the next quick sync.
-                    let options = SyncEngine.Options(maxPages: maxPages, maxDownloads: 25,
-                                                     expandSeries: false, resumeIndex: false)
-                    result = try await engine.incrementalSync(listPath: listPath, options: options, onEvent: onEvent)
-                } else {
-                    let options = SyncEngine.Options(maxPages: maxPages,
-                                                     maxDownloads: downloadEPUBs ? 50 : 0,
-                                                     expandSeries: downloadEPUBs,
-                                                     resumeIndex: resumeIndex)
-                    result = try await engine.run(listPath: listPath, options: options, onEvent: onEvent)
-                }
+                let result = try await job(engine) { continuation.yield(.engine($0)) }
                 continuation.finish()
                 await consumer.value            // drain the feed before writing the final state
                 await self?.finish(result: result, gen: gen)
             } catch is CancellationError {
                 continuation.finish(); await consumer.value
                 await self?.endRun(.cancelled, gen: gen)
-            } catch AO3Error.sessionExpired {
+            } catch AO3Error.sessionExpired where resume != nil {
                 continuation.finish(); await consumer.value
-                await self?.pauseForCookie(gen: gen, ResumeParams(
-                    store: store, username: username, archiveRoot: archiveRoot, interval: interval,
-                    downloadEPUBs: downloadEPUBs, maxPages: maxPages, resumeIndex: resumeIndex,
-                    incremental: incremental, reload: reload))
+                await self?.pauseForCookie(gen: gen, resume!)
             } catch {
                 continuation.finish(); await consumer.value
                 await self?.fail(with: error, gen: gen)
@@ -235,6 +268,7 @@ final class SyncController {
         statusLine = "Done — \(result.works) works listed, \(result.epubsDownloaded) saved"
             + (result.worksDeleted > 0 ? ", \(result.worksDeleted) gone from AO3" : "")
             + (otherFailures > 0 ? " (\(otherFailures) failed)" : "")
+            + (result.bookmarksDeleted > 0 ? ", \(result.bookmarksDeleted) un-bookmarked removed" : "")
         push(statusLine)
         endRun(.done)
     }

@@ -54,6 +54,9 @@ public struct WorkListItem: Sendable, Identifiable, Equatable, Hashable {
     /// True when AO3 has 404'd this work since we last checked — the author deleted it.
     /// Never set by proactive probing, only when the normal download flow happens to hit it.
     public var deletedOnAO3: Bool
+    /// You removed this bookmark on AO3, but it's kept because the work is still yours locally
+    /// (a saved EPUB / reading position / series link). See `Store.applyBookmarkRemovals`.
+    public var removedFromBookmarks: Bool
 
     // ── Precomputed once at construction (perf: M6/P1) ──────────────────────────────
     /// Concatenated, lowercased text the search box matches against. Built ONCE in `init`
@@ -80,7 +83,8 @@ public struct WorkListItem: Sendable, Identifiable, Equatable, Hashable {
         bookmarkedAt: String? = nil, bookmarkedDate: Date? = nil,
         bookmarkTags: [String] = [], bookmarkerNotes: String? = nil,
         isRec: Bool = false, isPrivate: Bool = false,
-        downloadState: String = "pending", epubPath: String? = nil, deletedOnAO3: Bool = false
+        downloadState: String = "pending", epubPath: String? = nil, deletedOnAO3: Bool = false,
+        removedFromBookmarks: Bool = false
     ) {
         self.itemID = itemID; self.bookmarkID = bookmarkID; self.kind = kind
         self.sourcePath = sourcePath; self.title = title; self.author = author
@@ -95,6 +99,7 @@ public struct WorkListItem: Sendable, Identifiable, Equatable, Hashable {
         self.bookmarkTags = bookmarkTags
         self.bookmarkerNotes = bookmarkerNotes; self.isRec = isRec; self.isPrivate = isPrivate
         self.downloadState = downloadState; self.epubPath = epubPath; self.deletedOnAO3 = deletedOnAO3
+        self.removedFromBookmarks = removedFromBookmarks
         // Derived, computed once (see field docs).
         self.searchHaystack = ([title, author, summary ?? "", bookmarkerNotes ?? ""]
             + fandoms + warnings + relationships + characters + freeforms + bookmarkTags)
@@ -280,7 +285,7 @@ extension Store {
             // Work / external bookmarks.
             for row in try Row.fetchAll(db, sql: """
                 SELECT b.bookmark_id AS bid, b.bookmarked_at AS bat, b.bookmarker_notes AS bnotes,
-                       b.is_rec AS brec, b.is_private AS bpriv, w.*
+                       b.is_rec AS brec, b.is_private AS bpriv, b.removed_at AS bremoved, w.*
                 FROM bookmark b JOIN work w ON b.item_kind = 'work' AND b.item_id = w.id
                 """) {
                 let wid: Int = row["id"]
@@ -305,7 +310,8 @@ extension Store {
                     bookmarkerNotes: row["bnotes"],
                     isRec: (row["brec"] as Int? ?? 0) != 0, isPrivate: (row["bpriv"] as Int? ?? 0) != 0,
                     downloadState: row["download_state"], epubPath: row["epub_path"],
-                    deletedOnAO3: (row["deleted_on_ao3_at"] as String?) != nil))
+                    deletedOnAO3: (row["deleted_on_ao3_at"] as String?) != nil,
+                    removedFromBookmarks: (row["bremoved"] as String?) != nil))
             }
 
             // Series bookmarks.
@@ -676,10 +682,31 @@ public final class GalleryViewModel {
 
     /// Load (or reload) the working set + presets from the store on disk.
     public func load(from store: Store) {
+        reloadGeneration &+= 1   // a synchronous load supersedes any async reload in flight
         do { allItems = try store.fetchAllListItems(); loadError = nil }
         catch { loadError = String(describing: error) }
         loadPresets(from: store)
     }
+
+    /// Reload **off the main thread** — the SQLite fetch + join runs detached and only the
+    /// assignment happens on the main actor. Used for the live reloads during a sync (every
+    /// ~1.2s at scale), which previously ran the whole fetch on the main thread. A generation
+    /// counter drops a slower, older fetch that finishes after a newer one.
+    @MainActor
+    public func reload(from store: Store) async {
+        reloadGeneration &+= 1
+        let gen = reloadGeneration
+        let fetched = await Task.detached(priority: .userInitiated) {
+            Result { try store.fetchAllListItems() }
+        }.value
+        guard gen == reloadGeneration else { return }
+        switch fetched {
+        case .success(let items): allItems = items; loadError = nil
+        case .failure(let error): loadError = String(describing: error)
+        }
+        loadPresets(from: store)
+    }
+    @ObservationIgnored private var reloadGeneration = 0
 
     public func loadPresets(from store: Store) { presets = (try? store.loadPresets()) ?? [] }
 

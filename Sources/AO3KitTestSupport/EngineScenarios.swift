@@ -13,6 +13,10 @@ public enum EngineScenarios {
         ("cancel mid-download marks nothing failed", cancelDuringDownloadsMarksNothingFailed),
         ("series pagination is followed", seriesPaginationIsFollowed),
         ("resume cursor from another listing is ignored", resumeCursorFromOtherListingIsIgnored),
+        ("verified full index prunes removed bookmarks", verifiedIndexPrunesRemovedBookmarks),
+        ("unverified index never prunes", unverifiedIndexNeverPrunes),
+        ("quick sync expands a few new series", quickSyncExpandsNewSeries),
+        ("save-selected downloads only what's needed", downloadSelectedSkipsCurrent),
     ]
 
     // MARK: - Fixtures
@@ -134,6 +138,109 @@ public enum EngineScenarios {
         return [
             ("indexed the requested listing", env.stub.requests.first?.hasPrefix("/users/u/bookmarks") == true),
             ("never touched the stale listing", !env.stub.requests.contains { $0.hasPrefix("/tags/") }),
+        ]
+    }
+}
+
+extension EngineScenarios {
+    static let longAgo = "2020-01-01T00:00:00Z"
+
+    /// Seed bookmarks as if indexed long ago (so this run's cutoff is strictly later).
+    static func seed(_ store: Store, _ cards: [(bookmarkID: Int, workID: Int, isPrivate: Bool)]) throws {
+        for c in cards {
+            try store.upsertWorkAndBookmark(
+                WorkBlurb(sourcePath: "/works/\(c.workID)", workID: c.workID, title: "W\(c.workID)",
+                          author: "a", updatedAt: 1_700_000_000, bookmarkID: c.bookmarkID, isPrivate: c.isPrivate),
+                now: longAgo)
+        }
+    }
+
+    /// Complete, verified listing (total matches, page 1 → end, cookie): a bookmark you removed
+    /// on AO3 is deleted; one whose work you saved is kept and flagged instead.
+    public static func verifiedIndexPrunesRemovedBookmarks() async throws -> [Check] {
+        let env = try Env(); defer { env.cleanup() }
+        try seed(env.store, [(1, 101, false), (2, 102, false), (3, 103, false), (4, 104, false)])
+        try env.store.markDownloaded(workID: 101, epubPath: "works/101 - W101.epub", updatedAt: 1_700_000_000)
+        env.stub.route(["/users/u/bookmarks": .html(StubAO3.bookmarksPage(
+            [(4, 104, "W104", false), (3, 103, "W103", false)], total: 2))])
+        let r = try await env.engine().run(listPath: listPath, options: .init(
+            maxPages: 5, maxDownloads: 0, expandSeries: false, pruneRemovedBookmarks: true))
+        let items = try env.store.fetchAllListItems()
+        let byID = Dictionary(uniqueKeysWithValues: items.map { ($0.itemID, $0) })
+        let goneEntirely = try env.store.pendingWork(workID: 102) == nil
+        return [
+            ("un-bookmarked + unsaved work is gone entirely", byID[102] == nil && goneEntirely),
+            ("un-bookmarked but saved work is kept, flagged", byID[101]?.removedFromBookmarks == true),
+            ("still-bookmarked works untouched", byID[103]?.removedFromBookmarks == false
+                && byID[104]?.removedFromBookmarks == false),
+            ("result reports the reconciliation", r.bookmarksDeleted == 1 && r.bookmarksFlaggedRemoved == 1),
+        ]
+    }
+
+    /// Every guard that must stop a prune, end-to-end: a total that doesn't match what was
+    /// seen, and no cookie. Nothing may be removed.
+    public static func unverifiedIndexNeverPrunes() async throws -> [Check] {
+        var checks: [Check] = []
+        for (label, total, cookie) in [("count mismatch", 5, "c" as String?), ("no cookie", 2, nil)] {
+            let env = try Env(); defer { env.cleanup() }
+            try seed(env.store, [(1, 101, false), (2, 102, false), (3, 103, false), (4, 104, false)])
+            env.stub.route(["/users/u/bookmarks": .html(StubAO3.bookmarksPage(
+                [(4, 104, "W104", false), (3, 103, "W103", false)], total: total))])
+            let r = try await env.engine(cookie: cookie).run(listPath: listPath, options: .init(
+                maxPages: 5, maxDownloads: 0, expandSeries: false, pruneRemovedBookmarks: true))
+            checks.append(("\(label): nothing removed", try env.store.fetchAllListItems().count == 4
+                && r.bookmarksDeleted == 0 && r.bookmarksFlaggedRemoved == 0))
+        }
+        return checks
+    }
+
+    /// Quick sync expands never-expanded series, but only up to its budget.
+    public static func quickSyncExpandsNewSeries() async throws -> [Check] {
+        let env = try Env(); defer { env.cleanup() }
+        for (sid, bid) in [(8, 800), (9, 900)] {
+            let card = WorkBlurb(kind: .series, sourcePath: "/series/\(sid)", workID: sid, title: "S\(sid)",
+                                 author: "a", bookmarkID: bid)
+            try env.store.upsertSeries(card)
+            try env.store.upsertBookmark(card, itemKind: .series, itemID: sid)
+        }
+        let listing = StubAO3.bookmarksPage([(1, 101, "A", false)])
+        env.stub.route([
+            "/users/u/bookmarks": .html(listing),
+            "/series/9": .html(StubAO3.seriesPage([(901, "P1"), (902, "P2")])),
+            "/series/8": .html(StubAO3.seriesPage([(801, "Q1")])),
+        ])
+        _ = try await env.engine().incrementalSync(listPath: listPath, options: .init(
+            maxPages: 1, maxDownloads: 0, expandSeries: false, expandNewSeries: 1))
+        let newest = try env.store.fetchSeriesMembers(seriesID: 9).map(\.itemID)
+        let other = try env.store.fetchSeriesMembers(seriesID: 8).map(\.itemID)
+        return [
+            ("most recently bookmarked series expanded", newest == [901, 902]),
+            ("budget respected (the other waits)", other.isEmpty && !env.stub.requests.contains { $0.hasPrefix("/series/8") }),
+            ("unexpanded list shrinks", try env.store.unexpandedSeriesIDs() == [8]),
+            ("no unexpected requests", env.stub.unmatched.isEmpty),
+        ]
+    }
+
+    /// "Save these works": already-current saved works are skipped, the rest downloaded,
+    /// newest bookmark first in the queue generally.
+    public static func downloadSelectedSkipsCurrent() async throws -> [Check] {
+        let env = try Env(); defer { env.cleanup() }
+        try seed(env.store, [(1, 101, false), (2, 102, false), (3, 103, false)])
+        try env.store.markDownloaded(workID: 103, epubPath: "works/103 - W103.epub", updatedAt: 1_700_000_000)
+        var table: [String: StubAO3.Response] = [:]
+        for id in [101, 102] {
+            table["/works/\(id)"] = .html(StubAO3.workPage(id))
+            table["/downloads/\(id)/Stub.epub"] = .epub
+        }
+        env.stub.route(table)
+        let order = try env.store.worksNeedingDownload().map(\.id)
+        let r = try await env.engine().downloadSelected(workIDs: [101, 102, 103, 999])
+        let saved = try env.store.fetchAllListItems().filter(\.isSaved).map(\.itemID).sorted()
+        return [
+            ("queue is newest-bookmark first", order == [102, 101]),
+            ("downloads only the unsaved works", r.epubsDownloaded == 2 && saved == [101, 102, 103]),
+            ("never requested the current one", !env.stub.requests.contains { $0.hasPrefix("/works/103") }),
+            ("no unexpected requests", env.stub.unmatched.isEmpty),
         ]
     }
 }

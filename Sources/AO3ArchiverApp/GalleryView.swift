@@ -17,6 +17,8 @@ struct GalleryView: View {
     @State private var showInspector = false
     @State private var showSync = false
     @State private var syncController = SyncController()
+    @State private var confirmSave: SaveVisiblePlan?
+    @AppStorage("syncInterval") private var syncInterval = 5.0
     // The search field binds to local state and pushes into the model on change. Binding
     // `.searchable` straight into `$vm.filter.searchText` (a nested property of an
     // @Observable) can drop live updates inside a NavigationSplitView on macOS.
@@ -107,7 +109,7 @@ struct GalleryView: View {
                 }
                 .sheet(isPresented: $showSync) {
                     SyncSheet(controller: syncController, store: store, archiveRoot: archiveRoot,
-                              reload: { vm.load(from: store) })
+                              reload: { Task { await vm.reload(from: store) } })
                 }
         }
         // Narrow: panels take over as a sheet rather than splitting the gallery.
@@ -117,6 +119,20 @@ struct GalleryView: View {
         // A sync still running there would keep hitting AO3 against the *old* archive with no
         // way to cancel it — stop it with the view that owns it.
         .onDisappear { syncController.cancel() }
+        .confirmationDialog(confirmSave?.title ?? "", isPresented: Binding(
+            get: { confirmSave != nil }, set: { if !$0 { confirmSave = nil } }),
+            titleVisibility: .visible, presenting: confirmSave) { plan in
+            Button("Save") {
+                syncController.startDownload(
+                    workIDs: plan.workIDs, store: store, username: CredentialStore.username,
+                    cookie: CredentialStore.cookie, archiveRoot: archiveRoot, interval: syncInterval,
+                    reload: { Task { await vm.reload(from: store) } })
+                showSync = true   // progress, Cancel and the activity feed live in the sync sheet
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { plan in
+            Text(plan.message(interval: syncInterval))
+        }
         .onChange(of: isWide) { _, nowWide in
             // Leaving wide can't show both columns → keep filters, step the details aside.
             if !nowWide, showFilters, showInspector { showInspector = false }
@@ -288,6 +304,13 @@ struct GalleryView: View {
             } label: {
                 Label("Archive Folder", systemImage: "folder")
             }
+        }
+        ToolbarItem(placement: .primaryAction) {
+            Button { confirmSave = vm.saveVisiblePlan } label: {
+                Label("Save Visible", systemImage: "square.and.arrow.down.on.square")
+            }
+            .help("Download the unsaved works in the current filtered view")
+            .disabled(syncController.isRunning || vm.saveVisiblePlan == nil)
         }
         ToolbarItem(placement: .primaryAction) {
             Button { showSync = true } label: {

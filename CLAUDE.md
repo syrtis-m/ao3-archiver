@@ -22,8 +22,8 @@ chapter/scroll modes, off-main prep, independent windows). See [ARCHITECTURE.md]
 
 ```sh
 swift build                 # build library + CLI + app
-swift run selftest          # headless parser + Store + gallery + reader checks (380 checks)
-swift test                  # swift-testing suite (108 tests, 8 suites) — run this; Xcode is installed
+swift run selftest          # headless parser + Store + gallery + reader checks (443 checks)
+swift test                  # swift-testing suite (119 tests, 11 suites) — run this; Xcode is installed
 swift run ao3archiver       # bounded CLI sync: paginate → ingest → expand series → download
 swift run AO3ArchiverApp    # SwiftUI gallery over the synced DB (reads AO3_ARCHIVE_DIR)
 ./Packaging/make-icon.sh    # render the liquid-glass app icon → Packaging/AppIcon.icns
@@ -31,6 +31,8 @@ swift run AO3ArchiverApp    # SwiftUI gallery over the synced DB (reads AO3_ARCH
 ```
 
 **Run `swift test` — Xcode is installed in this environment, so the swift-testing suite works.**
+Engine-level behaviour goes in `AO3KitTestSupport` scenarios (run by both runners against a stub
+AO3 — never the network).
 `swift run selftest` is the **framework-free** equivalent (same assertions, same fixtures) for
 toolchains without Xcode (Command-Line-Tools only, where `swift test` fails with "no such module
 'Testing'"). Here, run **both**: `swift test` for the full suite and `swift run selftest` as the
@@ -60,12 +62,14 @@ Sources/AO3Kit/        reusable, tested core the app sits on
   ReaderModel.swift    @Observable reader coordinator: document + session + resume + off-main prep
   KindleExport.swift   Send to Kindle: rewrite an EPUB with cover + info page + title badge
   KindleCover.swift    render the Kindle cover JPEG (CoreText)
+  Presentation.swift   display decisions (isSaved, badge/banner wording, statsLine, SaveVisiblePlan)
   Models.swift         WorkBlurb, BookmarkKind
   ArchivePaths.swift   on-disk epub filename/sanitization (length-bounded for APFS)
 Sources/ao3archiver/   CLI driver (bounded SyncEngine pass; top-level code, not @main)
 Sources/AO3ArchiverApp/  SwiftUI gallery + in-app sync + reader (thin Views over the tested model)
                          ReaderView.swift = WKWebView reader skin + independent reader windows
                          SyncController/SyncSheet = GUI sync driver + sheet; CredentialStore = Keychain
+Sources/AO3KitTestSupport/  StubAO3 (URLProtocol fake AO3) + scenarios shared by BOTH runners
 Sources/selftest/      headless assertions (parser + Store + gallery model) without XCTest
 Tests/AO3KitTests/     swift-testing suite + Fixtures/ (real captured AO3 HTML)
 Packaging/             make-app.sh, Info.plist, IconGen.swift + make-icon.sh

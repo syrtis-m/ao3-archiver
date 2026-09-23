@@ -156,6 +156,10 @@ struct RootView: View {
             try FileManager.default.createDirectory(at: archiveRoot, withIntermediateDirectories: true)
             let s = try Store(path: archiveRoot.appendingPathComponent("archive.sqlite").path)
             try? s.closeStaleSyncRuns()   // bookkeeping only; never blocks opening
+            // Works nothing refers to (no bookmark, file, reading position or series link) are
+            // invisible and only clog the download queue — e.g. cards from an old crawl of a
+            // listing that wasn't yours. Ingest is single-transaction, so this can't race a sync.
+            try? s.deleteOrphanWorks()
             vm.load(from: s)   // populate BEFORE presenting the gallery, so it renders once
             store = s          // with data in place instead of empty-then-reloaded
             openError = nil

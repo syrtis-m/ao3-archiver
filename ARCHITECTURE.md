@@ -165,6 +165,27 @@ AO3, and the EPUB-link parser is anchored to site-relative `/downloads/` paths. 
 3. **Content download** (slow, rate-limited) — fetch EPUBs for works that need one, validating
    the ZIP/EPUB magic bytes, and mark each downloaded on completion.
 
+**Queue order is intent:** both download queues put the most recently bookmarked works first
+(then unbookmarked series members), so a per-run cap spends itself on what you just added rather
+than on the oldest work ids. **Save Visible** (`SyncEngine.downloadSelected`) downloads the
+unsaved works in the current filtered view, capped at `maxSelectedDownloads` (100), skipping
+already-current files, recorded as a normal sync run.
+
+**Series:** expansion follows a series' pagination (≤ `maxSeriesPages`). Besides the Full sync
+pass, Quick sync expands up to `expandNewSeries` (3) never-expanded series per run, and the detail
+view has a per-series fetch.
+
+**Removed bookmarks (Full sync only, `pruneRemovedBookmarks`).** After the index pass, bookmarks
+not seen this run are treated as removed on AO3 **only if** `SyncEngine.pruneDecision` passes every
+guard: a session cookie (private bookmarks are owner-only, and an expired cookie on your own listing
+most likely serves the public ones rather than a login page), the pass started at page 1 and ran to
+the last page, the distinct bookmark ids seen equal AO3's own "of N Bookmarks" heading
+(`BlurbParser.listingTotal`), private bookmarks were visible if we hold any, and the removal is
+≤ 5% (min 25). A work still yours locally (EPUB, reading position, series link) keeps its row with
+`bookmark.removed_at` set and an "Un-bookmarked" badge; the rest are deleted and
+`Store.deleteOrphanWorks` sweeps works nothing refers to (also run at app open). Ingest writes a
+card's work + bookmark rows in **one transaction** so the sweep can never catch a half-ingested card.
+
 **Bounded by default** (`maxPages`, `maxDownloads` default low) so a casual run never crawls a
 large account by accident. **Resumable:** the next-page URL is persisted in `meta`
 (`SyncEngine.resumeKey`), so a run throttled at page 15 of ~130 resumes there, not at page 1.
@@ -312,6 +333,15 @@ fixtures:
   also runs under Command-Line-Tools-only toolchains where `swift test` can't import `Testing`.
 
 Keep the two **in lockstep** when changing the parser, store, or model.
+
+**End-to-end engine tests without a network (`AO3KitTestSupport`).** `AO3Client` accepts an
+injected `URLSessionConfiguration` and `RateLimiter`; `StubAO3` installs a `URLProtocol` on a
+unique `stub-*.archiveofourown.org` host per test (so it passes the host allowlist and parallel
+tests don't share routes) and fails loudly on any unrouted request. Scenarios are written **once**
+in `EngineScenarios` / `ModelChecks` / `ReaderScenarios` and run by *both* runners, so the lockstep
+rule holds by construction. Prefer adding a scenario here over a Store-only test when the behaviour
+spans the engine — a Store-level test with hand-picked arguments is how the unreachable
+deletion-sighting threshold hid in passing code.
 
 - **Parser selectors are pinned to real captured AO3 HTML** in `Tests/AO3KitTests/Fixtures/`
   (works listing, bookmarks page, series card, series page). When AO3 markup drifts, update the

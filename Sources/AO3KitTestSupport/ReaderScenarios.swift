@@ -5,6 +5,28 @@ import AO3Kit
 /// since each runner has its own synthetic-EPUB builder.
 @MainActor
 public enum ReaderScenarios {
+    /// The off-main gallery reload lands the store's items; a synchronous load issued while an
+    /// async reload is in flight wins (the stale result is dropped).
+    public static func galleryReload() async throws -> [EngineScenarios.Check] {
+        let store = try Store(inMemory: true)
+        for id in 1...3 {
+            try store.upsertWorkAndBookmark(WorkBlurb(sourcePath: "/works/\(id)", workID: id, title: "W\(id)",
+                                                      author: "a", bookmarkID: id))
+        }
+        let vm = GalleryViewModel()
+        await vm.reload(from: store)
+        let first = vm.allItems.count
+        let pending = Task { await vm.reload(from: store) }   // starts, then is superseded
+        try store.upsertWorkAndBookmark(WorkBlurb(sourcePath: "/works/4", workID: 4, title: "W4",
+                                                  author: "a", bookmarkID: 4))
+        vm.load(from: store)
+        await pending.value
+        return [
+            ("async reload loads the store", first == 3),
+            ("newer synchronous load isn't overwritten by an older fetch", vm.allItems.count == 4),
+        ]
+    }
+
     /// Resources extract off-main and the reader renders; if the EPUB vanishes before
     /// extraction, the reader reports why instead of staying blank forever.
     public static func extraction(epubURL: URL) async throws -> [EngineScenarios.Check] {

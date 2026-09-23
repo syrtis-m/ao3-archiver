@@ -44,6 +44,10 @@ struct WorkCardView: View {
             if let deleted = item.deletedBadgeText {
                 ColorBadge(text: deleted, systemImage: "exclamationmark.shield.fill", color: .red)
             }
+            if item.removedFromBookmarks {
+                ColorBadge(text: "Un-bookmarked", systemImage: "bookmark.slash", color: .gray)
+                    .help("You removed this bookmark on AO3; it's kept here because you saved it.")
+            }
             if item.kind == .series {
                 ColorBadge(text: "Series", systemImage: "books.vertical", color: .purple)
             } else {

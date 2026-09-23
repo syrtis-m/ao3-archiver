@@ -174,6 +174,19 @@ public enum BlurbParser {
         return markers.contains { head.contains($0) }
     }
 
+    /// The listing's total item count from AO3's heading ("1 - 20 of 1,811 Bookmarks by …"),
+    /// or nil if absent. Used to verify an index pass really saw *every* bookmark before
+    /// anything is pruned.
+    /// Read from the page's `h2.heading` only — never the body, where a work summary could
+    /// contain the same words.
+    public static func listingTotal(html: String) -> Int? {
+        guard let doc = try? SwiftSoup.parse(html),
+              let heading = try? doc.select("h2.heading").first()?.text(),
+              let r = heading.range(of: #"of\s+([\d,]+)\s+Bookmarks"#, options: .regularExpression)
+        else { return nil }
+        return Int(heading[r].filter(\.isNumber))
+    }
+
     /// The highest page number in the pagination control (the total page count), for a
     /// progress readout like "page 15 of 130". nil when there's no pagination (single page).
     public static func lastPageNumber(html: String) throws -> Int? {

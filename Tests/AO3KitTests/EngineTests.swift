@@ -16,6 +16,10 @@ import AO3KitTestSupport
 }
 
 @Suite struct ReaderScenarioTests {
+    @MainActor @Test func galleryReloadOffMain() async throws {
+        for check in try await ReaderScenarios.galleryReload() { #expect(check.ok, "\(check.name)") }
+    }
+
     @MainActor @Test func extractionIsOffMainAndFailuresSurface() async throws {
         let url = try SyntheticEpub.make(flavour: .nav)
         defer { try? FileManager.default.removeItem(at: url) }
@@ -28,6 +32,22 @@ import AO3KitTestSupport
 @Suite struct ModelCheckTests {
     @Test func presentation() {
         for check in ModelChecks.presentation() { #expect(check.ok, "\(check.name)") }
+    }
+    @Test func saveVisiblePlan() {
+        for check in ModelChecks.saveVisiblePlan() { #expect(check.ok, "\(check.name)") }
+    }
+    @Test func pruneGuards() {
+        for check in ModelChecks.pruneGuards() { #expect(check.ok, "\(check.name)") }
+    }
+    @Test func orphanSweep() throws {
+        for check in try ModelChecks.orphanSweep() { #expect(check.ok, "\(check.name)") }
+    }
+    @Test func listingTotal() throws {
+        let url = try #require(Bundle.module.url(forResource: "bookmarks_page", withExtension: "html",
+                                                 subdirectory: "Fixtures"))
+        for check in ModelChecks.listingTotal(bookmarksFixtureHTML: try String(contentsOf: url, encoding: .utf8)) {
+            #expect(check.ok, "\(check.name)")
+        }
     }
     @Test func staleSyncRuns() throws {
         for check in try ModelChecks.staleSyncRuns() { #expect(check.ok, "\(check.name)") }

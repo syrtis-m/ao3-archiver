@@ -25,8 +25,15 @@ computer. Your login is stored in the Mac's Keychain and is only ever sent to AO
   rating, tags, length, kudos, date — and combine as many filters as you want. It stays fast even
   with tens of thousands of bookmarks. 
 - **Save your favourite filter combinations** ("Presets") and reapply them in one click.
-- **Save the works you want to keep** as ebook files you own — pick them as you browse, or grab a
-  batch — readable in Apple Books and anywhere else.
+- **Save the works you want to keep** as ebook files you own — pick them as you browse, or filter
+  down to what you want and click **Save Visible** to grab that batch (up to 100 at a time; it
+  tells you how long it'll take first) — readable in Apple Books and anywhere else.
+- **Series come with their works.** Open a bookmarked series and click **Fetch works in this
+  series**; Quick sync also fills in a few new series each time.
+- **Stays in step with AO3.** A Full sync notices bookmarks you've removed on AO3 and removes them
+  here too — except works you've saved, which stay (marked "Un-bookmarked") because they're yours.
+  It only does this after reading your *entire* bookmark list successfully and checking the count
+  against AO3's, so a hiccup mid-sync can never delete anything.
 - **Read right in the app.** A dark, glassy built-in reader opens any saved story in its own
   window — chapter-by-chapter or continuous scroll, with your choice of theme, font, and size, and
   it remembers where you left off. Open as many reader windows as you like.
@@ -78,7 +85,8 @@ Click **Sync**. You'll be asked for:
 
 - **Your AO3 username** — so it knows whose bookmarks to fetch.
 - **A login cookie** *(optional)* — only needed to reach **private or restricted** bookmarks.
-  Leave it blank to back up your public bookmarks.
+  Leave it blank to back up your public bookmarks. (Removed-bookmark cleanup only runs with a
+  cookie, since without one your private bookmarks are invisible.)
 
 Then press **Sync** and watch your bookmark list build up live.
 

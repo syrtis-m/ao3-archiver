@@ -67,13 +67,23 @@ public actor SyncEngine {
         /// an unbounded number of requests in a single run (the rate limiter keeps them polite
         /// but bounded-by-default is the contract).
         public var maxSeries: Int
+        /// Full run only: after a *verified complete* index, reconcile bookmarks you removed
+        /// on AO3 (see `pruneDecision` for the guards). Off by default — the GUI's Full sync
+        /// opts in; the CLI's bounded runs never see the whole listing anyway.
+        public var pruneRemovedBookmarks: Bool
+        /// Quick sync only: expand up to this many *never-expanded* bookmarked series (one
+        /// request each, plus pages), so series don't stay metadata-only until a Full sync.
+        public var expandNewSeries: Int
         public init(maxPages: Int = 5, maxDownloads: Int? = nil, expandSeries: Bool = true,
-                    resumeIndex: Bool = false, maxSeries: Int = 50) {
+                    resumeIndex: Bool = false, maxSeries: Int = 50,
+                    pruneRemovedBookmarks: Bool = false, expandNewSeries: Int = 0) {
             self.maxPages = maxPages
             self.maxDownloads = maxDownloads
             self.expandSeries = expandSeries
             self.resumeIndex = resumeIndex
             self.maxSeries = maxSeries
+            self.pruneRemovedBookmarks = pruneRemovedBookmarks
+            self.expandNewSeries = expandNewSeries
         }
     }
 
@@ -97,6 +107,10 @@ public actor SyncEngine {
         /// Of `downloadsFailed`, how many failed because AO3 returned a genuine 404 — the work
         /// was deleted by its author, not a transient/auth failure. A subset, not additional.
         public var worksDeleted = 0
+        /// Bookmarks reconciled as removed on AO3: kept-but-flagged (still saved locally) and
+        /// deleted outright. Both 0 when pruning was off or skipped.
+        public var bookmarksFlaggedRemoved = 0
+        public var bookmarksDeleted = 0
         public init() {}
     }
 
@@ -120,7 +134,11 @@ public actor SyncEngine {
         sightingSource = Self.sightingSource(runID: runID)
         var result = Result()
         do {
+            let indexStart = Store.nowISO()
             result = try await indexSync(listPath: listPath, options: options, onEvent: onEvent)
+            if options.pruneRemovedBookmarks {
+                result = try pruneRemovedBookmarks(since: indexStart, into: result, onEvent: onEvent)
+            }
             if options.expandSeries {
                 result = try await expandSeries(into: result, maxSeries: options.maxSeries, onEvent: onEvent)
             }
@@ -178,6 +196,12 @@ public actor SyncEngine {
                                                  into: result, onEvent: onEvent)
             result = try await indexUpdatedWorks(listPath: listPath, since: watermark,
                                                  options: options, into: result, onEvent: onEvent)
+            if options.expandNewSeries > 0 {
+                let fresh = Array(try store.unexpandedSeriesIDs().prefix(options.expandNewSeries))
+                if !fresh.isEmpty {
+                    result = try await expandSeries(into: result, seriesIDs: fresh, onEvent: onEvent)
+                }
+            }
             let (downloaded, failed, deleted) = try await redownloadUpdated(limit: options.maxDownloads, onEvent: onEvent)
             result.epubsDownloaded = downloaded
             result.downloadsFailed = failed
@@ -275,10 +299,13 @@ public actor SyncEngine {
         var result = Result()
         // Resume from the saved page if asked and present; else start at page 1.
         var nextPath: String? = listPath
+        var coverage = IndexCoverage()
         if options.resumeIndex, let saved = try store.getMeta(Self.resumeKey), !saved.isEmpty,
            Self.sameListing(saved, listPath) {
             nextPath = saved
+            coverage.startedAtFirstPage = false
         }
+        lastIndexCoverage = nil
         var total: Int?
         var pagesThisRun = 0
         while let path = nextPath, pagesThisRun < options.maxPages {
@@ -289,6 +316,9 @@ public actor SyncEngine {
                 throw AO3Error.sessionExpired
             }
             for card in cards { try ingest(card, onEvent: onEvent) }
+            if coverage.listingTotal == nil { coverage.listingTotal = BlurbParser.listingTotal(html: html) }
+            for card in cards { if let id = card.bookmarkID { coverage.seenBookmarkIDs.insert(id) } }
+            coverage.seenPrivate += cards.filter(\.isPrivate).count
             pagesThisRun += 1
             let absPage = Self.pageNumber(inPath: path) ?? pagesThisRun
             result.pagesScanned = absPage
@@ -305,6 +335,74 @@ public actor SyncEngine {
                 if let np { try store.setMeta(Self.resumeKey, np) } else { try store.clearMeta(Self.resumeKey) }
             }
             nextPath = np
+            if np == nil { coverage.reachedEnd = true }
+        }
+        lastIndexCoverage = coverage
+        return result
+    }
+
+    // MARK: - Removed-bookmark reconciliation
+
+    /// What one `indexSync` pass provably saw — the evidence `pruneDecision` weighs.
+    public struct IndexCoverage: Sendable, Equatable {
+        public var startedAtFirstPage = true
+        public var reachedEnd = false
+        public var listingTotal: Int?
+        public var seenBookmarkIDs: Set<Int> = []
+        public var seenPrivate = 0
+        public init() {}
+    }
+    private var lastIndexCoverage: IndexCoverage?
+
+    public enum PruneDecision: Sendable, Equatable {
+        case prune
+        case skip(String)
+    }
+
+    /// Whether it's safe to treat "not seen this run" as "removed on AO3". Deleting on a
+    /// partial view would destroy real bookmarks, so every guard must pass:
+    /// - a session cookie — AO3 shows *private* bookmarks only to their logged-in owner, and an
+    ///   expired cookie on your own listing serves the public ones rather than a login page;
+    /// - the pass started at page 1 (not a resumed cursor) and ran until there was no Next link;
+    /// - it saw exactly as many distinct bookmarks as AO3's heading says exist (a page that
+    ///   shifted mid-run, or a truncated listing, fails this);
+    /// - if we hold private bookmarks, the pass saw private ones too;
+    /// - and the removal is small: at most 5% of bookmarks (min 25) — a big drop is far more
+    ///   likely a parse or auth problem than you un-bookmarking hundreds of works at once.
+    public static func pruneDecision(coverage: IndexCoverage, hasCookie: Bool,
+                                     census: Store.BookmarkCensus) -> PruneDecision {
+        guard hasCookie else { return .skip("no session cookie (private bookmarks would look removed)") }
+        guard coverage.startedAtFirstPage else { return .skip("this run resumed mid-listing") }
+        guard coverage.reachedEnd else { return .skip("the listing wasn't read to the end") }
+        guard let total = coverage.listingTotal else { return .skip("AO3 didn't report a bookmark total") }
+        guard coverage.seenBookmarkIDs.count == total else {
+            return .skip("saw \(coverage.seenBookmarkIDs.count) of \(total) bookmarks")
+        }
+        guard census.activePrivate == 0 || coverage.seenPrivate > 0 else {
+            return .skip("no private bookmarks were visible (is the cookie still valid?)")
+        }
+        let cap = max(25, census.active / 20)
+        guard census.notSeenSince <= cap else {
+            return .skip("\(census.notSeenSince) bookmarks would be removed — more than the \(cap) safety cap")
+        }
+        return .prune
+    }
+
+    private func pruneRemovedBookmarks(since cutoff: String, into base: Result,
+                                       onEvent: @Sendable (Event) -> Void) throws -> Result {
+        var result = base
+        guard let coverage = lastIndexCoverage else { return result }
+        let census = try store.bookmarkCensus(notSeenSince: cutoff)
+        guard census.notSeenSince > 0 else { return result }
+        switch Self.pruneDecision(coverage: coverage, hasCookie: hasCookie, census: census) {
+        case .skip(let why):
+            onEvent(.message("Not removing \(census.notSeenSince) bookmark(s) missing from AO3 — \(why)"))
+        case .prune:
+            let (flagged, deleted) = try store.applyBookmarkRemovals(notSeenSince: cutoff)
+            result.bookmarksFlaggedRemoved = flagged
+            result.bookmarksDeleted = deleted
+            onEvent(.message("Removed \(deleted) bookmark(s) you un-bookmarked on AO3"
+                + (flagged > 0 ? "; kept \(flagged) saved work(s), marked no longer bookmarked" : "")))
         }
         return result
     }
@@ -324,8 +422,7 @@ public actor SyncEngine {
     private func ingest(_ card: WorkBlurb, onEvent: @Sendable (Event) -> Void) throws {
         switch card.kind {
         case .work, .external:
-            let change = try store.upsertWork(card)
-            try store.upsertBookmark(card, itemKind: card.kind, itemID: card.workID)
+            let change = card.bookmarkID == nil ? try store.upsertWork(card) : try store.upsertWorkAndBookmark(card)
             if let gained = change.newChapters { chapterGains[card.workID] = gained }
         case .series:
             try store.upsertSeries(card)
@@ -337,10 +434,10 @@ public actor SyncEngine {
 
     /// For each bookmarked series (capped at `maxSeries`), fetch its page, ingest the member
     /// works, and link them.
-    public func expandSeries(into base: Result, maxSeries: Int = .max,
+    public func expandSeries(into base: Result, maxSeries: Int = .max, seriesIDs: [Int]? = nil,
                              onEvent: @Sendable (Event) -> Void = { _ in }) async throws -> Result {
         var result = base
-        for seriesID in try store.bookmarkedSeriesIDs().prefix(maxSeries) {
+        for seriesID in try (seriesIDs ?? store.bookmarkedSeriesIDs()).prefix(maxSeries) {
             // AO3 paginates a series' works; follow "Next" (bounded) so parts past the first
             // page aren't silently dropped. `part` keeps counting across pages.
             var nextPath: String? = "/series/\(seriesID)?view_adult=true"
@@ -350,8 +447,7 @@ public actor SyncEngine {
                 for member in try BlurbParser.parseListing(html: html) {
                     part += 1
                     guard member.kind == .work else { continue }
-                    try store.upsertWork(member)
-                    try store.linkSeriesWork(seriesID: seriesID, workID: member.workID, part: part)
+                    try store.upsertSeriesMember(member, seriesID: seriesID, part: part)
                 }
                 pages += 1
                 nextPath = try BlurbParser.nextPagePath(html: html)
@@ -379,6 +475,37 @@ public actor SyncEngine {
     public func redownloadUpdated(limit: Int?,
                                   onEvent: @Sendable (Event) -> Void = { _ in }) async throws -> (Int, Int, Int) {
         try await download(store.worksNeedingRedownload(limit: limit), onEvent: onEvent)
+    }
+
+    /// Hard cap on one "save these works" request — each work is two polite requests.
+    public static let maxSelectedDownloads = 100
+
+    /// Download the given works (e.g. everything currently visible in the gallery), capped at
+    /// `maxSelectedDownloads`, skipping ones already saved and up to date. Recorded as a sync
+    /// run so deletion sightings and bookkeeping behave exactly like a normal pass.
+    @discardableResult
+    public func downloadSelected(workIDs: [Int],
+                                 onEvent: @Sendable (Event) -> Void = { _ in }) async throws -> Result {
+        let runID = try store.beginSyncRun()
+        chapterGains = [:]
+        sightingSource = Self.sightingSource(runID: runID)
+        var result = Result()
+        do {
+            let pending = try workIDs.lazy.compactMap { try self.store.pendingWork(workID: $0) }
+                .filter { !$0.isCurrent }
+                .prefix(Self.maxSelectedDownloads)
+            let (downloaded, failed, deleted) = try await download(Array(pending), onEvent: onEvent)
+            result.epubsDownloaded = downloaded
+            result.downloadsFailed = failed
+            result.worksDeleted = deleted
+            try store.finishSyncRun(id: runID, pages: 0, worksSeen: 0, downloaded: downloaded,
+                                    status: "ok", message: nil)
+            return result
+        } catch {
+            try? store.finishSyncRun(id: runID, pages: 0, worksSeen: 0, downloaded: result.epubsDownloaded,
+                                     status: "error", message: String(describing: error))
+            throw error
+        }
     }
 
     /// Download, save and record ONE work — the single path both the sync loop and the detail
