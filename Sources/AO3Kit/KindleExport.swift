@@ -205,9 +205,14 @@ public enum KindleExport {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("ao3-kindle", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         sweepStaleExports(in: dir)  // we can't delete post-send (the async hand-off reads the file), so sweep old ones
-        let dest = dir.appendingPathComponent(ArchivePaths.sanitize(newTitle) + ".epub")
-        try? FileManager.default.removeItem(at: dest)
+        // One fresh subfolder per export: the *file* keeps the badged title (devices may label by
+        // filename), but two exports of the same title — a double-click, or two in flight — no
+        // longer race on one path (one's copy failing with "already exists", or one deleting the
+        // file the other is still handing off). The sweep removes the whole subfolder later.
+        let exportDir = dir.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let dest = exportDir.appendingPathComponent(ArchivePaths.sanitize(newTitle) + ".epub")
         do {
+            try FileManager.default.createDirectory(at: exportDir, withIntermediateDirectories: true)
             try FileManager.default.copyItem(at: source, to: dest)
         } catch {
             throw ExportError.copyFailed(String(describing: error))

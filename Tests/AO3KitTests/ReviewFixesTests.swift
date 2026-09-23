@@ -144,6 +144,19 @@ import Foundation
         #expect(EpubDocument.safeLanguageTag("en\"><script>fetch(1)</script>") == "en")
     }
 
+    /// Two exports of the same title used to share one temp path and race (copy "already
+    /// exists" / one deleting the other's file mid-hand-off).
+    @Test func sameTitleKindleExportsDoNotCollide() throws {
+        let src = try SyntheticEpub.makeAO3Like()
+        let info = KindleExport.WorkInfo(title: "Same", author: "A", fandoms: ["X"], wordCount: 1_000)
+        let a = try KindleExport.makeKindleEPUB(source: src, work: info)
+        let b = try KindleExport.makeKindleEPUB(source: src, work: info)
+        defer { for u in [a, b] { try? FileManager.default.removeItem(at: u.deletingLastPathComponent()) } }
+        #expect(a != b)
+        #expect(a.lastPathComponent == b.lastPathComponent)   // filename still the badged title
+        #expect(FileManager.default.fileExists(atPath: a.path) && FileManager.default.fileExists(atPath: b.path))
+    }
+
     @Test func rateLimiterThrowsWhenCancelled() async {
         let limiter = RateLimiter()
         let task = Task {

@@ -1240,6 +1240,17 @@ check("language tag passes a real BCP 47 tag", EpubDocument.safeLanguageTag("en-
 check("language tag defaults when missing", EpubDocument.safeLanguageTag(nil) == "en")
 check("language tag can't inject markup", EpubDocument.safeLanguageTag("en\"><script>fetch(1)</script>") == "en")
 
+if let src = try? makeAO3LikeEpub() {
+    let info = KindleExport.WorkInfo(title: "Same", author: "A", fandoms: ["X"], wordCount: 1_000)
+    let a = try? KindleExport.makeKindleEPUB(source: src, work: info)
+    let b = try? KindleExport.makeKindleEPUB(source: src, work: info)
+    check("same-title Kindle exports don't collide",
+          a != nil && b != nil && a != b && a?.lastPathComponent == b?.lastPathComponent)
+    for u in [a, b].compactMap({ $0 }) { try? FileManager.default.removeItem(at: u.deletingLastPathComponent()) }
+} else {
+    check("same-title Kindle exports don't collide (fixture)", false)
+}
+
 // Semaphore rather than a top-level `await`: an `await` here would turn all of main.swift
 // into an async context and break the DispatchSemaphore waits in the WAL check above.
 final class LimiterProbe: @unchecked Sendable { var threw = false }
